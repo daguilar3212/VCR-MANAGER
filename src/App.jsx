@@ -17,42 +17,57 @@ const cars = [
 ];
 
 const GROUPS = [
-  {id:"costos_ventas",l:"Costos de Ventas y Operación"},
-  {id:"costos_merc",l:"Costos de la Mercancía Vendida"},
-  {id:"gastos_personal",l:"Gastos de Personal"},
-  {id:"gastos_generales",l:"Gastos Generales"},
-  {id:"gastos_financieros",l:"Gastos Financieros"},
-  {id:"otros_gastos",l:"Otros Gastos"},
+  {id:"costos_ventas",l:"Costos de Ventas y Operación",t:"costo"},
+  {id:"costos_merc",l:"Costos de la Mercancía Vendida",t:"costo"},
+  {id:"gastos_personal",l:"Gastos de Personal",t:"gasto"},
+  {id:"gastos_generales",l:"Gastos Generales",t:"gasto"},
+  {id:"gastos_financieros",l:"Gastos Financieros",t:"gasto"},
+  {id:"otros_gastos",l:"Otros Gastos",t:"gasto"},
 ];
 
 const CATS = [
-  {id:"rep_vehiculos",g:"costos_ventas",l:"Reparaciones de Vehículos",a:"Reparaciones de Vehículos"},
-  {id:"combustible",g:"costos_ventas",l:"Combustibles y Lubricantes",a:"Combustibles y Lubricantes"},
-  {id:"lavado",g:"costos_ventas",l:"Lavado de Vehículos",a:"Lavado de Vehiculos"},
+  // COSTOS - Ventas y Operación
   {id:"herramientas",g:"costos_ventas",l:"Herramientas y Suministros",a:"Herramientas y Suministros Menores"},
-  {id:"traspaso",g:"costos_ventas",l:"Inscripción y Traspaso",a:"Inscripción y Traspaso"},
+  {id:"lavado",g:"costos_ventas",l:"Lavado de Vehículos",a:"Lavado de Vehiculos"},
+  {id:"combustible",g:"costos_ventas",l:"Combustibles y Lubricantes",a:"Combustibles y Lubricantes"},
+  {id:"rep_vehiculos",g:"costos_ventas",l:"Reparaciones de Vehículos",a:"Reparaciones de Vehículos"},
+  {id:"traspaso",g:"costos_ventas",l:"Gastos de Inscripción y Traspaso",a:"Gastos de Inscripcion y Traspaso"},
   {id:"marchamo",g:"costos_ventas",l:"Derechos de Circulación",a:"Derechos de Circulacion"},
-  {id:"costo_inv",g:"costos_merc",l:"Inventarios",a:"Inventarios"},
+  // COSTOS - Mercancía vendida
+  {id:"costo_inv",g:"costos_merc",l:"Costos del Inventario",a:"Costos del inventario"},
   {id:"ajuste_inv",g:"costos_merc",l:"Ajustes al Inventario",a:"Ajustes al inventario"},
+  // GASTOS - Personal
   {id:"sueldos",g:"gastos_personal",l:"Sueldos",a:"Sueldos"},
   {id:"cargas_sociales",g:"gastos_personal",l:"Cargas Sociales",a:"Cargas Sociales"},
   {id:"comisiones_p",g:"gastos_personal",l:"Comisiones",a:"Comisiones"},
   {id:"aguinaldos",g:"gastos_personal",l:"Aguinaldos",a:"Aguinaldos"},
-  {id:"viaticos_emp",g:"gastos_generales",l:"Viáticos a Empleados",a:"Viaticos a Empleados"},
+  // GASTOS - Generales > Representación
   {id:"atencion_cli",g:"gastos_generales",l:"Atención a Clientes",a:"Atencion a Clientes"},
-  {id:"seguros",g:"gastos_generales",l:"Seguro de Vehículos",a:"Seguro de Vehiculos"},
-  {id:"alquiler",g:"gastos_generales",l:"Alquiler de Local",a:"Alquiler de Local"},
-  {id:"serv_publicos",g:"gastos_generales",l:"Servicios Públicos (Tel/Agua/Luz)",a:"Telefonos"},
-  {id:"oficina",g:"gastos_generales",l:"Papelería y Oficina",a:"Papeleria y Suministos de Oficina"},
-  {id:"serv_prof",g:"gastos_generales",l:"Servicios Profesionales",a:"Servicios Profesionales"},
-  {id:"mantenimiento",g:"gastos_generales",l:"Mantenimiento Propiedades",a:"Mantenimiento Propiedades Arrendadas"},
-  {id:"cuotas_susc",g:"gastos_generales",l:"Cuotas y Suscripciones",a:"Cuotas y Suscripciones"},
-  {id:"impuestos_pat",g:"gastos_generales",l:"Impuestos y Patentes",a:"Impuestos y Patentes"},
-  {id:"representacion",g:"gastos_generales",l:"Publicidad y Mercadeo",a:"Anuncios en Medios"},
-  {id:"mensajeria",g:"gastos_generales",l:"Mensajería",a:"Mensajeria"},
+  {id:"viaticos_emp",g:"gastos_generales",l:"Viáticos a Empleados",a:"Viaticos a Empleados"},
+  // GASTOS - Generales > Oficina
   {id:"aseo",g:"gastos_generales",l:"Aseo y Limpieza",a:"Aseo y Limpieza"},
+  {id:"mensajeria",g:"gastos_generales",l:"Mensajería",a:"Mensajeria"},
+  {id:"oficina",g:"gastos_generales",l:"Papelería y Suministros de Oficina",a:"Papeleria y Suministos de Oficina"},
+  // GASTOS - Generales > Seguros
+  {id:"seguros",g:"gastos_generales",l:"Seguro de Vehículos",a:"Seguro de Vehiculos"},
+  // GASTOS - Generales > Mantenimiento
+  {id:"mantenimiento",g:"gastos_generales",l:"Mantenimiento Propiedades Arrendadas",a:"Mantenimiento Propiedades Arrendadas"},
+  // GASTOS - Generales > Cuotas
+  {id:"cuotas_susc",g:"gastos_generales",l:"Cuotas y Suscripciones",a:"Cuotas y Suscripciones"},
+  // GASTOS - Generales > Impuestos
+  {id:"impuestos_pat",g:"gastos_generales",l:"Impuestos y Patentes",a:"Impuestos y Patentes"},
+  // GASTOS - Generales > Servicios Profesionales
+  {id:"serv_prof",g:"gastos_generales",l:"Servicios Profesionales",a:"Servicios Profesionales"},
+  // GASTOS - Generales > Alquileres
+  {id:"alquiler",g:"gastos_generales",l:"Alquiler de Local",a:"Alquiler de Local"},
+  // GASTOS - Generales > Servicios Públicos
+  {id:"serv_publicos",g:"gastos_generales",l:"Servicios Públicos (Tel/Agua/Luz)",a:"Telefonos"},
+  // GASTOS - Generales > Publicidad
+  {id:"representacion",g:"gastos_generales",l:"Publicidad y Mercadeo",a:"Anuncios en Medios"},
+  // GASTOS - Financieros
   {id:"com_bancarias",g:"gastos_financieros",l:"Comisiones Bancarias",a:"Comisiones Bancarias"},
-  {id:"intereses",g:"gastos_financieros",l:"Intereses Financieros",a:"Intereses"},
+  {id:"intereses",g:"gastos_financieros",l:"Intereses Financieros",a:"Gastos por Intereses financieros"},
+  // OTROS
   {id:"otro",g:"otros_gastos",l:"Otro",a:"Otros Gastos"},
 ];
 
@@ -79,6 +94,7 @@ const S = {
 const catLabel = (id) => CATS.find(c => c.id === id)?.l || "Otro";
 const catGroupId = (id) => CATS.find(c => c.id === id)?.g || "otros_gastos";
 const catGroupLabel = (id) => { const gid = CATS.find(c => c.id === id)?.g; return GROUPS.find(g => g.id === gid)?.l || "Otros"; };
+const catType = (id) => { const gid = CATS.find(c => c.id === id)?.g; return GROUPS.find(g => g.id === gid)?.t || "gasto"; };
 const supDisplay = (inv) => inv.supComm && inv.supComm !== "NoAplica" ? inv.supComm : inv.supName;
 
 export default function App() {
@@ -90,10 +106,13 @@ export default function App() {
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
+  const [fType, setFType] = useState("all");
   const [costView, setCostView] = useState("vehicles");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
   const [lastSync, setLastSync] = useState(null);
+  const [rejectedInvs, setRejectedInvs] = useState([]);
+  const [showRejected, setShowRejected] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [deletePin, setDeletePin] = useState("");
   const [deleteErr, setDeleteErr] = useState("");
@@ -134,11 +153,14 @@ export default function App() {
   };
 
   const syncGmail = async () => {
-    setSyncing(true); setSyncMsg(null);
+    setSyncing(true); setSyncMsg(null); setRejectedInvs([]);
     try {
       const res = await fetch('/api/fetch-gmail-invoices', { headers: { 'Authorization': 'Bearer vcr2026cron' } });
       const data = await res.json();
-      setSyncMsg("Procesadas: " + (data.processed || 0) + ", Omitidas: " + (data.skipped || 0));
+      let msg = "Procesadas: " + (data.processed || 0) + ", Omitidas: " + (data.skipped || 0);
+      if (data.rejected > 0) msg += ", Rechazadas: " + data.rejected;
+      setSyncMsg(msg);
+      if (data.rejectedList) setRejectedInvs(data.rejectedList);
       if (data.processed > 0) await loadInvoices();
       loadSyncStatus();
     } catch(e) { setSyncMsg('Error: ' + e.message); }
@@ -424,19 +446,55 @@ export default function App() {
   );
 
   const renderFac = () => {
-    const fList = invoices.filter(x => (fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign));
+    const fList = invoices.filter(x => (fType==="all"||catType(x.catId)===fType)&&(fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign));
     return (
       <div>
-        <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Facturas v3</h1>
+        <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Facturas</h1>
         <div style={{display:"flex",gap:12,marginBottom:16,alignItems:"center",flexWrap:"wrap"}}>
           <button onClick={syncGmail} disabled={syncing} style={{...S.sel,background:syncing?"#1e2130":"#4f8cff18",color:syncing?"#8b8fa4":"#4f8cff",fontWeight:600,padding:"10px 20px"}}>
             {syncing?"Sincronizando...":"Sincronizar Gmail"}
           </button>
+          {rejectedInvs.length>0&&<button onClick={()=>setShowRejected(true)} style={{...S.sel,background:"#e11d4810",color:"#e11d48",fontWeight:600,padding:"10px 16px"}}>
+            {rejectedInvs.length} rechazada{rejectedInvs.length!==1?"s":""}
+          </button>}
           {syncMsg&&<span style={{fontSize:12,color:"#10b981"}}>{syncMsg}</span>}
           {lastSync&&<span style={{fontSize:11,color:"#8b8fa4"}}>Última sync: {lastSync.toLocaleString("es-CR")}</span>}
         </div>
+
+        {/* Rejected invoices modal */}
+        {showRejected&&<div style={S.modal} onClick={()=>setShowRejected(false)}>
+          <div style={{...S.mbox,maxWidth:620}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}>
+              <h3 style={{fontSize:17,fontWeight:700,margin:0,color:"#e11d48"}}>Facturas Rechazadas</h3>
+              <button onClick={()=>setShowRejected(false)} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button>
+            </div>
+            <p style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Estas facturas no fueron procesadas porque el receptor no es Vehículos de Costa Rica (3-101-124464)</p>
+            <div style={S.card}>
+              {rejectedInvs.map((r,i)=>(
+                <div key={i} style={{padding:"12px 16px",borderBottom:"1px solid #2a2d3d"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                    <div>
+                      <div style={{fontWeight:600,fontSize:13}}>{r.emisor}</div>
+                      <div style={{fontSize:11,color:"#8b8fa4"}}>Cédula emisor: {r.emisor_id}</div>
+                    </div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontWeight:700,color:"#4f8cff"}}>{fmt(r.total)}</div>
+                      <div style={{fontSize:11,color:"#8b8fa4"}}>{r.fecha?new Date(r.fecha).toLocaleDateString("es-CR"):""}</div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:11,color:"#e11d48",marginBottom:4}}>{r.razon}</div>
+                  <div style={{fontSize:11,color:"#8b8fa4"}}>
+                    Receptor: {r.receptor} ({r.receptor_id}) · Consecutivo: ...{(r.consecutivo||"").slice(-8)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>}
+
         {invoices.length>0&&<>
           <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+            <select value={fType} onChange={e=>setFType(e.target.value)} style={S.sel}><option value="all">Tipo</option><option value="costo">Costos</option><option value="gasto">Gastos</option></select>
             <select value={fCat} onChange={e=>setFCat(e.target.value)} style={S.sel}><option value="all">Categoría</option>{CATS.map(c=><option key={c.id} value={c.id}>{c.l}</option>)}</select>
             <select value={fPay} onChange={e=>setFPay(e.target.value)} style={S.sel}><option value="all">Pago</option><option value="pending">Pendiente</option><option value="paid">Pagada</option></select>
             <select value={fAssign} onChange={e=>setFAssign(e.target.value)} style={S.sel}><option value="all">Asignación</option><option value="assigned">Asignada</option><option value="unassigned">Sin asignar</option><option value="operational">Operativo</option></select>
@@ -450,6 +508,7 @@ export default function App() {
                   <div style={{textAlign:"right"}}><div style={{fontWeight:700,color:"#4f8cff"}}>{fmt(x.total)}</div></div>
                 </div>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  <span style={S.badge(catType(x.catId)==="costo"?"#f97316":"#6366f1")}>{catType(x.catId)==="costo"?"Costo":"Gasto"}</span>
                   <span style={S.badge("#64748b")}>{catGroupLabel(x.catId)}</span>
                   <span style={S.badge("#0ea5e9")}>{catLabel(x.catId)}</span>
                   <span style={S.badge(x.isTC?"#e11d48":"#64748b")}>{x.payLabel}</span>
