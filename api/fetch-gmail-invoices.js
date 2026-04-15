@@ -23,6 +23,10 @@ function parseXMLServer(xmlStr) {
   const supEmail = tag(emisorBlock, 'CorreoElectronico');
   const telBlock = tagAll(emisorBlock, 'Telefono')[0] || "";
   const supPhone = tag(telBlock, 'NumTelefono');
+  // New: supplier address and canton
+  const ubicacionBlock = tagAll(emisorBlock, 'Ubicacion')[0] || "";
+  const supCanton = tag(ubicacionBlock, 'Canton') || tag(ubicacionBlock, 'NombreCanton');
+  const supAddress = tag(emisorBlock, 'OtrasSenas');
   const resumenBlock = tagAll(xmlStr, 'ResumenFactura')[0] || "";
   const monedaBlock = tagAll(resumenBlock, 'CodigoTipoMoneda')[0] || "";
   const currency = tag(monedaBlock, 'CodigoMoneda') || 'CRC';
@@ -38,6 +42,18 @@ function parseXMLServer(xmlStr) {
   const otrosCargosBlock = tagAll(xmlStr, 'OtrosCargos')[0] || "";
   const otherChargesDetail = tag(otrosCargosBlock, 'Detalle');
   const creditDays = parseInt(tag(xmlStr, 'PlazoCredito') || '0');
+  // New: calculate due date
+  let dueDate = null;
+  if (fechaEmision && creditDays > 0) {
+    const d = new Date(fechaEmision);
+    d.setDate(d.getDate() + creditDays);
+    dueDate = d.toISOString().split('T')[0];
+  } else if (fechaEmision) {
+    dueDate = fechaEmision.split('T')[0];
+  }
+  // Map supplier ID type to Alegra format
+  const idTypeMap = {"01":"Cédula Física","02":"Cédula Jurídica","03":"DIMEX","04":"NITE"};
+  const supIdTypeLabel = idTypeMap[supIdType] || supIdType;
   const lineBlocks = tagAll(xmlStr, 'LineaDetalle');
   const plateRx = /\b([A-Z]{2,3}[-\s]?\d{3,6})\b/i;
   let detectedPlate = null;
@@ -46,14 +62,23 @@ function parseXMLServer(xmlStr) {
     const pm = desc.match(plateRx);
     if (pm && !detectedPlate) detectedPlate = pm[1].toUpperCase().replace(/\s+/g, '-');
     const impBlock = tagAll(lb, 'Impuesto')[0] || "";
+    // New: extract discount per line
+    const descuentoBlock = tagAll(lb, 'Descuento')[0] || "";
+    const discPct = parseFloat(tag(descuentoBlock, 'NaturalezaDescuento') ? tag(lb, 'MontoDescuento') : '0');
+    const lineSubtotal = parseFloat(tag(lb, 'SubTotal') || '0');
+    const montoDesc = parseFloat(tag(lb, 'MontoDescuento') || '0');
+    const discountPct = lineSubtotal > 0 && montoDesc > 0 ? (montoDesc / lineSubtotal * 100) : 0;
     return {
       line_number: parseInt(tag(lb, 'NumeroLinea') || '1'),
       cabys_code: tag(lb, 'CodigoCABYS'),
       description: desc,
+      observation: desc,
       quantity: parseFloat(tag(lb, 'Cantidad') || '1'),
       unit: tag(lb, 'UnidadMedida'),
       unit_price: parseFloat(tag(lb, 'PrecioUnitario') || '0'),
-      subtotal: parseFloat(tag(lb, 'SubTotal') || '0'),
+      subtotal: lineSubtotal,
+      discount_pct: Math.round(discountPct * 100) / 100,
+      discount_amount: montoDesc,
       tax_code: tag(impBlock, 'Codigo'),
       tax_rate: parseFloat(tag(impBlock, 'Tarifa') || '0'),
       tax_amount: parseFloat(tag(impBlock, 'Monto') || '0'),
@@ -77,11 +102,14 @@ function parseXMLServer(xmlStr) {
   return {
     xml_key: clave, consecutive: consecutivo, last_four: consecutivo.slice(-4),
     emission_date: fechaEmision, supplier_name: supName, supplier_commercial_name: supComm,
-    supplier_id: supId, supplier_id_type: supIdType, supplier_email: supEmail, supplier_phone: supPhone,
+    supplier_id: supId, supplier_id_type: supIdType, supplier_id_type_label: supIdTypeLabel,
+    supplier_email: supEmail, supplier_phone: supPhone,
+    supplier_address: supAddress, supplier_canton: supCanton,
     currency, exchange_rate: exchangeRate, subtotal, discount_total: discountTotal,
     tax_total: taxTotal, other_charges: otherCharges, other_charges_detail: otherChargesDetail,
     total, payment_method_code: payCode, payment_method_label: payMap[payCode] || payCode,
-    is_credit_card: payCode === "02", credit_days: creditDays, detected_plate: detectedPlate,
+    is_credit_card: payCode === "02", credit_days: creditDays, due_date: dueDate,
+    detected_plate: detectedPlate,
     category_id: "otro", group_id: "otros_gastos", groupMap,
     assign_status: "unassigned", pay_status: "pending", lines,
   };
@@ -316,6 +344,7 @@ export default async function handler(req, res) {
             supplier_commercial_name: parsed.supplier_commercial_name,
             supplier_id: parsed.supplier_id, supplier_id_type: parsed.supplier_id_type,
             supplier_email: parsed.supplier_email, supplier_phone: parsed.supplier_phone,
+            supplier_address: parsed.supplier_address, supplier_canton: parsed.supplier_canton,
             currency: parsed.currency, exchange_rate: parsed.exchange_rate,
             subtotal: parsed.subtotal, discount_total: parsed.discount_total,
             tax_total: parsed.tax_total, other_charges: parsed.other_charges,
@@ -323,10 +352,12 @@ export default async function handler(req, res) {
             payment_method_code: parsed.payment_method_code,
             payment_method_label: parsed.payment_method_label,
             is_credit_card: parsed.is_credit_card, credit_days: parsed.credit_days,
+            due_date: parsed.due_date,
             detected_plate: parsed.detected_plate, plate, vehicle_id: vehicleId,
             assign_status: assignStatus, group_id: groupId,
             category_id: catId, pay_status: 'pending',
             alegra_category: alegraCategory,
+            alegra_bodega: 'Principal',
             vehicle_observation: vehicleObservation,
             gmail_message_id: msg.id,
             gmail_date: fullMsg.internalDate ? new Date(parseInt(fullMsg.internalDate)).toISOString() : null,
