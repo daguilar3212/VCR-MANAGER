@@ -1,0 +1,7 @@
+VITE_SUPABASE_URL=https://upcxrnnwjemkmhaniddx.supabase.co
+VITE_SUPABASE_KEY=your_anon_key
+SUPABASE_SERVICE_KEY=your_service_role_key
+GMAIL_CLIENT_ID=your_gmail_client_id
+GMAIL_CLIENT_SECRET=your_gmail_client_secret
+GMAIL_REDIRECT_URI=https://your-domain.vercel.app/api/auth-gmail-callback
+CRON_SECRET=vcr2026cron
