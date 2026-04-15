@@ -99,6 +99,9 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
   const [lastSync, setLastSync] = useState(null);
+  const [deletePin, setDeletePin] = useState("");
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
 
   // Load invoices from Supabase on mount
   useEffect(() => {
@@ -181,6 +184,22 @@ export default function App() {
     await supabase.from('invoices').update(dbUpdates).eq('xml_key', key);
   };
 
+  const deleteInvoice = async (key) => {
+    if (deletePin !== "1234") { setDeleteErr("PIN incorrecto"); return; }
+    const inv = invoices.find(x => x.key === key);
+    if (inv && inv.dbId) {
+      await supabase.from('invoice_lines').delete().eq('invoice_id', inv.dbId);
+      await supabase.from('invoices').delete().eq('id', inv.dbId);
+    } else {
+      await supabase.from('invoices').delete().eq('xml_key', key);
+    }
+    setInvoices(prev => prev.filter(x => x.key !== key));
+    setPickedInv(null);
+    setShowDelete(false);
+    setDeletePin("");
+    setDeleteErr("");
+  };
+
   const clients = [
     {n:"Carlos Jiménez Mora",ce:"1-0987-0456",ph:"8845-2301",em:"cjimenez@gmail.com",jo:"Ingeniero",ci:"Casado",ad:"Escazú",bu:[{d:"2026-01-15",v:"Suzuki Vitara 2023",pr:"$22,500"}]},
     {n:"María Fernanda Solís",ce:"3-0456-0789",ph:"7012-8834",em:"mfsolis@hotmail.com",jo:"Contadora",ci:"Soltera",ad:"Heredia",bu:[{d:"2026-02-12",v:"Chery Tiggo 7 2026",pr:"$23,000"},{d:"2025-11-27",v:"Montero Sport 2023",pr:"$49,500"}]},
@@ -246,6 +265,9 @@ export default function App() {
 
   const openInvoice = async (inv) => {
     setPickedInv(inv);
+    setShowDelete(false);
+    setDeletePin("");
+    setDeleteErr("");
     if (!inv.lines || inv.lines.length === 0) {
       const lines = await loadInvoiceLines(inv.key);
       setPickedInv(prev => prev ? { ...prev, lines } : null);
@@ -491,6 +513,21 @@ export default function App() {
             </div>
             <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Detalle</div>
             <div style={S.card}>{pickedInv.lines.map((l, i) => <div key={i} style={{ padding: "8px 14px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", fontSize: 12 }}><span style={{ flex: 1 }}>{l.desc}</span><span style={{ color: "#8b8fa4", marginLeft: 12 }}>{l.taxRate}%</span><span style={{ fontWeight: 600, marginLeft: 12 }}>{fmt(l.total)}</span></div>)}</div>
+            <div style={{ marginTop: 16, borderTop: "1px solid #2a2d3d", paddingTop: 14 }}>
+              {!showDelete ? (
+                <button onClick={() => { setShowDelete(true); setDeletePin(""); setDeleteErr(""); }} style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, width: "100%" }}>Eliminar factura</button>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 12, color: "#e11d48", marginBottom: 6, fontWeight: 600 }}>Ingrese PIN para confirmar:</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input type="password" maxLength={4} placeholder="PIN" value={deletePin} onChange={e => { setDeletePin(e.target.value); setDeleteErr(""); }} style={{ ...S.inp, flex: 1 }} />
+                    <button onClick={() => deleteInvoice(pickedInv.key)} style={{ ...S.sel, color: "#fff", background: "#e11d48", fontWeight: 600 }}>Confirmar</button>
+                    <button onClick={() => { setShowDelete(false); setDeletePin(""); setDeleteErr(""); }} style={{ ...S.sel, color: "#8b8fa4" }}>Cancelar</button>
+                  </div>
+                  {deleteErr && <div style={{ fontSize: 11, color: "#e11d48", marginTop: 4 }}>{deleteErr}</div>}
+                </div>
+              )}
+            </div>
           </div></div>}
         </main>
       </div>
