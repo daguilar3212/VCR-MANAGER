@@ -26,32 +26,34 @@ const GROUPS = [
 ];
 
 const CATS = [
-  {id:"rep_vehiculos",g:"costos_ventas",l:"Reparaciones de Vehículos"},
-  {id:"combustible",g:"costos_ventas",l:"Combustibles y Lubricantes"},
-  {id:"lavado",g:"costos_ventas",l:"Lavado de Vehículos"},
-  {id:"herramientas",g:"costos_ventas",l:"Herramientas y Suministros"},
-  {id:"traspaso",g:"costos_ventas",l:"Inscripción y Traspaso"},
-  {id:"marchamo",g:"costos_ventas",l:"Derechos de Circulación"},
-  {id:"costo_inv",g:"costos_merc",l:"Costos del Inventario"},
-  {id:"ajuste_inv",g:"costos_merc",l:"Ajustes al Inventario"},
-  {id:"sueldos",g:"gastos_personal",l:"Sueldos"},
-  {id:"cargas_sociales",g:"gastos_personal",l:"Cargas Sociales"},
-  {id:"comisiones_p",g:"gastos_personal",l:"Comisiones"},
-  {id:"aguinaldos",g:"gastos_personal",l:"Aguinaldos"},
-  {id:"viaticos_emp",g:"gastos_generales",l:"Viáticos a Empleados"},
-  {id:"atencion_cli",g:"gastos_generales",l:"Atención a Clientes"},
-  {id:"seguros",g:"gastos_generales",l:"Seguro de Vehículos"},
-  {id:"alquiler",g:"gastos_generales",l:"Alquiler de Local"},
-  {id:"serv_publicos",g:"gastos_generales",l:"Servicios Públicos"},
-  {id:"oficina",g:"gastos_generales",l:"Gastos de Oficina"},
-  {id:"serv_prof",g:"gastos_generales",l:"Servicios Profesionales"},
-  {id:"mantenimiento",g:"gastos_generales",l:"Mantenimiento y Conservación"},
-  {id:"cuotas_susc",g:"gastos_generales",l:"Cuotas y Suscripciones"},
-  {id:"impuestos_pat",g:"gastos_generales",l:"Impuestos y Patentes"},
-  {id:"representacion",g:"gastos_generales",l:"Gastos de Representación"},
-  {id:"com_bancarias",g:"gastos_financieros",l:"Comisiones Bancarias"},
-  {id:"intereses",g:"gastos_financieros",l:"Intereses Financieros"},
-  {id:"otro",g:"otros_gastos",l:"Otro"},
+  {id:"rep_vehiculos",g:"costos_ventas",l:"Reparaciones de Vehículos",a:"Reparaciones de Vehículos"},
+  {id:"combustible",g:"costos_ventas",l:"Combustibles y Lubricantes",a:"Combustibles y Lubricantes"},
+  {id:"lavado",g:"costos_ventas",l:"Lavado de Vehículos",a:"Lavado de Vehiculos"},
+  {id:"herramientas",g:"costos_ventas",l:"Herramientas y Suministros",a:"Herramientas y Suministros Menores"},
+  {id:"traspaso",g:"costos_ventas",l:"Inscripción y Traspaso",a:"Inscripción y Traspaso"},
+  {id:"marchamo",g:"costos_ventas",l:"Derechos de Circulación",a:"Derechos de Circulacion"},
+  {id:"costo_inv",g:"costos_merc",l:"Inventarios",a:"Inventarios"},
+  {id:"ajuste_inv",g:"costos_merc",l:"Ajustes al Inventario",a:"Ajustes al inventario"},
+  {id:"sueldos",g:"gastos_personal",l:"Sueldos",a:"Sueldos"},
+  {id:"cargas_sociales",g:"gastos_personal",l:"Cargas Sociales",a:"Cargas Sociales"},
+  {id:"comisiones_p",g:"gastos_personal",l:"Comisiones",a:"Comisiones"},
+  {id:"aguinaldos",g:"gastos_personal",l:"Aguinaldos",a:"Aguinaldos"},
+  {id:"viaticos_emp",g:"gastos_generales",l:"Viáticos a Empleados",a:"Viaticos a Empleados"},
+  {id:"atencion_cli",g:"gastos_generales",l:"Atención a Clientes",a:"Atencion a Clientes"},
+  {id:"seguros",g:"gastos_generales",l:"Seguro de Vehículos",a:"Seguro de Vehiculos"},
+  {id:"alquiler",g:"gastos_generales",l:"Alquiler de Local",a:"Alquiler de Local"},
+  {id:"serv_publicos",g:"gastos_generales",l:"Servicios Públicos (Tel/Agua/Luz)",a:"Telefonos"},
+  {id:"oficina",g:"gastos_generales",l:"Papelería y Oficina",a:"Papeleria y Suministos de Oficina"},
+  {id:"serv_prof",g:"gastos_generales",l:"Servicios Profesionales",a:"Servicios Profesionales"},
+  {id:"mantenimiento",g:"gastos_generales",l:"Mantenimiento Propiedades",a:"Mantenimiento Propiedades Arrendadas"},
+  {id:"cuotas_susc",g:"gastos_generales",l:"Cuotas y Suscripciones",a:"Cuotas y Suscripciones"},
+  {id:"impuestos_pat",g:"gastos_generales",l:"Impuestos y Patentes",a:"Impuestos y Patentes"},
+  {id:"representacion",g:"gastos_generales",l:"Publicidad y Mercadeo",a:"Anuncios en Medios"},
+  {id:"mensajeria",g:"gastos_generales",l:"Mensajería",a:"Mensajeria"},
+  {id:"aseo",g:"gastos_generales",l:"Aseo y Limpieza",a:"Aseo y Limpieza"},
+  {id:"com_bancarias",g:"gastos_financieros",l:"Comisiones Bancarias",a:"Comisiones Bancarias"},
+  {id:"intereses",g:"gastos_financieros",l:"Intereses Financieros",a:"Intereses"},
+  {id:"otro",g:"otros_gastos",l:"Otro",a:"Otros Gastos"},
 ];
 
 const fmt = (n, c) => {
@@ -171,13 +173,26 @@ export default function App() {
     if ('paidRef' in updates) dbUpdates.paid_reference = updates.paidRef;
     if ('catId' in updates) {
       const cat = CATS.find(c => c.id === updates.catId);
-      if (cat) dbUpdates.group_id = cat.g;
+      if (cat) {
+        dbUpdates.group_id = cat.g;
+        dbUpdates.alegra_category = cat.a || cat.l;
+      }
+      // Save to cabys_mapping for future auto-classification
       const inv = invoices.find(x => x.key === key);
       if (inv && inv.lines && inv.lines.length > 0 && inv.lines[0].cabys) {
         await supabase.from('cabys_mapping').upsert({
           cabys_code: inv.lines[0].cabys, category_id: updates.catId,
           group_id: cat ? cat.g : 'otros_gastos', source: 'manual'
         }, { onConflict: 'cabys_code' });
+      }
+      // Update provider_mapping so future invoices from same provider auto-classify
+      if (inv && inv.supId) {
+        await supabase.from('provider_mapping').upsert({
+          supplier_id: inv.supId, supplier_name: inv.supName,
+          default_category_id: updates.catId,
+          default_alegra_category: cat ? (cat.a || cat.l) : 'Otros Gastos',
+          times_used: 1,
+        }, { onConflict: 'supplier_id' });
       }
     }
     await supabase.from('invoices').update(dbUpdates).eq('xml_key', key);
@@ -296,16 +311,19 @@ export default function App() {
     const { data, error } = await supabase.from('sales').insert(row).select().single();
     if (error) { alert("Error: " + error.message); return; }
 
-    // Save agents
+    // Save agents - 1% total commission, split if 2 agents
     const agentRows = [];
     const salePrice = parseFloat(saleForm.sale_price) || 0;
+    const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id;
+    const splitPct = hasAgent2 ? 0.5 : 1;
+    const splitAmt = salePrice * 0.01 * (hasAgent2 ? 0.5 : 1);
     if (saleForm.agent1_id) {
       const ag = agents.find(a => a.id === saleForm.agent1_id);
-      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: 1, commission_amount: salePrice * 0.01 });
+      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt });
     }
-    if (saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id) {
+    if (hasAgent2) {
       const ag = agents.find(a => a.id === saleForm.agent2_id);
-      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: 1, commission_amount: salePrice * 0.01 });
+      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt });
     }
     if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
 
@@ -713,17 +731,22 @@ export default function App() {
 
           {/* AGENTS */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Vendedores (1% comisión c/u)</div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Vendedores (1% comisión total)</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
               {fld("Vendedor 1", "agent1_id", { type: "select", options: agents.map(a => ({ v: a.id, l: a.name })) })}
               {fld("Vendedor 2 (opcional)", "agent2_id", { type: "select", options: [{ v: "", l: "Ninguno" }, ...agents.map(a => ({ v: a.id, l: a.name }))] })}
             </div>
-            {F.agent1_id && (
-              <div style={{ fontSize: 12, color: "#8b8fa4", marginTop: 4 }}>
-                Comisión por vendedor: {fmt((parseFloat(F.sale_price) || 0) * 0.01, "USD")}
-                {F.agent2_id && F.agent2_id !== F.agent1_id ? " x 2 vendedores" : ""}
-              </div>
-            )}
+            {F.agent1_id && (() => {
+              const has2 = F.agent2_id && F.agent2_id !== F.agent1_id;
+              const totalComm = (parseFloat(F.sale_price) || 0) * 0.01;
+              const each = has2 ? totalComm / 2 : totalComm;
+              return (
+                <div style={{ fontSize: 12, color: "#8b8fa4", marginTop: 4 }}>
+                  Comisión total: {fmt(totalComm, "USD")}
+                  {has2 ? ` (${fmt(each, "USD")} por vendedor)` : ""}
+                </div>
+              );
+            })()}
           </div>
 
           {/* OBSERVATIONS */}
