@@ -60,16 +60,9 @@ function parseXMLServer(xmlStr) {
       line_total: parseFloat(tag(lb, 'MontoTotalLinea') || '0'),
     };
   });
-  const cabys0 = lines[0]?.cabys_code || "";
-  let catId = "otro";
-  if (cabys0.startsWith("333")) catId = "combustible";
-  else if (/^(871|872|873|452)/.test(cabys0)) catId = "rep_vehiculos";
-  else if (/^(633|634|561|562|563)/.test(cabys0)) catId = "viaticos_emp";
-  else if (/^(851|852)/.test(cabys0)) catId = "seguros";
-  else if (/^(681|682)/.test(cabys0)) catId = "alquiler";
-  else if (/^(353|354)/.test(cabys0)) catId = "serv_publicos";
-  else if (/^(812|813)/.test(cabys0)) catId = "lavado";
-  const groupMap = {rep_vehiculos:"costos_ventas",combustible:"costos_ventas",lavado:"costos_ventas",herramientas:"costos_ventas",traspaso:"costos_ventas",marchamo:"costos_ventas",costo_inv:"costos_merc",viaticos_emp:"gastos_generales",atencion_cli:"gastos_generales",seguros:"gastos_generales",alquiler:"gastos_generales",serv_publicos:"gastos_generales",oficina:"gastos_generales",serv_prof:"gastos_generales",mantenimiento:"gastos_generales",otro:"otros_gastos"};
+
+  const groupMap = {rep_vehiculos:"costos_ventas",combustible:"costos_ventas",lavado:"costos_ventas",herramientas:"costos_ventas",traspaso:"costos_ventas",marchamo:"costos_ventas",costo_inv:"costos_merc",viaticos_emp:"gastos_generales",atencion_cli:"gastos_generales",seguros:"gastos_generales",alquiler:"gastos_generales",serv_publicos:"gastos_generales",oficina:"gastos_generales",serv_prof:"gastos_generales",mantenimiento:"gastos_generales",representacion:"gastos_generales",impuestos_pat:"gastos_generales",com_bancarias:"gastos_financieros",otro:"otros_gastos"};
+
   return {
     xml_key: clave, consecutive: consecutivo, last_four: consecutivo.slice(-4),
     emission_date: fechaEmision, supplier_name: supName, supplier_commercial_name: supComm,
@@ -78,12 +71,33 @@ function parseXMLServer(xmlStr) {
     tax_total: taxTotal, other_charges: otherCharges, other_charges_detail: otherChargesDetail,
     total, payment_method_code: payCode, payment_method_label: payMap[payCode] || payCode,
     is_credit_card: payCode === "02", credit_days: creditDays, detected_plate: detectedPlate,
-    category_id: catId, group_id: groupMap[catId] || "otros_gastos",
+    category_id: "otro", group_id: "otros_gastos", groupMap,
     assign_status: "unassigned", pay_status: "pending", lines,
   };
 }
 
-// Recursively find all attachments in a message
+// Classify using CABYS catalog description + keyword matching
+function classifyByDescription(desc) {
+  const d = desc.toLowerCase();
+  if (/gasolina|di[eé]sel|gas[oó]leo|combustible|queroseno|nafta|bunker|fuel|lubricant|aceite.*motor|grasa.*lubric/i.test(d)) return "combustible";
+  if (/reparaci[oó]n|mantenimiento.*veh|mantenimiento.*auto|mantenimiento.*moto|taller|mec[aá]nic|mufla|transmisi[oó]n|suspensi[oó]n|alineamiento|balanceo|repuesto|neum[aá]tic|llanta|bater[ií]a|pintura.*auto|latoner[ií]a|enderezad|escape|radiador|embrague|amortiguador|buj[ií]a|filtro.*aceite|filtro.*aire|pastilla.*freno|disco.*freno|remolque|gr[uú]a|servicio.*transporte/i.test(d)) return "rep_vehiculos";
+  if (/lavado|car.*wash|limpieza.*veh|encerado|pulido/i.test(d)) return "lavado";
+  if (/ferreter[ií]a|tornillo|clavo|herramienta|llave.*mec|destornillador|broca|sierra|taladro|soldadura/i.test(d)) return "herramientas";
+  if (/comida|restaurante|suministro.*comida|servicio.*mesa|cafeter[ií]a|alimento.*preparado|pizza|hamburguesa|pollo.*prepar|sushi|ramen|poke|bebida|cerveza|licor|bar\s|soda\s|gallo.*pinto|casado/i.test(d)) return "viaticos_emp";
+  if (/alimento.*animal|mascota|perro|gato|veterinari/i.test(d)) return "otro";
+  if (/seguro|p[oó]liza|prima.*seguro|asegurad|reaseguro/i.test(d)) return "seguros";
+  if (/alquiler|arrendamiento|renta.*inmueble|renta.*local|renta.*oficina|administraci[oó]n.*inmueble/i.test(d)) return "alquiler";
+  if (/electricidad|el[eé]ctric|energ[ií]a|agua.*potable|acueducto|alcantarillado|tel[eé]fono|telefon[ií]a|internet|banda.*ancha|cable.*tv|televisi[oó]n.*cable/i.test(d)) return "serv_publicos";
+  if (/papel|papeler[ií]a|toner|tinta.*impresor|impresora|sobre.*carta|folder|grapas|l[aá]piz|bol[ií]grafo|cuaderno/i.test(d)) return "oficina";
+  if (/abogad|notari|contador|contadora|auditor[ií]a|consultor[ií]a|asesor[ií]a|legal|jur[ií]dic|honorarios.*prof|servicio.*contab/i.test(d)) return "serv_prof";
+  if (/mantenimiento.*edifici|plomer[ií]a|fontaner|electricista.*instal|aire.*acondicionado|construcci[oó]n|remodelaci[oó]n/i.test(d)) return "mantenimiento";
+  if (/publicidad|marketing|dise[ñn]o.*gr[aá]fico|anuncio|promoci[oó]n|redes.*sociales|impresi[oó]n.*publicit/i.test(d)) return "representacion";
+  if (/patente|impuesto.*municipal|marchamo|derecho.*circulaci|riteve|revisi[oó]n.*t[eé]cnica/i.test(d)) return "impuestos_pat";
+  if (/traspaso|registro.*nacional|inscripci[oó]n.*veh|derechos.*registro/i.test(d)) return "traspaso";
+  if (/comisi[oó]n.*bancari|cargo.*bancari|servicio.*bancari|inter[eé]s.*financier/i.test(d)) return "com_bancarias";
+  return "otro";
+}
+
 function findAttachments(parts, result = []) {
   if (!parts) return result;
   for (const part of parts) {
@@ -128,19 +142,15 @@ export default async function handler(req, res) {
 
       const fullMsg = await gmailAPI(`messages/${msg.id}?format=full`, token);
 
-      // Find ALL attachments recursively
       const allParts = findAttachments(fullMsg.payload?.parts || []);
-      // Also check top-level payload
       if (fullMsg.payload?.filename && fullMsg.payload?.body) {
         allParts.push(fullMsg.payload);
       }
 
-      // Find XML files (exclude response XMLs from Hacienda which contain "MensajeHacienda" or "respuesta")
       const xmlParts = allParts.filter(p => p.filename?.toLowerCase().endsWith('.xml'));
 
       if (xmlParts.length === 0) { skipped++; continue; }
 
-      // Process each XML in the email
       for (const xmlPart of xmlParts) {
         try {
           const attachmentData = await gmailAPI(
@@ -149,12 +159,10 @@ export default async function handler(req, res) {
 
           const xmlContent = Buffer.from(attachmentData.data, 'base64url').toString('utf-8');
 
-          // Skip Hacienda response XMLs (they contain MensajeHacienda tag)
           if (xmlContent.includes('MensajeHacienda') || xmlContent.includes('ConfirmacionComprobante')) {
             continue;
           }
 
-          // Must be a FacturaElectronica
           if (!xmlContent.includes('FacturaElectronica') && !xmlContent.includes('TiqueteElectronico')) {
             continue;
           }
@@ -163,24 +171,50 @@ export default async function handler(req, res) {
 
           if (!parsed.xml_key) continue;
 
-          // Check if already exists
           const { data: existingInv } = await supabase.from('invoices').select('id').eq('xml_key', parsed.xml_key).limit(1);
           if (existingInv && existingInv.length > 0) continue;
 
-          // Lookup CABYS mapping (exact match first, then prefix)
-          const cabysLookup = parsed.lines[0]?.cabys_code || "";
-          if (cabysLookup) {
-            const { data: exact } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', cabysLookup).limit(1);
+          // === CLASSIFICATION: 3-level strategy ===
+          const cabysCode = parsed.lines[0]?.cabys_code || "";
+          let catId = "otro";
+          let groupId = "otros_gastos";
+
+          // Level 1: Check cabys_mapping (user corrections, exact code)
+          if (cabysCode) {
+            const { data: exact } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', cabysCode).limit(1);
             if (exact && exact.length > 0) {
-              parsed.category_id = exact[0].category_id;
-              parsed.group_id = exact[0].group_id;
+              catId = exact[0].category_id;
+              groupId = exact[0].group_id;
             } else {
-              const prefix = cabysLookup.substring(0, 4);
+              // Level 1b: Check cabys_mapping by prefix (4 digits)
+              const prefix = cabysCode.substring(0, 4);
               const { data: prefixMatch } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', prefix).limit(1);
               if (prefixMatch && prefixMatch.length > 0) {
-                parsed.category_id = prefixMatch[0].category_id;
-                parsed.group_id = prefixMatch[0].group_id;
+                catId = prefixMatch[0].category_id;
+                groupId = prefixMatch[0].group_id;
               }
+            }
+          }
+
+          // Level 2: If still "otro", lookup CABYS catalog for official description and classify
+          if (catId === "otro" && cabysCode) {
+            const { data: catalog } = await supabase.from('cabys_catalog').select('description').eq('code', cabysCode).limit(1);
+            if (catalog && catalog.length > 0) {
+              const catalogCat = classifyByDescription(catalog[0].description);
+              if (catalogCat !== "otro") {
+                catId = catalogCat;
+                groupId = parsed.groupMap[catalogCat] || "otros_gastos";
+              }
+            }
+          }
+
+          // Level 3: If still "otro", use invoice line descriptions + supplier name
+          if (catId === "otro") {
+            const allText = parsed.lines.map(l => l.description).join(' ') + ' ' + parsed.supplier_name + ' ' + parsed.supplier_commercial_name;
+            const kwCat = classifyByDescription(allText);
+            if (kwCat !== "otro") {
+              catId = kwCat;
+              groupId = parsed.groupMap[kwCat] || "otros_gastos";
             }
           }
 
@@ -213,8 +247,8 @@ export default async function handler(req, res) {
             payment_method_label: parsed.payment_method_label,
             is_credit_card: parsed.is_credit_card, credit_days: parsed.credit_days,
             detected_plate: parsed.detected_plate, plate, vehicle_id: vehicleId,
-            assign_status: assignStatus, group_id: parsed.group_id,
-            category_id: parsed.category_id, pay_status: 'pending',
+            assign_status: assignStatus, group_id: groupId,
+            category_id: catId, pay_status: 'pending',
             gmail_message_id: msg.id,
             gmail_date: fullMsg.internalDate ? new Date(parseInt(fullMsg.internalDate)).toISOString() : null,
             raw_xml: xmlContent,
