@@ -33,7 +33,7 @@ function parseXMLServer(xmlStr) {
   const otherCharges = parseFloat(tag(resumenBlock, 'TotalOtrosCargos') || '0');
   const total = parseFloat(tag(resumenBlock, 'TotalComprobante') || '0');
   const medioPagoBlock = tagAll(resumenBlock, 'MedioPago')[0] || "";
-  const payCode = tag(medioPagoBlock, 'TipoMedioPago');
+  const payCode = tag(medioPagoBlock, 'TipoMedioPago') || tag(resumenBlock, 'MedioPago');
   const payMap = {"01":"Efectivo","02":"Tarjeta","03":"Cheque","04":"Transferencia","05":"Recaudado terceros","99":"Otros"};
   const otrosCargosBlock = tagAll(xmlStr, 'OtrosCargos')[0] || "";
   const otherChargesDetail = tag(otrosCargosBlock, 'Detalle');
