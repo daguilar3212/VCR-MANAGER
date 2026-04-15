@@ -193,9 +193,16 @@ export default async function handler(req, res) {
     const token = await getGmailToken();
     const supabase = getSupabase();
 
-    const { data: syncData } = await supabase.from('gmail_sync').select('last_sync_at').limit(1).single();
-    const since = syncData?.last_sync_at ? new Date(syncData.last_sync_at) : new Date();
-    const sinceEpoch = Math.floor(since.getTime() / 1000);
+    // Support custom date range via query params: ?after=2026-04-10
+    const customAfter = req.query?.after;
+    let sinceEpoch;
+    if (customAfter) {
+      sinceEpoch = Math.floor(new Date(customAfter).getTime() / 1000);
+    } else {
+      const { data: syncData } = await supabase.from('gmail_sync').select('last_sync_at').limit(1).single();
+      const since = syncData?.last_sync_at ? new Date(syncData.last_sync_at) : new Date();
+      sinceEpoch = Math.floor(since.getTime() / 1000);
+    }
 
     const query = `has:attachment filename:xml after:${sinceEpoch}`;
     const searchResult = await gmailAPI(`messages?q=${encodeURIComponent(query)}&maxResults=50`, token);
@@ -203,6 +210,10 @@ export default async function handler(req, res) {
     if (!searchResult.messages || searchResult.messages.length === 0) {
       return res.json({ processed: 0, message: 'No new emails with XML' });
     }
+
+    // Valid receptor IDs for this company
+    const VALID_RECEPTOR_IDS = ['3101124464'];
+    const VALID_RECEPTOR_NAMES = ['vehiculos de costa rica', 'vehiculos de cr'];
 
     // Load provider mappings once for all invoices
     const { data: providerMappings } = await supabase.from('provider_mapping').select('*');
@@ -213,6 +224,7 @@ export default async function handler(req, res) {
 
     let processed = 0;
     let skipped = 0;
+    let rejected = 0;
     const errors = [];
 
     for (const msg of searchResult.messages) {
@@ -242,6 +254,21 @@ export default async function handler(req, res) {
 
           const parsed = parseXMLServer(xmlContent);
           if (!parsed.xml_key) continue;
+
+          // === RECEPTOR VALIDATION ===
+          // Only accept invoices addressed to Vehiculos de Costa Rica
+          const receptorBlock = (xmlContent.match(/<(?:[\w]+:)?Receptor[\s\S]*?<\/(?:[\w]+:)?Receptor>/i) || [""])[0];
+          const recIdBlock = (receptorBlock.match(/<(?:[\w]+:)?Identificacion[\s\S]*?<\/(?:[\w]+:)?Identificacion>/i) || [""])[0];
+          const recId = (recIdBlock.match(/<(?:[\w]+:)?Numero[^>]*>([\s\S]*?)<\/(?:[\w]+:)?Numero>/i) || ["",""])[1].trim();
+          const recName = (receptorBlock.match(/<(?:[\w]+:)?Nombre[^>]*>([\s\S]*?)<\/(?:[\w]+:)?Nombre>/i) || ["",""])[1].trim().toLowerCase();
+          
+          const isValidReceptor = VALID_RECEPTOR_IDS.includes(recId) || 
+            VALID_RECEPTOR_NAMES.some(n => recName.includes(n));
+          
+          if (!isValidReceptor) {
+            rejected++;
+            continue;
+          }
 
           const { data: existingInv } = await supabase.from('invoices').select('id').eq('xml_key', parsed.xml_key).limit(1);
           if (existingInv && existingInv.length > 0) continue;
@@ -389,9 +416,11 @@ export default async function handler(req, res) {
       }
     }
 
-    await supabase.from('gmail_sync').update({ last_sync_at: new Date().toISOString() }).not('id', 'is', null);
+    if (!customAfter) {
+      await supabase.from('gmail_sync').update({ last_sync_at: new Date().toISOString() }).not('id', 'is', null);
+    }
 
-    return res.json({ processed, skipped, total: searchResult.messages.length, errors: errors.length > 0 ? errors : undefined });
+    return res.json({ processed, skipped, rejected, total: searchResult.messages.length, errors: errors.length > 0 ? errors : undefined });
   } catch (err) {
     console.error('Gmail fetch error:', err);
     return res.status(500).json({ error: err.message });
