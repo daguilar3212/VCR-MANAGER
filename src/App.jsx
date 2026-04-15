@@ -185,6 +185,14 @@ export default function App() {
   };
 
   const updateInv = async (key, updates) => {
+    // If changing to a gasto category, auto-set as operational
+    if ('catId' in updates) {
+      const newType = catType(updates.catId);
+      if (newType === "gasto") {
+        updates.assignStatus = "operational";
+        updates.plate = null;
+      }
+    }
     setInvoices(prev => prev.map(x => x.key === key ? { ...x, ...updates } : x));
     const dbUpdates = {};
     if ('catId' in updates) dbUpdates.category_id = updates.catId;
@@ -896,24 +904,31 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Plate assignment */}
+                {/* Plate assignment - only for Costos */}
                 <div style={{marginBottom:14}}>
-                  <div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Asignar a placa</div>
-                  <div style={{display:"flex",gap:8}}>
-                    <select value={pickedInv.plate||""} onChange={e => {
-                      const pl = e.target.value;
-                      const st = pl ? "assigned" : "unassigned";
-                      updateInv(pickedInv.key, {plate:pl||null,assignStatus:st});
-                      setPickedInv({...pickedInv,plate:pl||null,assignStatus:st});
-                    }} style={{...S.sel,flex:1}}>
-                      <option value="">Sin asignar</option>
-                      {cars.filter(c=>c.p!=="CONSIGNA").map(c=><option key={c.p} value={c.p}>{c.p} - {c.b} {c.m}</option>)}
-                    </select>
-                    <button onClick={() => {
-                      updateInv(pickedInv.key, {assignStatus:"operational",plate:null});
-                      setPickedInv({...pickedInv,assignStatus:"operational",plate:null});
-                    }} style={{...S.sel,background:pickedInv.assignStatus==="operational"?"#8b5cf620":"#1e2130",color:pickedInv.assignStatus==="operational"?"#8b5cf6":"#8b8fa4",fontWeight:600}}>Operativo</button>
-                  </div>
+                  {catType(pickedInv.catId) === "costo" ? (<>
+                    <div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Asignar a placa</div>
+                    <div style={{display:"flex",gap:8}}>
+                      <select value={pickedInv.plate||""} onChange={e => {
+                        const pl = e.target.value;
+                        const st = pl ? "assigned" : "unassigned";
+                        updateInv(pickedInv.key, {plate:pl||null,assignStatus:st});
+                        setPickedInv({...pickedInv,plate:pl||null,assignStatus:st});
+                      }} style={{...S.sel,flex:1}}>
+                        <option value="">Sin asignar</option>
+                        {cars.filter(c=>c.p!=="CONSIGNA").map(c=><option key={c.p} value={c.p}>{c.p} - {c.b} {c.m}</option>)}
+                      </select>
+                      <button onClick={() => {
+                        updateInv(pickedInv.key, {assignStatus:"operational",plate:null});
+                        setPickedInv({...pickedInv,assignStatus:"operational",plate:null});
+                      }} style={{...S.sel,background:pickedInv.assignStatus==="operational"?"#8b5cf620":"#1e2130",color:pickedInv.assignStatus==="operational"?"#8b5cf6":"#8b8fa4",fontWeight:600}}>Operativo</button>
+                    </div>
+                  </>) : (
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{...S.badge("#8b5cf6"),fontSize:12}}>Gasto operativo</span>
+                      <span style={{fontSize:11,color:"#8b8fa4"}}>Los gastos no se asignan a vehículos</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Payment status */}
