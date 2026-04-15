@@ -345,6 +345,32 @@ export default async function handler(req, res) {
 
           if (!alegraCategory) alegraCategory = ALEGRA_NAMES[catId] || "Otros Gastos";
 
+          // === VEHICLE PURCHASE DETECTION ===
+          // Check if any line has a vehicle CABYS code (491x = passenger, 492x = cargo)
+          let isVehiclePurchase = false;
+          for (const line of parsed.lines) {
+            const code = line.cabys_code || "";
+            if (code.startsWith('491') || code.startsWith('492')) {
+              isVehiclePurchase = true;
+              break;
+            }
+          }
+          // Also detect by description keywords + high amount
+          if (!isVehiclePurchase) {
+            const allDescsLower = parsed.lines.map(l => l.description).join(' ').toLowerCase();
+            const hasVehicleKeywords = /\b(autom[oó]vil|veh[ií]culo|camioneta|pick.?up|sedan|suv|todo.?terreno|station.?wagon|hatchback)\b/i.test(allDescsLower);
+            const isHighAmount = (parsed.currency === 'USD' && parsed.total >= 3000) || (parsed.currency !== 'USD' && parsed.total >= 2000000);
+            if (hasVehicleKeywords && isHighAmount) {
+              isVehiclePurchase = true;
+            }
+          }
+          // If vehicle purchase, override category to costo_inv
+          if (isVehiclePurchase) {
+            catId = "costo_inv";
+            groupId = "costos_merc";
+            alegraCategory = "Inventarios";
+          }
+
           // === PLATE DETECTION (all lines) ===
           let plate = parsed.detected_plate;
           let assignStatus = 'unassigned';
@@ -397,6 +423,8 @@ export default async function handler(req, res) {
             alegra_category: alegraCategory,
             alegra_bodega: 'Principal',
             vehicle_observation: vehicleObservation,
+            is_vehicle_purchase: isVehiclePurchase,
+            vehicle_purchase_status: isVehiclePurchase ? 'detected' : null,
             gmail_message_id: msg.id,
             gmail_date: fullMsg.internalDate ? new Date(parseInt(fullMsg.internalDate)).toISOString() : null,
             raw_xml: xmlContent,
