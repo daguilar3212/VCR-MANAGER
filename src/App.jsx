@@ -167,6 +167,16 @@ export default function App() {
     if ('catId' in updates) {
       const cat = CATS.find(c => c.id === updates.catId);
       if (cat) dbUpdates.group_id = cat.g;
+      // Learn: save CABYS mapping for future invoices
+      const inv = invoices.find(x => x.key === key);
+      if (inv && inv.lines && inv.lines.length > 0 && inv.lines[0].cabys) {
+        await supabase.from('cabys_mapping').upsert({
+          cabys_code: inv.lines[0].cabys,
+          category_id: updates.catId,
+          group_id: cat ? cat.g : 'otros_gastos',
+          source: 'manual'
+        }, { onConflict: 'cabys_code' });
+      }
     }
     await supabase.from('invoices').update(dbUpdates).eq('xml_key', key);
   };
