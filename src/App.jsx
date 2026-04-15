@@ -107,6 +107,7 @@ export default function App() {
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
   const [fType, setFType] = useState("all");
+  const [selectedInvs, setSelectedInvs] = useState(new Set());
   const [costView, setCostView] = useState("vehicles");
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
@@ -116,6 +117,7 @@ export default function App() {
   const [showDelete, setShowDelete] = useState(false);
   const [deletePin, setDeletePin] = useState("");
   const [deleteErr, setDeleteErr] = useState("");
+  const [vehicleForm, setVehicleForm] = useState(null);
 
   // Sales state
   const [sales, setSales] = useState([]);
@@ -135,10 +137,12 @@ export default function App() {
         key: inv.xml_key, last4: inv.last_four, date: inv.emission_date,
         supName: inv.supplier_name, supComm: inv.supplier_commercial_name, supId: inv.supplier_id,
         sub: inv.subtotal, tax: inv.tax_total, other: inv.other_charges, total: inv.total,
+        currency: inv.currency || 'CRC',
         payCode: inv.payment_method_code, payLabel: inv.payment_method_label, isTC: inv.is_credit_card,
         plate: inv.plate, warnPlate: inv.assign_status === 'warning' ? inv.detected_plate : null,
         catId: inv.category_id || 'otro', assignStatus: inv.assign_status || 'unassigned',
         payStatus: inv.pay_status || 'pending', paidBank: inv.paid_bank || '', paidRef: inv.paid_reference || '',
+        isVehicle: inv.is_vehicle_purchase || false, vehicleStatus: inv.vehicle_purchase_status || null,
         lines: [], dbId: inv.id,
       })));
     }
@@ -242,6 +246,169 @@ export default function App() {
     setShowDelete(false);
     setDeletePin("");
     setDeleteErr("");
+  };
+
+  // ======= VEHICLE FROM INVOICE =======
+  const saveVehicleFromInvoice = async () => {
+    if (!vehicleForm || !vehicleForm.plate) { alert("La placa es requerida"); return; }
+    const inv = pickedInv;
+    const { data: veh, error } = await supabase.from('vehicles').insert({
+      plate: vehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
+      brand: vehicleForm.brand || null,
+      model: vehicleForm.model || null,
+      year: parseInt(vehicleForm.year) || null,
+      color: vehicleForm.color || null,
+      km: parseFloat(vehicleForm.km) || null,
+      drive: vehicleForm.drive || null,
+      fuel: vehicleForm.fuel || null,
+      style: vehicleForm.style || null,
+      price_usd: parseFloat(vehicleForm.price_usd) || null,
+      price_crc: parseFloat(vehicleForm.price_crc) || null,
+      purchase_price: inv.total,
+      purchase_currency: inv.currency || 'CRC',
+      purchase_date: inv.date,
+      purchase_invoice_id: inv.dbId,
+      purchase_supplier: supDisplay(inv),
+      status: 'disponible',
+      consignment: vehicleForm.consignment || false,
+      consignment_owner: vehicleForm.consignment_owner || null,
+    }).select().single();
+    if (error) { alert("Error: " + error.message); return; }
+    // Update invoice
+    await supabase.from('invoices').update({ 
+      vehicle_purchase_status: 'completed',
+      plate: vehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
+      assign_status: 'assigned',
+    }).eq('xml_key', inv.key);
+    setInvoices(prev => prev.map(x => x.key === inv.key ? { ...x, vehicleStatus: 'completed', plate: vehicleForm.plate.toUpperCase() } : x));
+    setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'completed' } : null);
+    setVehicleForm(null);
+    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase());
+  };
+
+  const dismissVehicle = async () => {
+    await supabase.from('invoices').update({ vehicle_purchase_status: 'dismissed' }).eq('xml_key', pickedInv.key);
+    setInvoices(prev => prev.map(x => x.key === pickedInv.key ? { ...x, vehicleStatus: 'dismissed' } : x));
+    setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'dismissed' } : null);
+    setVehicleForm(null);
+  };
+
+  // ======= EXPORT & BULK ACTIONS =======
+  const toggleSelect = (key) => {
+    setSelectedInvs(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (fList) => {
+    if (selectedInvs.size === fList.length) {
+      setSelectedInvs(new Set());
+    } else {
+      setSelectedInvs(new Set(fList.map(x => x.key)));
+    }
+  };
+
+  const exportSelected = async () => {
+    const selected = invoices.filter(x => selectedInvs.has(x.key));
+    if (selected.length === 0) return;
+    // Load lines for each selected invoice
+    const rows = [];
+    for (const inv of selected) {
+      const { data: dbInv } = await supabase.from('invoices').select('*').eq('xml_key', inv.key).single();
+      if (!dbInv) continue;
+      const { data: lines } = await supabase.from('invoice_lines').select('*').eq('invoice_id', dbInv.id).order('line_number');
+      const cat = CATS.find(c => c.id === inv.catId);
+      const alegraName = cat?.a || dbInv.alegra_category || 'Otros Gastos';
+      const idTypeMap = {"01":"Cédula Física","02":"Cédula Jurídica","03":"DIMEX","04":"NITE"};
+      const idTypeLabel = idTypeMap[dbInv.supplier_id_type] || dbInv.supplier_id_type || '';
+      if (lines && lines.length > 0) {
+        for (const line of lines) {
+          rows.push({
+            "FECHA DE EMISIÓN": dbInv.emission_date ? new Date(dbInv.emission_date).toLocaleDateString("es-CR") : '',
+            "CÓDIGO": dbInv.consecutive || '',
+            "ESTADO": dbInv.pay_status === 'paid' ? 'Pagado' : 'Por pagar',
+            "ESTADO LEGAL": '',
+            "BODEGA": 'Principal',
+            "CENTRO DE COSTO": '',
+            "ÓRDENES DE COMPRA ASOCIADAS": '',
+            "PROVEEDOR - NOMBRE": dbInv.supplier_name || '',
+            "PROVEEDOR - TIPO DE IDENTIFICACIÓN": idTypeLabel,
+            "PROVEEDOR - IDENTIFICACIÓN": dbInv.supplier_id || '',
+            "PROVEEDOR - OTRAS SEÑAS": dbInv.supplier_address || '',
+            "PROVEEDOR - TELÉFONO": dbInv.supplier_phone || '',
+            "PROVEEDOR - CANTÓN": dbInv.supplier_canton || '',
+            "VENCIMIENTO": dbInv.due_date ? new Date(dbInv.due_date).toLocaleDateString("es-CR") : '',
+            "MONEDA": dbInv.currency || 'CRC',
+            "TASA DE CAMBIO": dbInv.exchange_rate || 1,
+            "ÍTEM - NOMBRE": alegraName,
+            "ÍTEM - OBSERVACIONES": line.description || '',
+            "ÍTEM - REFERENCIA": '',
+            "ÍTEM - CANTIDAD": line.quantity || 1,
+            "ÍTEM - PRECIO": line.unit_price || 0,
+            "ÍTEM - DESCUENTO (%)": line.discount_pct || 0,
+            "ÍTEM - IMPUESTO": line.tax_code === '01' ? 'IVA' : '',
+            "ÍTEM - IMPUESTO (%)": line.tax_rate || 0,
+            "ÍTEM - IMPUESTO (VALOR)": line.tax_amount || 0,
+            "ÍTEM - TOTAL": line.line_total || 0,
+            "ÍTEM - SUBTOTAL": line.subtotal || 0,
+            "TOTAL - FACTURA DE VENTA": dbInv.total || 0,
+          });
+        }
+      } else {
+        rows.push({
+          "FECHA DE EMISIÓN": dbInv.emission_date ? new Date(dbInv.emission_date).toLocaleDateString("es-CR") : '',
+          "CÓDIGO": dbInv.consecutive || '',
+          "ESTADO": dbInv.pay_status === 'paid' ? 'Pagado' : 'Por pagar',
+          "ESTADO LEGAL": '', "BODEGA": 'Principal', "CENTRO DE COSTO": '', "ÓRDENES DE COMPRA ASOCIADAS": '',
+          "PROVEEDOR - NOMBRE": dbInv.supplier_name || '',
+          "PROVEEDOR - TIPO DE IDENTIFICACIÓN": idTypeLabel,
+          "PROVEEDOR - IDENTIFICACIÓN": dbInv.supplier_id || '',
+          "PROVEEDOR - OTRAS SEÑAS": dbInv.supplier_address || '',
+          "PROVEEDOR - TELÉFONO": dbInv.supplier_phone || '',
+          "PROVEEDOR - CANTÓN": dbInv.supplier_canton || '',
+          "VENCIMIENTO": dbInv.due_date || '',
+          "MONEDA": dbInv.currency || 'CRC',
+          "TASA DE CAMBIO": dbInv.exchange_rate || 1,
+          "ÍTEM - NOMBRE": alegraName,
+          "ÍTEM - OBSERVACIONES": '', "ÍTEM - REFERENCIA": '',
+          "ÍTEM - CANTIDAD": 1, "ÍTEM - PRECIO": dbInv.subtotal || 0,
+          "ÍTEM - DESCUENTO (%)": 0, "ÍTEM - IMPUESTO": 'IVA',
+          "ÍTEM - IMPUESTO (%)": 13, "ÍTEM - IMPUESTO (VALOR)": dbInv.tax_total || 0,
+          "ÍTEM - TOTAL": dbInv.total || 0, "ÍTEM - SUBTOTAL": dbInv.subtotal || 0,
+          "TOTAL - FACTURA DE VENTA": dbInv.total || 0,
+        });
+      }
+    }
+    // Generate CSV
+    if (rows.length === 0) return;
+    const headers = Object.keys(rows[0]);
+    const csv = [headers.join(','), ...rows.map(r => headers.map(h => {
+      let v = r[h] ?? '';
+      if (typeof v === 'string' && (v.includes(',') || v.includes('"') || v.includes('\n'))) v = '"' + v.replace(/"/g, '""') + '"';
+      return v;
+    }).join(','))].join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'facturas_alegra_' + new Date().toISOString().split('T')[0] + '.csv';
+    a.click(); URL.revokeObjectURL(url);
+    setSelectedInvs(new Set());
+  };
+
+  const bulkDelete = async () => {
+    const pin = prompt("Ingrese PIN para eliminar " + selectedInvs.size + " facturas:");
+    if (pin !== "1234") { alert("PIN incorrecto"); return; }
+    for (const key of selectedInvs) {
+      const inv = invoices.find(x => x.key === key);
+      if (inv && inv.dbId) {
+        await supabase.from('invoice_lines').delete().eq('invoice_id', inv.dbId);
+        await supabase.from('invoices').delete().eq('id', inv.dbId);
+      }
+    }
+    setInvoices(prev => prev.filter(x => !selectedInvs.has(x.key)));
+    setSelectedInvs(new Set());
   };
 
   // ======= SALES FUNCTIONS =======
@@ -417,7 +584,7 @@ export default function App() {
         </div>
         <div style={S.card}>
           <div style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",fontWeight:700,fontSize:14}}>Últimas facturas</div>
-          {invoices.length===0?<div style={{padding:"20px 18px",fontSize:13,color:"#8b8fa4"}}>Sin facturas cargadas</div>:invoices.slice(0,5).map((x,i)=>(<div key={i} style={{padding:"10px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:13,fontWeight:600}}>{supDisplay(x)}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{catLabel(x.catId)}</div></div><span style={{fontSize:14,fontWeight:700,color:"#4f8cff"}}>{fmt(x.total)}</span></div>))}
+          {invoices.length===0?<div style={{padding:"20px 18px",fontSize:13,color:"#8b8fa4"}}>Sin facturas cargadas</div>:invoices.slice(0,5).map((x,i)=>(<div key={i} style={{padding:"10px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:13,fontWeight:600}}>{supDisplay(x)}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{catLabel(x.catId)}</div></div><span style={{fontSize:14,fontWeight:700,color:x.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(x.total,x.currency==="USD"?"USD":undefined)}</span></div>))}
         </div>
       </div>
     </div>
@@ -500,6 +667,27 @@ export default function App() {
           </div>
         </div>}
 
+        {/* Vehicle purchase alerts */}
+        {invoices.filter(x => x.isVehicle && x.vehicleStatus === 'detected').length > 0 && (
+          <div style={{background:"#f59e0b10",border:"1px solid #f59e0b30",borderRadius:12,padding:"12px 16px",marginBottom:14}}>
+            <div style={{fontWeight:700,fontSize:13,color:"#f59e0b",marginBottom:6}}>
+              🚗 {invoices.filter(x => x.isVehicle && x.vehicleStatus === 'detected').length} compra{invoices.filter(x => x.isVehicle && x.vehicleStatus === 'detected').length !== 1 ? "s" : ""} de vehículo detectada{invoices.filter(x => x.isVehicle && x.vehicleStatus === 'detected').length !== 1 ? "s" : ""}
+            </div>
+            {invoices.filter(x => x.isVehicle && x.vehicleStatus === 'detected').map((x, i) => (
+              <div key={i} onClick={() => openInvoice(x)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"6px 0",cursor:"pointer",borderBottom:i < invoices.filter(v => v.isVehicle && v.vehicleStatus === 'detected').length - 1 ? "1px solid #f59e0b20" : "none"}}>
+                <div>
+                  <span style={{fontSize:12,fontWeight:600}}>{supDisplay(x)}</span>
+                  <span style={{fontSize:11,color:"#8b8fa4",marginLeft:8}}>{new Date(x.date).toLocaleDateString("es-CR")}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontWeight:700,fontSize:13,color:x.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(x.total,x.currency==="USD"?"USD":undefined)}</span>
+                  <span style={{fontSize:11,color:"#f59e0b",fontWeight:600}}>Completar →</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {invoices.length>0&&<>
           <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
             <select value={fType} onChange={e=>setFType(e.target.value)} style={S.sel}><option value="all">Tipo</option><option value="costo">Costos</option><option value="gasto">Gastos</option></select>
@@ -507,13 +695,27 @@ export default function App() {
             <select value={fPay} onChange={e=>setFPay(e.target.value)} style={S.sel}><option value="all">Pago</option><option value="pending">Pendiente</option><option value="paid">Pagada</option></select>
             <select value={fAssign} onChange={e=>setFAssign(e.target.value)} style={S.sel}><option value="all">Asignación</option><option value="assigned">Asignada</option><option value="unassigned">Sin asignar</option><option value="operational">Operativo</option></select>
           </div>
-          <div style={{fontSize:13,color:"#8b8fa4",marginBottom:10}}>{fList.length} factura{fList.length!==1?"s":""}</div>
+          <div style={{fontSize:13,color:"#8b8fa4",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input type="checkbox" checked={fList.length>0&&selectedInvs.size===fList.length} onChange={()=>toggleSelectAll(fList)} style={{cursor:"pointer"}} />
+              <span>{fList.length} factura{fList.length!==1?"s":""}</span>
+            </div>
+            {selectedInvs.size>0&&(
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <span style={{fontSize:12,fontWeight:600,color:"#4f8cff"}}>{selectedInvs.size} seleccionada{selectedInvs.size!==1?"s":""}</span>
+                <button onClick={exportSelected} style={{...S.sel,fontSize:11,padding:"6px 12px",background:"#10b98118",color:"#10b981",fontWeight:600}}>Exportar CSV</button>
+                <button onClick={bulkDelete} style={{...S.sel,fontSize:11,padding:"6px 12px",background:"#e11d4810",color:"#e11d48",fontWeight:600}}>Eliminar</button>
+              </div>
+            )}
+          </div>
           <div style={S.card}>
             {fList.map((x,i)=>(
-              <div key={i} style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer"}} onClick={()=>openInvoice(x)}>
+              <div key={i} style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer",display:"flex",gap:10,alignItems:"flex-start",background:selectedInvs.has(x.key)?"#4f8cff08":"transparent"}}>
+                <input type="checkbox" checked={selectedInvs.has(x.key)} onChange={()=>toggleSelect(x.key)} onClick={e=>e.stopPropagation()} style={{marginTop:4,cursor:"pointer",flexShrink:0}} />
+                <div style={{flex:1}} onClick={()=>openInvoice(x)}>
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
                   <div><div style={{fontWeight:600,fontSize:13}}>{supDisplay(x)}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{x.supId} · ...{x.last4} · {new Date(x.date).toLocaleDateString("es-CR")}</div></div>
-                  <div style={{textAlign:"right"}}><div style={{fontWeight:700,color:"#4f8cff"}}>{fmt(x.total)}</div></div>
+                  <div style={{textAlign:"right"}}><div style={{fontWeight:700,color:x.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(x.total,x.currency==="USD"?"USD":undefined)}</div>{x.currency==="USD"&&<div style={{fontSize:10,color:"#10b981"}}>USD</div>}</div>
                 </div>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                   <span style={S.badge(catType(x.catId)==="costo"?"#f97316":"#6366f1")}>{catType(x.catId)==="costo"?"Costo":"Gasto"}</span>
@@ -522,9 +724,12 @@ export default function App() {
                   <span style={S.badge(x.isTC?"#e11d48":"#64748b")}>{x.payLabel}</span>
                   <span style={S.badge(x.payStatus==="paid"?"#10b981":"#f59e0b")}>{x.payStatus==="paid"?"Pagada":"Pendiente"}</span>
                   {x.assignStatus==="assigned"&&<span style={S.badge("#10b981")}>Placa: {x.plate}</span>}
-                  {x.assignStatus==="unassigned"&&<span style={S.badge("#f59e0b")}>Sin asignar</span>}
-                  {x.assignStatus==="operational"&&<span style={S.badge("#8b5cf6")}>Operativo</span>}
+                  {x.assignStatus==="unassigned"&&catType(x.catId)==="costo"&&<span style={S.badge("#f59e0b")}>Sin asignar</span>}
+                  {(x.assignStatus==="operational"||catType(x.catId)==="gasto")&&<span style={S.badge("#8b5cf6")}>Operativo</span>}
                   {x.warnPlate&&<span style={S.badge("#e11d48")}>⚠ {x.warnPlate} no en inv.</span>}
+                  {x.currency==="USD"&&<span style={S.badge("#10b981")}>USD</span>}
+                  {x.isVehicle&&x.vehicleStatus==="detected"&&<span style={S.badge("#f59e0b")}>🚗 Completar</span>}
+                </div>
                 </div>
               </div>
             ))}
@@ -877,7 +1082,7 @@ export default function App() {
 
                 {/* Totals */}
                 <div style={{display:"flex",gap:8,marginBottom:14}}>
-                  {[["Subtotal",fmt(pickedInv.sub)],["IVA",fmt(pickedInv.tax)],["Total",fmt(pickedInv.total)]].map(([l,v])=>(
+                  {[["Subtotal",fmt(pickedInv.sub,pickedInv.currency==="USD"?"USD":undefined)],["IVA",fmt(pickedInv.tax,pickedInv.currency==="USD"?"USD":undefined)],["Total",fmt(pickedInv.total,pickedInv.currency==="USD"?"USD":undefined)]].map(([l,v])=>(
                     <div key={l} style={{flex:1,background:"#1e2130",borderRadius:10,padding:"10px 14px"}}>
                       <div style={{fontSize:10,color:"#8b8fa4"}}>{l}</div>
                       <div style={{fontSize:14,fontWeight:700}}>{v}</div>
@@ -957,12 +1162,58 @@ export default function App() {
                       <div key={i} style={{padding:"8px 14px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",fontSize:12}}>
                         <span style={{flex:1}}>{l.desc}</span>
                         <span style={{color:"#8b8fa4",marginLeft:12}}>{l.taxRate}%</span>
-                        <span style={{fontWeight:600,marginLeft:12}}>{fmt(l.total)}</span>
+                        <span style={{fontWeight:600,marginLeft:12}}>{fmt(l.total,pickedInv.currency==="USD"?"USD":undefined)}</span>
                       </div>
                     ))}
                   </div>
                 ) : (
                   <div style={{padding:"12px",fontSize:12,color:"#8b8fa4"}}>Cargando detalle...</div>
+                )}
+
+                {/* Vehicle purchase form */}
+                {pickedInv.isVehicle && pickedInv.vehicleStatus === 'detected' && (
+                  <div style={{marginTop:16,background:"#f59e0b10",border:"1px solid #f59e0b30",borderRadius:12,padding:"14px 16px"}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"#f59e0b",marginBottom:10}}>🚗 Compra de vehículo detectada</div>
+                    {!vehicleForm ? (
+                      <div style={{display:"flex",gap:8}}>
+                        <button onClick={() => setVehicleForm({plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",consignment:false,consignment_owner:""})} style={{...S.sel,background:"#f59e0b",color:"#fff",fontWeight:600,flex:1,border:"none"}}>
+                          Completar datos del vehículo
+                        </button>
+                        <button onClick={dismissVehicle} style={{...S.sel,color:"#8b8fa4"}}>No es un vehículo</button>
+                      </div>
+                    ) : (
+                      <div>
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
+                          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Estilo","style"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
+                            <div key={k}>
+                              <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
+                              <input value={vehicleForm[k]||""} onChange={e=>setVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                            </div>
+                          ))}
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Consignación</div>
+                            <div style={{display:"flex",gap:6}}>
+                              <button onClick={()=>setVehicleForm(prev=>({...prev,consignment:!prev.consignment}))} style={{...S.sel,fontSize:11,background:vehicleForm.consignment?"#8b5cf620":"#1e2130",color:vehicleForm.consignment?"#8b5cf6":"#8b8fa4"}}>
+                                {vehicleForm.consignment?"Sí":"No"}
+                              </button>
+                              {vehicleForm.consignment&&<input placeholder="Dueño" value={vehicleForm.consignment_owner||""} onChange={e=>setVehicleForm(prev=>({...prev,consignment_owner:e.target.value}))} style={{...S.inp,flex:1,fontSize:12}} />}
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{display:"flex",gap:8,marginTop:12,justifyContent:"flex-end"}}>
+                          <button onClick={()=>setVehicleForm(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                          <button onClick={saveVehicleFromInvoice} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none"}}>
+                            Confirmar y agregar al inventario
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {pickedInv.isVehicle && pickedInv.vehicleStatus === 'completed' && (
+                  <div style={{marginTop:16,background:"#10b98110",borderRadius:12,padding:"10px 14px",fontSize:12,color:"#10b981",fontWeight:600}}>
+                    ✓ Vehículo agregado al inventario
+                  </div>
                 )}
 
                 {/* DELETE BUTTON */}
