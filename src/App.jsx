@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { supabase } from './supabase.js';
 
 const cars = [
   {p:"BVQ934",b:"Hyundai",m:"Tucson",y:2022,co:"Blanco",km:60000,f:"Gasolina",dr:"4x4",st:"SUV",usd:27900,crc:13172000,s:"disponible"},
@@ -95,6 +96,80 @@ export default function App() {
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
   const [costView, setCostView] = useState("vehicles");
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState(null);
+  const [lastSync, setLastSync] = useState(null);
+
+  // Load invoices from Supabase on mount
+  useEffect(() => {
+    loadInvoices();
+    loadSyncStatus();
+  }, []);
+
+  const loadInvoices = async () => {
+    const { data } = await supabase.from('invoices').select('*').order('emission_date', { ascending: false });
+    if (data) {
+      const mapped = data.map(inv => ({
+        key: inv.xml_key, last4: inv.last_four, date: inv.emission_date,
+        supName: inv.supplier_name, supComm: inv.supplier_commercial_name, supId: inv.supplier_id,
+        sub: inv.subtotal, tax: inv.tax_total, other: inv.other_charges, total: inv.total,
+        payCode: inv.payment_method_code, payLabel: inv.payment_method_label, isTC: inv.is_credit_card,
+        plate: inv.plate, warnPlate: inv.assign_status === 'warning' ? inv.detected_plate : null,
+        detectedPlate: inv.detected_plate, catId: inv.category_id || 'otro',
+        assignStatus: inv.assign_status || 'unassigned', payStatus: inv.pay_status || 'pending',
+        paidBank: inv.paid_bank || '', paidRef: inv.paid_reference || '',
+        lines: [], dbId: inv.id,
+      }));
+      setInvoices(mapped);
+    }
+  };
+
+  const loadInvoiceLines = async (invKey) => {
+    const { data: inv } = await supabase.from('invoices').select('id').eq('xml_key', invKey).single();
+    if (!inv) return [];
+    const { data: lines } = await supabase.from('invoice_lines').select('*').eq('invoice_id', inv.id).order('line_number');
+    return (lines || []).map(l => ({
+      desc: l.description, cabys: l.cabys_code, price: l.unit_price,
+      taxRate: l.tax_rate, taxAmt: l.tax_amount, total: l.line_total,
+    }));
+  };
+
+  const loadSyncStatus = async () => {
+    try {
+      const res = await fetch('/api/gmail-status');
+      const data = await res.json();
+      if (data.lastSync) setLastSync(new Date(data.lastSync));
+    } catch(e) {}
+  };
+
+  const syncGmail = async () => {
+    setSyncing(true); setSyncMsg(null);
+    try {
+      const res = await fetch('/api/fetch-gmail-invoices', { headers: { 'Authorization': 'Bearer vcr2026cron' } });
+      const data = await res.json();
+      setSyncMsg(`Procesadas: ${data.processed}, Omitidas: ${data.skipped}`);
+      if (data.processed > 0) await loadInvoices();
+      loadSyncStatus();
+    } catch(e) { setSyncMsg('Error: ' + e.message); }
+    setSyncing(false);
+  };
+
+  // Update invoice in Supabase
+  const updateInv = async (key, updates) => {
+    setInvoices(prev => prev.map(x => x.key === key ? { ...x, ...updates } : x));
+    const dbUpdates = {};
+    if ('catId' in updates) dbUpdates.category_id = updates.catId;
+    if ('assignStatus' in updates) dbUpdates.assign_status = updates.assignStatus;
+    if ('plate' in updates) dbUpdates.plate = updates.plate;
+    if ('payStatus' in updates) dbUpdates.pay_status = updates.payStatus;
+    if ('paidBank' in updates) dbUpdates.paid_bank = updates.paidBank;
+    if ('paidRef' in updates) dbUpdates.paid_reference = updates.paidRef;
+    if ('catId' in updates) {
+      const cat = CATS.find(c => c.id === updates.catId);
+      if (cat) dbUpdates.group_id = cat.g;
+    }
+    await supabase.from('invoices').update(dbUpdates).eq('xml_key', key);
+  };
 
   const clients = [
     {n:"Carlos Jiménez Mora",ce:"1-0987-0456",ph:"8845-2301",em:"cjimenez@gmail.com",jo:"Ingeniero",ci:"Casado",ad:"Escazú",bu:[{d:"2026-01-15",v:"Suzuki Vitara 2023",pr:"$22,500"}]},
@@ -154,11 +229,18 @@ export default function App() {
     });
   };
 
-  const updateInv = (key, updates) => setInvoices(prev => prev.map(x => x.key === key ? { ...x, ...updates } : x));
   const catLabel = (id) => CATS.find(c => c.id === id)?.l || "Otro";
   const catGroupId = (id) => CATS.find(c => c.id === id)?.g || "otros_gastos";
   const catGroupLabel = (id) => { const gid = CATS.find(c => c.id === id)?.g; return GROUPS.find(g => g.id === gid)?.l || "Otros"; };
   const supDisplay = (inv) => inv.supComm && inv.supComm !== "NoAplica" ? inv.supComm : inv.supName;
+
+  const openInvoice = async (inv) => {
+    setPickedInv(inv);
+    if (!inv.lines || inv.lines.length === 0) {
+      const lines = await loadInvoiceLines(inv.key);
+      setPickedInv(prev => prev ? { ...prev, lines } : null);
+    }
+  };
   const filtered = cars.filter(v => { const s = q.toLowerCase(); return !q || [v.p, v.b, v.m, v.co, String(v.y)].some(x => x.toLowerCase().includes(s)); });
 
   // COSTS grouped by vehicle
@@ -235,6 +317,13 @@ export default function App() {
     const fList = invoices.filter(x => (fCat === "all" || x.catId === fCat) && (fPay === "all" || x.payStatus === fPay) && (fAssign === "all" || x.assignStatus === fAssign));
     return <div>
       <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 16 }}>Facturas</h1>
+      <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={syncGmail} disabled={syncing} style={{ ...S.sel, background: syncing ? "#1e2130" : "#4f8cff18", color: syncing ? "#8b8fa4" : "#4f8cff", fontWeight: 600, padding: "10px 20px" }}>
+          {syncing ? "Sincronizando..." : "Sincronizar Gmail"}
+        </button>
+        {syncMsg && <span style={{ fontSize: 12, color: "#10b981" }}>{syncMsg}</span>}
+        {lastSync && <span style={{ fontSize: 11, color: "#8b8fa4" }}>Última sync: {lastSync.toLocaleString("es-CR")}</span>}
+      </div>
       <div onClick={() => { const i = document.createElement("input"); i.type = "file"; i.accept = ".xml"; i.multiple = true; i.onchange = e => handleXML(e.target.files); i.click(); }} style={{ border: "2px dashed #2a2d3d", borderRadius: 14, padding: "28px 20px", textAlign: "center", cursor: "pointer", background: "#181a23", marginBottom: 16 }}>
         <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Subir XML de factura electrónica</div>
         <div style={{ fontSize: 12, color: "#8b8fa4" }}>Hacienda CR v4.4 - Haga clic o arrastre</div>
@@ -249,7 +338,7 @@ export default function App() {
         <div style={{ fontSize: 13, color: "#8b8fa4", marginBottom: 10 }}>{fList.length} factura{fList.length !== 1 ? "s" : ""}</div>
         <div style={S.card}>
           {fList.map((x, i) => (
-            <div key={i} style={{ padding: "12px 18px", borderBottom: "1px solid #2a2d3d", cursor: "pointer" }} onClick={() => setPickedInv(x)}>
+            <div key={i} style={{ padding: "12px 18px", borderBottom: "1px solid #2a2d3d", cursor: "pointer" }} onClick={() => openInvoice(x)}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                 <div><div style={{ fontWeight: 600, fontSize: 13 }}>{supDisplay(x)}</div><div style={{ fontSize: 11, color: "#8b8fa4" }}>{x.supId} · ...{x.last4} · {new Date(x.date).toLocaleDateString("es-CR")}</div></div>
                 <div style={{ textAlign: "right" }}><div style={{ fontWeight: 700, color: "#4f8cff" }}>{fmt(x.total)}</div></div>
@@ -292,17 +381,17 @@ export default function App() {
             <div><div style={{ fontWeight: 700, fontSize: 14 }}>{car ? `${car.b} ${car.m} ${car.y}` : plate}</div><div style={{ fontSize: 12, color: "#8b8fa4" }}>{plate} · {data.items.length} factura{data.items.length !== 1 ? "s" : ""}</div></div>
             <div style={{ fontSize: 20, fontWeight: 800, color: "#e11d48" }}>{fmt(data.total)}</div>
           </div>
-          {data.items.map((inv, i) => <div key={i} onClick={() => setPickedInv(inv)} style={{ padding: "10px 18px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", fontSize: 12, cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
+          {data.items.map((inv, i) => <div key={i} onClick={() => openInvoice(inv)} style={{ padding: "10px 18px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", fontSize: 12, cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
             <div><div style={{ fontWeight: 600 }}>{supDisplay(inv)}</div><div style={{ color: "#8b8fa4", fontSize: 11 }}>{catGroupLabel(inv.catId)} → {catLabel(inv.catId)} · {new Date(inv.date).toLocaleDateString("es-CR")}</div></div>
             <div style={{ textAlign: "right", display: "flex", alignItems: "center", gap: 8 }}><div><div style={{ fontWeight: 700 }}>{fmt(inv.total)}</div><span style={S.badge(inv.payStatus === "paid" ? "#10b981" : "#f59e0b")}>{inv.payStatus === "paid" ? "Pagada" : "Pendiente"}</span></div><span style={{ color: "#8b8fa4", fontSize: 11 }}>editar</span></div>
           </div>)}
         </div>;
       }))}
-      {view === "operational" && (opCosts.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#8b8fa4", fontSize: 13 }}>No hay costos operativos</div> : <div style={S.card}>{opCosts.map((inv, i) => <div key={i} onClick={() => setPickedInv(inv)} style={{ padding: "12px 18px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
+      {view === "operational" && (opCosts.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#8b8fa4", fontSize: 13 }}>No hay costos operativos</div> : <div style={S.card}>{opCosts.map((inv, i) => <div key={i} onClick={() => openInvoice(inv)} style={{ padding: "12px 18px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
         <div><div style={{ fontWeight: 600, fontSize: 13 }}>{supDisplay(inv)}</div><div style={{ fontSize: 11, color: "#8b8fa4" }}>{catGroupLabel(inv.catId)} → {catLabel(inv.catId)} · {new Date(inv.date).toLocaleDateString("es-CR")}</div></div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ fontWeight: 700, color: "#4f8cff" }}>{fmt(inv.total)}</div><span style={{ color: "#8b8fa4", fontSize: 11 }}>editar</span></div>
       </div>)}</div>)}
-      {view === "unassigned" && (unassigned.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#8b8fa4", fontSize: 13 }}>Todas las facturas están asignadas</div> : <div style={S.card}>{unassigned.map((inv, i) => <div key={i} onClick={() => setPickedInv(inv)} style={{ padding: "12px 18px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
+      {view === "unassigned" && (unassigned.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#8b8fa4", fontSize: 13 }}>Todas las facturas están asignadas</div> : <div style={S.card}>{unassigned.map((inv, i) => <div key={i} onClick={() => openInvoice(inv)} style={{ padding: "12px 18px", borderBottom: "1px solid #2a2d3d", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
         <div><div style={{ fontWeight: 600, fontSize: 13 }}>{supDisplay(inv)}</div><div style={{ fontSize: 11, color: "#8b8fa4" }}>{catGroupLabel(inv.catId)} → {catLabel(inv.catId)} · {fmt(inv.total)}{inv.warnPlate ? ` · ⚠ Placa ${inv.warnPlate} no en inventario` : ""}</div></div>
         <span style={{ color: "#8b8fa4", fontSize: 11 }}>editar</span>
       </div>)}</div>)}
