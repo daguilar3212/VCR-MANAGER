@@ -225,6 +225,7 @@ export default async function handler(req, res) {
     let processed = 0;
     let skipped = 0;
     let rejected = 0;
+    const rejectedList = [];
     const errors = [];
 
     for (const msg of searchResult.messages) {
@@ -267,6 +268,16 @@ export default async function handler(req, res) {
           
           if (!isValidReceptor) {
             rejected++;
+            rejectedList.push({
+              emisor: parsed.supplier_name,
+              emisor_id: parsed.supplier_id,
+              receptor: recName || 'Sin nombre',
+              receptor_id: recId || 'Sin cédula',
+              consecutivo: parsed.consecutive,
+              fecha: parsed.emission_date,
+              total: parsed.total,
+              razon: !recId ? 'Sin receptor identificado' : `Receptor ${recId} no es VCR (3101124464)`
+            });
             continue;
           }
 
@@ -420,7 +431,11 @@ export default async function handler(req, res) {
       await supabase.from('gmail_sync').update({ last_sync_at: new Date().toISOString() }).not('id', 'is', null);
     }
 
-    return res.json({ processed, skipped, rejected, total: searchResult.messages.length, errors: errors.length > 0 ? errors : undefined });
+    return res.json({ 
+      processed, skipped, rejected, total: searchResult.messages.length, 
+      rejectedList: rejectedList.length > 0 ? rejectedList : undefined,
+      errors: errors.length > 0 ? errors : undefined 
+    });
   } catch (err) {
     console.error('Gmail fetch error:', err);
     return res.status(500).json({ error: err.message });
