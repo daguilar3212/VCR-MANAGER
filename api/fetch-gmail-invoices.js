@@ -62,7 +62,7 @@ function parseXMLServer(xmlStr) {
   });
   const cabys0 = lines[0]?.cabys_code || "";
   let catId = "otro";
-  if (cabys0.startsWith("19") || cabys0.startsWith("23")) catId = "combustible";
+  if (cabys0.startsWith("333")) catId = "combustible";
   else if (/^(871|872|873|452)/.test(cabys0)) catId = "rep_vehiculos";
   else if (/^(633|634|561|562|563)/.test(cabys0)) catId = "viaticos_emp";
   else if (/^(851|852)/.test(cabys0)) catId = "seguros";
