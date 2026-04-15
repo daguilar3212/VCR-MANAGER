@@ -167,13 +167,20 @@ export default async function handler(req, res) {
           const { data: existingInv } = await supabase.from('invoices').select('id').eq('xml_key', parsed.xml_key).limit(1);
           if (existingInv && existingInv.length > 0) continue;
 
-          // Lookup CABYS mapping from database
-          const cabys0 = parsed.lines[0]?.cabys_code || "";
-          if (cabys0) {
-            const { data: mapping } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', cabys0).limit(1);
-            if (mapping && mapping.length > 0) {
-              parsed.category_id = mapping[0].category_id;
-              parsed.group_id = mapping[0].group_id;
+          // Lookup CABYS mapping (exact match first, then prefix)
+          const cabysLookup = parsed.lines[0]?.cabys_code || "";
+          if (cabysLookup) {
+            const { data: exact } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', cabysLookup).limit(1);
+            if (exact && exact.length > 0) {
+              parsed.category_id = exact[0].category_id;
+              parsed.group_id = exact[0].group_id;
+            } else {
+              const prefix = cabysLookup.substring(0, 4);
+              const { data: prefixMatch } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', prefix).limit(1);
+              if (prefixMatch && prefixMatch.length > 0) {
+                parsed.category_id = prefixMatch[0].category_id;
+                parsed.group_id = prefixMatch[0].group_id;
+              }
             }
           }
 
