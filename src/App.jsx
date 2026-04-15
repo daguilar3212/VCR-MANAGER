@@ -274,7 +274,7 @@ export default function App() {
     const fList = invoices.filter(x => (fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign));
     return (
       <div>
-        <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Facturas</h1>
+        <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Facturas v3</h1>
         <div style={{display:"flex",gap:12,marginBottom:16,alignItems:"center",flexWrap:"wrap"}}>
           <button onClick={syncGmail} disabled={syncing} style={{...S.sel,background:syncing?"#1e2130":"#4f8cff18",color:syncing?"#8b8fa4":"#4f8cff",fontWeight:600,padding:"10px 20px"}}>
             {syncing?"Sincronizando...":"Sincronizar Gmail"}
