@@ -167,6 +167,16 @@ export default async function handler(req, res) {
           const { data: existingInv } = await supabase.from('invoices').select('id').eq('xml_key', parsed.xml_key).limit(1);
           if (existingInv && existingInv.length > 0) continue;
 
+          // Lookup CABYS mapping from database
+          const cabys0 = parsed.lines[0]?.cabys_code || "";
+          if (cabys0) {
+            const { data: mapping } = await supabase.from('cabys_mapping').select('category_id,group_id').eq('cabys_code', cabys0).limit(1);
+            if (mapping && mapping.length > 0) {
+              parsed.category_id = mapping[0].category_id;
+              parsed.group_id = mapping[0].group_id;
+            }
+          }
+
           // Match plate against vehicles
           let plate = parsed.detected_plate;
           let assignStatus = 'unassigned';
