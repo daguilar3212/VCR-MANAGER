@@ -96,8 +96,16 @@ export default function App() {
   const [deletePin, setDeletePin] = useState("");
   const [deleteErr, setDeleteErr] = useState("");
 
+  // Sales state
+  const [sales, setSales] = useState([]);
+  const [agents, setAgents] = useState([]);
+  const [salesView, setSalesView] = useState("list"); // list, form, preview
+  const [saleForm, setSaleForm] = useState(null);
+  const [pickedSale, setPickedSale] = useState(null);
+  const [saleFilter, setSaleFilter] = useState("all");
+
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); }, []);
 
   const loadInvoices = async () => {
     const { data } = await supabase.from('invoices').select('*').order('emission_date', { ascending: false });
@@ -189,6 +197,133 @@ export default function App() {
     setShowDelete(false);
     setDeletePin("");
     setDeleteErr("");
+  };
+
+  // ======= SALES FUNCTIONS =======
+  const loadSales = async () => {
+    const { data } = await supabase.from('sales').select('*').order('created_at', { ascending: false });
+    if (data) setSales(data);
+  };
+
+  const loadAgents = async () => {
+    const { data } = await supabase.from('agents').select('*').eq('active', true).order('name');
+    if (data) setAgents(data);
+  };
+
+  const emptySaleForm = () => ({
+    sale_date: new Date().toISOString().split('T')[0],
+    client_name: "", client_cedula: "", client_phone1: "", client_phone2: "",
+    client_email: "", client_address: "", client_workplace: "", client_occupation: "", client_civil_status: "",
+    vehicle_plate: "", vehicle_brand: "", vehicle_model: "", vehicle_year: "", vehicle_color: "",
+    vehicle_km: "", vehicle_engine: "", vehicle_drive: "", vehicle_fuel: "",
+    has_tradein: false,
+    tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "", tradein_color: "",
+    tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
+    sale_type: "propio", sale_price: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
+    payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
+    deposit_bank: "", deposit_reference: "",
+    transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
+    has_insurance: false, insurance_months: "",
+    observations: "",
+    agent1_id: "", agent2_id: "",
+  });
+
+  const selectVehicleForSale = (plate) => {
+    const car = cars.find(c => c.p === plate);
+    if (!car) return;
+    setSaleForm(prev => ({ ...prev,
+      vehicle_plate: car.p, vehicle_brand: car.b, vehicle_model: car.m, vehicle_year: car.y,
+      vehicle_color: car.co, vehicle_km: car.km, vehicle_drive: car.dr, vehicle_fuel: car.f,
+      sale_price: car.usd,
+    }));
+  };
+
+  const calcBalance = (form) => {
+    const price = parseFloat(form.sale_price) || 0;
+    const tradein = parseFloat(form.tradein_amount) || 0;
+    const down = parseFloat(form.down_payment) || 0;
+    const signal = parseFloat(form.deposit_signal) || 0;
+    return Math.max(0, price - tradein - down - signal);
+  };
+
+  const saveSale = async () => {
+    if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
+    const balance = calcBalance(saleForm);
+    const saleType = saleForm.sale_type;
+    const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
+    const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
+
+    const row = {
+      sale_date: saleForm.sale_date, status: "pending",
+      client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
+      client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
+      client_email: saleForm.client_email, client_address: saleForm.client_address,
+      client_workplace: saleForm.client_workplace, client_occupation: saleForm.client_occupation,
+      client_civil_status: saleForm.client_civil_status,
+      vehicle_plate: saleForm.vehicle_plate, vehicle_brand: saleForm.vehicle_brand,
+      vehicle_model: saleForm.vehicle_model, vehicle_year: parseInt(saleForm.vehicle_year) || null,
+      vehicle_color: saleForm.vehicle_color, vehicle_km: parseFloat(saleForm.vehicle_km) || null,
+      vehicle_engine: saleForm.vehicle_engine, vehicle_drive: saleForm.vehicle_drive, vehicle_fuel: saleForm.vehicle_fuel,
+      has_tradein: saleForm.has_tradein,
+      tradein_plate: saleForm.has_tradein ? saleForm.tradein_plate : null,
+      tradein_brand: saleForm.has_tradein ? saleForm.tradein_brand : null,
+      tradein_model: saleForm.has_tradein ? saleForm.tradein_model : null,
+      tradein_year: saleForm.has_tradein ? (parseInt(saleForm.tradein_year) || null) : null,
+      tradein_color: saleForm.has_tradein ? saleForm.tradein_color : null,
+      tradein_km: saleForm.has_tradein ? (parseFloat(saleForm.tradein_km) || null) : null,
+      tradein_engine: saleForm.has_tradein ? saleForm.tradein_engine : null,
+      tradein_drive: saleForm.has_tradein ? saleForm.tradein_drive : null,
+      tradein_fuel: saleForm.has_tradein ? saleForm.tradein_fuel : null,
+      tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
+      sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
+      sale_price: parseFloat(saleForm.sale_price) || 0,
+      tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
+      down_payment: parseFloat(saleForm.down_payment) || 0,
+      deposit_signal: parseFloat(saleForm.deposit_signal) || 0,
+      total_balance: balance,
+      payment_method: saleForm.payment_method,
+      financing_term_months: parseInt(saleForm.financing_term_months) || null,
+      financing_interest_pct: parseFloat(saleForm.financing_interest_pct) || null,
+      financing_amount: parseFloat(saleForm.financing_amount) || null,
+      deposit_bank: saleForm.deposit_bank, deposit_reference: saleForm.deposit_reference,
+      transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
+      transfer_in_financing: saleForm.transfer_in_financing,
+      has_insurance: saleForm.has_insurance,
+      insurance_months: parseInt(saleForm.insurance_months) || null,
+      observations: saleForm.observations,
+    };
+
+    const { data, error } = await supabase.from('sales').insert(row).select().single();
+    if (error) { alert("Error: " + error.message); return; }
+
+    // Save agents
+    const agentRows = [];
+    const salePrice = parseFloat(saleForm.sale_price) || 0;
+    if (saleForm.agent1_id) {
+      const ag = agents.find(a => a.id === saleForm.agent1_id);
+      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: 1, commission_amount: salePrice * 0.01 });
+    }
+    if (saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id) {
+      const ag = agents.find(a => a.id === saleForm.agent2_id);
+      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: 1, commission_amount: salePrice * 0.01 });
+    }
+    if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
+
+    await loadSales();
+    setSalesView("list");
+    setSaleForm(null);
+  };
+
+  const approveSale = async (id) => {
+    await supabase.from('sales').update({ status: "approved", approved_by: "admin", approved_at: new Date().toISOString() }).eq('id', id);
+    await loadSales();
+    setPickedSale(prev => prev ? { ...prev, status: "approved" } : null);
+  };
+
+  const rejectSale = async (id, reason) => {
+    await supabase.from('sales').update({ status: "rejected", rejected_reason: reason || "Rechazada" }).eq('id', id);
+    await loadSales();
+    setPickedSale(prev => prev ? { ...prev, status: "rejected" } : null);
   };
 
   const filtered = cars.filter(v => { const s = q.toLowerCase(); return !q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => x.toLowerCase().includes(s)); });
@@ -362,12 +497,263 @@ export default function App() {
 
   const PH = ({t}) => <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"55vh"}}><h2 style={{fontSize:22,fontWeight:700,marginBottom:6}}>{t}</h2><p style={{fontSize:13,color:"#8b8fa4"}}>En desarrollo</p></div>;
 
+  // ======= SALES RENDER =======
+  const renderSales = () => {
+    const F = saleForm || {};
+    const uf = (k, v) => setSaleForm(prev => ({ ...prev, [k]: v }));
+    const fld = (label, key, opts = {}) => (
+      <div style={{ marginBottom: 10, ...(opts.full ? { gridColumn: "1/3" } : {}) }}>
+        <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>{label}</div>
+        {opts.type === "select" ? (
+          <select value={F[key] || ""} onChange={e => { uf(key, e.target.value); if (opts.onChange) opts.onChange(e.target.value); }} style={{ ...S.sel, width: "100%" }}>
+            <option value="">Seleccionar</option>
+            {(opts.options || []).map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+          </select>
+        ) : (
+          <input value={F[key] || ""} onChange={e => uf(key, e.target.value)} placeholder={opts.ph || ""} type={opts.inputType || "text"} style={{ ...S.inp, width: "100%" }} />
+        )}
+      </div>
+    );
+
+    // LIST VIEW
+    if (salesView === "list") {
+      const filteredSales = sales.filter(s => saleFilter === "all" || s.status === saleFilter);
+      return (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800 }}>Ventas</h1>
+            <button onClick={() => { setSaleForm(emptySaleForm()); setSalesView("form"); }} style={{ ...S.sel, background: "#4f8cff18", color: "#4f8cff", fontWeight: 600, padding: "10px 20px" }}>
+              + Nuevo Plan de Ventas
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            {[["all", "Todas"], ["pending", "Pendientes"], ["approved", "Aprobadas"], ["rejected", "Rechazadas"]].map(([v, l]) => (
+              <button key={v} onClick={() => setSaleFilter(v)} style={{ ...S.sel, background: saleFilter === v ? "#4f8cff20" : "#1e2130", color: saleFilter === v ? "#4f8cff" : "#8b8fa4", fontWeight: saleFilter === v ? 600 : 400 }}>
+                {l} ({sales.filter(s => v === "all" || s.status === v).length})
+              </button>
+            ))}
+          </div>
+          {filteredSales.length === 0 ? (
+            <div style={{ padding: 40, textAlign: "center", color: "#8b8fa4", fontSize: 13 }}>No hay ventas{saleFilter !== "all" ? " con este filtro" : ". Cree un nuevo plan de ventas."}</div>
+          ) : (
+            <div style={S.card}>
+              {filteredSales.map((s, i) => (
+                <div key={i} onClick={() => setPickedSale(s)} style={{ padding: "14px 18px", borderBottom: "1px solid #2a2d3d", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#1e2130"} onMouseLeave={e => e.currentTarget.style.background = ""}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{s.client_name}</div>
+                    <div style={{ fontSize: 12, color: "#8b8fa4" }}>
+                      {s.vehicle_brand} {s.vehicle_model} {s.vehicle_year} · {s.vehicle_plate || "Sin placa"}
+                      {" · "}{new Date(s.sale_date).toLocaleDateString("es-CR")}
+                    </div>
+                    <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+                      <span style={S.badge(s.status === "approved" ? "#10b981" : s.status === "rejected" ? "#e11d48" : "#f59e0b")}>
+                        {s.status === "approved" ? "Aprobada" : s.status === "rejected" ? "Rechazada" : "Pendiente"}
+                      </span>
+                      <span style={S.badge(s.sale_type === "propio" ? "#6366f1" : s.sale_type === "consignacion_grupo" ? "#8b5cf6" : "#f97316")}>
+                        {s.sale_type === "propio" ? "Propio" : s.sale_type === "consignacion_grupo" ? "Consig. Grupo 1%" : "Consig. Externa 5%"}
+                      </span>
+                      {s.has_tradein && <span style={S.badge("#0ea5e9")}>Trade-in</span>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: "#4f8cff" }}>{fmt(s.sale_price, "USD")}</div>
+                    {s.sale_type !== "propio" && <div style={{ fontSize: 11, color: "#10b981" }}>Comisión: {fmt(s.commission_amount, "USD")}</div>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // FORM VIEW
+    if (salesView === "form") {
+      const balance = calcBalance(F);
+      return (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800 }}>Nuevo Plan de Ventas</h1>
+            <button onClick={() => { setSalesView("list"); setSaleForm(null); }} style={{ ...S.sel, color: "#8b8fa4" }}>Cancelar</button>
+          </div>
+
+          {/* CLIENT INFO */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Datos del Cliente</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+              {fld("Nombre del cliente *", "client_name", { full: true })}
+              {fld("Cédula", "client_cedula")}
+              {fld("Teléfono 1", "client_phone1")}
+              {fld("Teléfono 2", "client_phone2")}
+              {fld("Email", "client_email")}
+              {fld("Lugar de trabajo", "client_workplace")}
+              {fld("Oficio", "client_occupation")}
+              {fld("Estado civil", "client_civil_status", { type: "select", options: [{ v: "Soltero/a", l: "Soltero/a" }, { v: "Casado/a", l: "Casado/a" }, { v: "Divorciado/a", l: "Divorciado/a" }, { v: "Viudo/a", l: "Viudo/a" }, { v: "Unión libre", l: "Unión libre" }] })}
+              {fld("Dirección exacta", "client_address", { full: true })}
+            </div>
+          </div>
+
+          {/* VEHICLE BEING SOLD */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Vehículo que Compra</div>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Seleccionar del inventario</div>
+              <select value={F.vehicle_plate || ""} onChange={e => selectVehicleForSale(e.target.value)} style={{ ...S.sel, width: "100%" }}>
+                <option value="">Seleccionar vehículo</option>
+                {cars.filter(c => c.s === "disponible").map(c => <option key={c.p} value={c.p}>{c.p} - {c.b} {c.m} {c.y} - {fmt(c.usd, "USD")}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+              {fld("Placa", "vehicle_plate")}
+              {fld("Marca", "vehicle_brand")}
+              {fld("Estilo / Modelo", "vehicle_model")}
+              {fld("Año", "vehicle_year", { inputType: "number" })}
+              {fld("Color", "vehicle_color")}
+              {fld("Kilometraje", "vehicle_km", { inputType: "number" })}
+              {fld("Tracción", "vehicle_drive")}
+              {fld("Combustible", "vehicle_fuel")}
+            </div>
+          </div>
+
+          {/* SALE TYPE */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Tipo de Venta</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              {[["propio", "Propio"], ["consignacion_grupo", "Consig. Grupo (1%)"], ["consignacion_externa", "Consig. Externa (5%)"]].map(([v, l]) => (
+                <button key={v} onClick={() => uf("sale_type", v)} style={{
+                  ...S.sel, flex: 1, textAlign: "center",
+                  background: F.sale_type === v ? (v === "propio" ? "#6366f120" : v === "consignacion_grupo" ? "#8b5cf620" : "#f9731620") : "#1e2130",
+                  color: F.sale_type === v ? (v === "propio" ? "#6366f1" : v === "consignacion_grupo" ? "#8b5cf6" : "#f97316") : "#8b8fa4",
+                  fontWeight: F.sale_type === v ? 600 : 400,
+                }}>{l}</button>
+              ))}
+            </div>
+            {F.sale_type !== "propio" && (
+              <div style={{ fontSize: 12, color: "#10b981", background: "#10b98110", padding: "8px 12px", borderRadius: 8 }}>
+                Ingreso por comisión: {F.sale_type === "consignacion_grupo" ? "1%" : "5%"} = {fmt((parseFloat(F.sale_price) || 0) * (F.sale_type === "consignacion_grupo" ? 0.01 : 0.05), "USD")}
+              </div>
+            )}
+          </div>
+
+          {/* TRADE-IN */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#4f8cff" }}>Vehículo que Recibe (Trade-in)</div>
+              <button onClick={() => uf("has_tradein", !F.has_tradein)} style={{ ...S.sel, fontSize: 12, background: F.has_tradein ? "#f59e0b20" : "#1e2130", color: F.has_tradein ? "#f59e0b" : "#8b8fa4", fontWeight: 600 }}>
+                {F.has_tradein ? "Sí recibe" : "No recibe"}
+              </button>
+            </div>
+            {F.has_tradein && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+                {fld("Placa", "tradein_plate")}
+                {fld("Marca", "tradein_brand")}
+                {fld("Estilo / Modelo", "tradein_model")}
+                {fld("Año", "tradein_year", { inputType: "number" })}
+                {fld("Color", "tradein_color")}
+                {fld("Kilometraje", "tradein_km", { inputType: "number" })}
+                {fld("Tracción", "tradein_drive")}
+                {fld("Combustible", "tradein_fuel")}
+                {fld("Valor del trade-in ($)", "tradein_value", { inputType: "number" })}
+              </div>
+            )}
+          </div>
+
+          {/* CONDITIONS */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Condiciones de Venta</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+              {fld("Precio de venta ($) *", "sale_price", { inputType: "number" })}
+              {fld("Vehículo recibido ($)", "tradein_amount", { inputType: "number" })}
+              {fld("Prima ($)", "down_payment", { inputType: "number" })}
+              {fld("Señal de trato ($)", "deposit_signal", { inputType: "number" })}
+            </div>
+            <div style={{ background: "#1e2130", borderRadius: 10, padding: "12px 16px", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: "#8b8fa4" }}>Saldo total:</span>
+              <span style={{ fontSize: 20, fontWeight: 800, color: "#4f8cff" }}>{fmt(balance, "USD")}</span>
+            </div>
+          </div>
+
+          {/* PAYMENT + DEPOSIT */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Forma de Pago y Depósito</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+              {fld("Forma de pago", "payment_method", { type: "select", options: [{ v: "Contado", l: "Contado" }, { v: "Financiamiento", l: "Financiamiento" }, { v: "Mixto", l: "Mixto" }] })}
+              {fld("Plazo (meses)", "financing_term_months", { inputType: "number" })}
+              {fld("Interés (%)", "financing_interest_pct", { inputType: "number" })}
+              {fld("Monto financiado ($)", "financing_amount", { inputType: "number" })}
+              {fld("Banco del depósito", "deposit_bank")}
+              {fld("Número de depósito", "deposit_reference")}
+            </div>
+          </div>
+
+          {/* TRANSFER + INSURANCE */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Gastos de Traspaso y Seguro</div>
+            <div style={{ display: "flex", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
+                <input type="checkbox" checked={F.transfer_included} onChange={e => uf("transfer_included", e.target.checked)} /> Traspaso incluido
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
+                <input type="checkbox" checked={F.transfer_in_price} onChange={e => uf("transfer_in_price", e.target.checked)} /> En precio
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
+                <input type="checkbox" checked={F.transfer_in_financing} onChange={e => uf("transfer_in_financing", e.target.checked)} /> En financiamiento
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
+                <input type="checkbox" checked={F.has_insurance} onChange={e => uf("has_insurance", e.target.checked)} /> Incluye seguro
+              </label>
+              {F.has_insurance && (
+                <div style={{ width: 120 }}>{fld("Meses", "insurance_months", { inputType: "number" })}</div>
+              )}
+            </div>
+          </div>
+
+          {/* AGENTS */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Vendedores (1% comisión c/u)</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+              {fld("Vendedor 1", "agent1_id", { type: "select", options: agents.map(a => ({ v: a.id, l: a.name })) })}
+              {fld("Vendedor 2 (opcional)", "agent2_id", { type: "select", options: [{ v: "", l: "Ninguno" }, ...agents.map(a => ({ v: a.id, l: a.name }))] })}
+            </div>
+            {F.agent1_id && (
+              <div style={{ fontSize: 12, color: "#8b8fa4", marginTop: 4 }}>
+                Comisión por vendedor: {fmt((parseFloat(F.sale_price) || 0) * 0.01, "USD")}
+                {F.agent2_id && F.agent2_id !== F.agent1_id ? " x 2 vendedores" : ""}
+              </div>
+            )}
+          </div>
+
+          {/* OBSERVATIONS */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: "#4f8cff" }}>Observaciones</div>
+            <textarea value={F.observations || ""} onChange={e => uf("observations", e.target.value)} rows={3}
+              style={{ ...S.inp, width: "100%", resize: "vertical", fontFamily: "inherit" }} placeholder="Notas adicionales..." />
+          </div>
+
+          {/* SUBMIT */}
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+            <button onClick={() => { setSalesView("list"); setSaleForm(null); }} style={{ ...S.sel, color: "#8b8fa4", padding: "12px 24px" }}>Cancelar</button>
+            <button onClick={saveSale} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
+              Enviar para Aprobación
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
   const renderPage = () => {
     if (tab==="Dashboard") return renderDash();
     if (tab==="Inventario") return renderInv();
     if (tab==="Facturas") return renderFac();
     if (tab==="Costos") return renderCostos();
     if (tab==="Clientes") return renderCli();
+    if (tab==="Ventas") return renderSales();
     return <PH t={tab}/>;
   };
 
@@ -504,6 +890,146 @@ export default function App() {
               </div>
             </div>
           )}
+          {/* ======= SALE PREVIEW MODAL ======= */}
+          {pickedSale && (
+            <div style={S.modal} onClick={() => setPickedSale(null)}>
+              <div style={{ ...S.mbox, maxWidth: 650 }} onClick={e => e.stopPropagation()}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+                  <div>
+                    <h3 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>Plan de Ventas #{pickedSale.sale_number}</h3>
+                    <p style={{ fontSize: 12, color: "#8b8fa4" }}>{new Date(pickedSale.sale_date).toLocaleDateString("es-CR")}</p>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={S.badge(pickedSale.status === "approved" ? "#10b981" : pickedSale.status === "rejected" ? "#e11d48" : "#f59e0b")}>
+                      {pickedSale.status === "approved" ? "Aprobada" : pickedSale.status === "rejected" ? "Rechazada" : "Pendiente"}
+                    </span>
+                    <button onClick={() => setPickedSale(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: 18 }}>✕</button>
+                  </div>
+                </div>
+
+                {/* Client */}
+                <div style={{ ...S.card, marginBottom: 12 }}>
+                  <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Cliente</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1, background: "#2a2d3d" }}>
+                    {[["Nombre", pickedSale.client_name], ["Cédula", pickedSale.client_cedula], ["Tel 1", pickedSale.client_phone1], ["Tel 2", pickedSale.client_phone2],
+                      ["Email", pickedSale.client_email], ["Trabajo", pickedSale.client_workplace], ["Oficio", pickedSale.client_occupation], ["Estado civil", pickedSale.client_civil_status],
+                    ].filter(([, v]) => v).map(([l, v], i) => (
+                      <div key={i} style={{ background: "#181a23", padding: "6px 14px" }}>
+                        <div style={{ fontSize: 9, color: "#8b8fa4", textTransform: "uppercase" }}>{l}</div>
+                        <div style={{ fontSize: 12, fontWeight: 600 }}>{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {pickedSale.client_address && <div style={{ padding: "6px 14px", fontSize: 12 }}><span style={{ color: "#8b8fa4", fontSize: 9, textTransform: "uppercase" }}>Dirección: </span>{pickedSale.client_address}</div>}
+                </div>
+
+                {/* Vehicles side by side */}
+                <div style={{ display: "grid", gridTemplateColumns: pickedSale.has_tradein ? "1fr 1fr" : "1fr", gap: 12, marginBottom: 12 }}>
+                  <div style={S.card}>
+                    <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Vehículo que Compra</div>
+                    <div style={{ padding: "10px 16px" }}>
+                      {[["Placa", pickedSale.vehicle_plate], ["Marca", pickedSale.vehicle_brand], ["Modelo", pickedSale.vehicle_model],
+                        ["Año", pickedSale.vehicle_year], ["Color", pickedSale.vehicle_color], ["Km", pickedSale.vehicle_km ? fK(pickedSale.vehicle_km) : null],
+                        ["Tracción", pickedSale.vehicle_drive], ["Combustible", pickedSale.vehicle_fuel],
+                      ].filter(([, v]) => v).map(([l, v], i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: "1px solid #2a2d3d" }}>
+                          <span style={{ color: "#8b8fa4" }}>{l}</span><span style={{ fontWeight: 600 }}>{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  {pickedSale.has_tradein && (
+                    <div style={S.card}>
+                      <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#f59e0b" }}>Vehículo que Recibe</div>
+                      <div style={{ padding: "10px 16px" }}>
+                        {[["Placa", pickedSale.tradein_plate], ["Marca", pickedSale.tradein_brand], ["Modelo", pickedSale.tradein_model],
+                          ["Año", pickedSale.tradein_year], ["Color", pickedSale.tradein_color], ["Km", pickedSale.tradein_km ? fK(pickedSale.tradein_km) : null],
+                          ["Tracción", pickedSale.tradein_drive], ["Combustible", pickedSale.tradein_fuel],
+                          ["Valor", fmt(pickedSale.tradein_value, "USD")],
+                        ].filter(([, v]) => v).map(([l, v], i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "3px 0", borderBottom: "1px solid #2a2d3d" }}>
+                            <span style={{ color: "#8b8fa4" }}>{l}</span><span style={{ fontWeight: 600 }}>{v}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Conditions */}
+                <div style={{ ...S.card, marginBottom: 12 }}>
+                  <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Condiciones</div>
+                  <div style={{ padding: "10px 16px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}>
+                      <span>Precio de venta</span><span style={{ fontWeight: 800, color: "#4f8cff", fontSize: 16 }}>{fmt(pickedSale.sale_price, "USD")}</span>
+                    </div>
+                    {pickedSale.tradein_amount > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Vehículo recibido</span><span>- {fmt(pickedSale.tradein_amount, "USD")}</span></div>}
+                    {pickedSale.down_payment > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Prima</span><span>- {fmt(pickedSale.down_payment, "USD")}</span></div>}
+                    {pickedSale.deposit_signal > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Señal de trato</span><span>- {fmt(pickedSale.deposit_signal, "USD")}</span></div>}
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, padding: "8px 0", fontWeight: 700 }}>
+                      <span>Saldo total</span><span style={{ color: "#e11d48" }}>{fmt(pickedSale.total_balance, "USD")}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Type + Payment + Deposit */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  <div style={S.card}>
+                    <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Tipo y Pago</div>
+                    <div style={{ padding: "10px 16px", fontSize: 12 }}>
+                      <div style={{ marginBottom: 4 }}>
+                        <span style={S.badge(pickedSale.sale_type === "propio" ? "#6366f1" : "#f97316")}>
+                          {pickedSale.sale_type === "propio" ? "Propio" : pickedSale.sale_type === "consignacion_grupo" ? "Consig. Grupo 1%" : "Consig. Externa 5%"}
+                        </span>
+                      </div>
+                      {pickedSale.sale_type !== "propio" && <div style={{ color: "#10b981", marginBottom: 4 }}>Comisión: {fmt(pickedSale.commission_amount, "USD")}</div>}
+                      {pickedSale.payment_method && <div style={{ color: "#8b8fa4" }}>Pago: {pickedSale.payment_method}</div>}
+                      {pickedSale.financing_term_months && <div style={{ color: "#8b8fa4" }}>Plazo: {pickedSale.financing_term_months}m al {pickedSale.financing_interest_pct}%</div>}
+                      {pickedSale.financing_amount && <div style={{ color: "#8b8fa4" }}>Monto financiado: {fmt(pickedSale.financing_amount, "USD")}</div>}
+                    </div>
+                  </div>
+                  <div style={S.card}>
+                    <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Depósito</div>
+                    <div style={{ padding: "10px 16px", fontSize: 12 }}>
+                      {pickedSale.deposit_bank && <div><span style={{ color: "#8b8fa4" }}>Banco: </span>{pickedSale.deposit_bank}</div>}
+                      {pickedSale.deposit_reference && <div><span style={{ color: "#8b8fa4" }}># Depósito: </span>{pickedSale.deposit_reference}</div>}
+                      <div style={{ marginTop: 6 }}>
+                        {pickedSale.transfer_included && <span style={S.badge("#8b5cf6")}>Traspaso incluido</span>}
+                        {pickedSale.has_insurance && <span style={{ ...S.badge("#0ea5e9"), marginLeft: 4 }}>Seguro {pickedSale.insurance_months}m</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Observations */}
+                {pickedSale.observations && (
+                  <div style={{ ...S.card, padding: "10px 16px", marginBottom: 12, fontSize: 12 }}>
+                    <span style={{ color: "#8b8fa4" }}>Observaciones: </span>{pickedSale.observations}
+                  </div>
+                )}
+
+                {/* Approval buttons */}
+                {pickedSale.status === "pending" && (
+                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                    <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); rejectSale(pickedSale.id, r); }}
+                      style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
+                      Rechazar
+                    </button>
+                    <button onClick={() => approveSale(pickedSale.id)}
+                      style={{ ...S.sel, background: "#10b981", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
+                      Aprobar Venta
+                    </button>
+                  </div>
+                )}
+                {pickedSale.status === "rejected" && pickedSale.rejected_reason && (
+                  <div style={{ marginTop: 12, padding: "10px 14px", background: "#e11d4810", borderRadius: 8, fontSize: 12, color: "#e11d48" }}>
+                    Rechazada: {pickedSale.rejected_reason}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
         </main>
       </div>
     </div>
