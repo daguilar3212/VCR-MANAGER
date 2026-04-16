@@ -200,6 +200,7 @@ export default function App() {
           cabys: v.cabys_code,
           purchase_price: v.purchase_cost, purchase_currency: v.price_currency || "CRC",
           purchase_supplier: v.supplier, purchase_date: v.entry_date,
+          exchange_rate: v.exchange_rate,
           sale_date: v.sale_date, sale_invoice_number: v.sale_invoice_number,
           sale_client: sl ? { name: sl.client_name, cedula: sl.client_cedula, phone: sl.client_phone1, email: sl.client_email, address: sl.client_address } : null,
           notes: v.notes, created_at: v.created_at,
@@ -760,7 +761,7 @@ export default function App() {
       const matchFilter = invFilter === "all" || v.s === invFilter;
       return matchSearch && matchFilter;
     });
-    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",cabys_code:"",status:"disponible" });
+    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",purchase_cost:"",exchange_rate:"",price_usd:"",cabys_code:"",status:"disponible",entry_date:new Date().toISOString().split('T')[0] });
     const saveNewVehicle = async () => {
       if (!newVehicleForm || !newVehicleForm.plate) { alert("La placa es requerida"); return; }
       if (!newVehicleForm.cabys_code) { alert("El código CABYS es requerido"); return; }
@@ -770,7 +771,11 @@ export default function App() {
         year: parseInt(newVehicleForm.year) || null, color: newVehicleForm.color || null,
         km: parseFloat(newVehicleForm.km) || null, drivetrain: newVehicleForm.drive || null,
         fuel: newVehicleForm.fuel || null, style: newVehicleForm.style || null,
-        price_usd: parseFloat(newVehicleForm.price_usd) || null, price_crc: parseFloat(newVehicleForm.price_crc) || null,
+        price_usd: parseFloat(newVehicleForm.price_usd) || null,
+        purchase_cost: parseFloat(newVehicleForm.purchase_cost) || null,
+        exchange_rate: parseFloat(newVehicleForm.exchange_rate) || null,
+        entry_date: newVehicleForm.entry_date || null,
+        price_currency: newVehicleForm.purchase_cost ? "CRC" : null,
         cabys_code: newVehicleForm.cabys_code, status: newVehicleForm.status || "disponible",
       });
       if (error) { alert("Error: " + error.message); return; }
@@ -810,7 +815,7 @@ export default function App() {
         <th style={thS}>Vehículo</th><th style={thS}>Placa</th><th style={thS}>Color</th><th style={thS}>Km</th><th style={thS}>Fecha compra</th><th style={thS}>Proveedor</th><th style={thS}>Costo (₡)</th><th style={thS}>T/C</th><th style={thS}>CABYS</th><th style={thS}>Precio venta</th><th style={thS}>Costos asoc.</th><th style={thS}>Utilidad</th>
         {showHist&&<><th style={thS}>Fecha venta</th><th style={thS}>Consecutivo</th><th style={thS}>Cliente</th></>}
       </tr></thead><tbody>
-        {filteredCars.map(v=>{const costs=costsByPlate[v.p];const costoCRC=v.purchase_price||0;const costosAsoc=costs?costs.total:0;const precioVenta=v.usd||0;const tc=costoCRC&&precioVenta?Math.round(costoCRC/precioVenta):0;const costoUSD=tc>0?costoCRC/tc:0;const utilidad=precioVenta>0&&costoUSD>0?precioVenta-costoUSD-costosAsoc:0;const cabysItem=CABYS_VEHICLES.find(c=>c.code===v.cabys);
+        {filteredCars.map(v=>{const costs=costsByPlate[v.p];const costoCRC=v.purchase_price||0;const costosAsoc=costs?costs.total:0;const precioVenta=v.usd||0;const tc=v.exchange_rate||(costoCRC&&precioVenta?Math.round(costoCRC/precioVenta):0);const costoUSD=tc>0?costoCRC/tc:0;const utilidad=precioVenta>0&&costoUSD>0?precioVenta-costoUSD-costosAsoc:0;const cabysItem=CABYS_VEHICLES.find(c=>c.code===v.cabys);
         return(<React.Fragment key={v.id}><tr style={{cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
           <td style={tdS} onClick={()=>setPicked(v)}><div style={{fontWeight:700,fontSize:13}}>{v.b} {v.m}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{v.y}</div></td>
           <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:600}}>{v.p}</span></td>
@@ -853,7 +858,11 @@ export default function App() {
       {showAddVehicle&&newVehicleForm&&(<div style={S.modal} onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}}><div style={{...S.mbox,maxWidth:600}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h3 style={{fontSize:18,fontWeight:800,margin:0}}>Agregar Vehículo</h3><button onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button></div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
-          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Precio USD","price_usd"],["Precio CRC","price_crc"]].map(([l,k])=>(<div key={k}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div><input value={newVehicleForm[k]||""} onChange={e=>setNewVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>))}
+          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"]].map(([l,k])=>(<div key={k}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div><input value={newVehicleForm[k]||""} onChange={e=>setNewVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>))}
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div><input type="date" value={newVehicleForm.entry_date||""} onChange={e=>setNewVehicleForm(prev=>({...prev,entry_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Costo compra (₡)</div><input type="number" value={newVehicleForm.purchase_cost||""} onChange={e=>setNewVehicleForm(prev=>({...prev,purchase_cost:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tipo cambio (ref.)</div><input type="number" value={newVehicleForm.exchange_rate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,exchange_rate:e.target.value}))} placeholder="Ej: 530" style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta (USD)</div><input type="number" value={newVehicleForm.price_usd||""} onChange={e=>setNewVehicleForm(prev=>({...prev,price_usd:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estado</div><select value={newVehicleForm.status||"disponible"} onChange={e=>setNewVehicleForm(prev=>({...prev,status:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="disponible">Disponible</option><option value="reservado">Reservado</option></select></div>
           <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div><select value={newVehicleForm.cabys_code||""} onChange={e=>setNewVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar CABYS</option>{CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}</select></div>
