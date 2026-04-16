@@ -271,7 +271,7 @@ export default function App() {
         key: inv.xml_key, last4: inv.last_four, date: inv.emission_date,
         supName: inv.supplier_name, supComm: inv.supplier_commercial_name, supId: inv.supplier_id,
         sub: inv.subtotal, tax: inv.tax_total, other: inv.other_charges, total: inv.total,
-        currency: inv.currency || 'CRC',
+        currency: inv.currency || 'CRC', exchangeRate: inv.exchange_rate || 1,
         payCode: inv.payment_method_code, payLabel: inv.payment_method_label, isTC: inv.is_credit_card,
         plate: inv.plate, warnPlate: inv.assign_status === 'warning' ? inv.detected_plate : null,
         catId: inv.category_id || 'otro', assignStatus: inv.assign_status || 'unassigned',
@@ -387,6 +387,14 @@ export default function App() {
   const saveVehicleFromInvoice = async () => {
     if (!vehicleForm || !vehicleForm.plate) { alert("La placa es requerida"); return; }
     const inv = pickedInv;
+    // Determine purchase cost in CRC based on invoice currency
+    const invCurrency = inv.currency || 'CRC';
+    const invTotal = inv.total || 0;
+    const invExchangeRate = inv.exchangeRate || 1;
+    // If invoice is in USD, convert to CRC using the invoice's exchange rate
+    const purchaseCostCRC = invCurrency === 'USD' ? Math.round(invTotal * invExchangeRate) : invTotal;
+    const purchaseCostUSD = invCurrency === 'USD' ? invTotal : (invExchangeRate > 1 ? Math.round(invTotal / invExchangeRate) : null);
+
     const { data: veh, error } = await supabase.from('vehicles').insert({
       plate: vehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
       brand: vehicleForm.brand || null,
@@ -397,12 +405,14 @@ export default function App() {
       drivetrain: vehicleForm.drive || null,
       fuel: vehicleForm.fuel || null,
       style: vehicleForm.style || null,
-      price_usd: parseFloat(vehicleForm.price_usd) || null,
-      price_crc: parseFloat(vehicleForm.price_crc) || null,
+      price_usd: purchaseCostUSD || parseFloat(vehicleForm.price_usd) || null,
+      price_crc: purchaseCostCRC || parseFloat(vehicleForm.price_crc) || null,
       cabys_code: vehicleForm.cabys_code || null,
-      purchase_cost: inv.total,
-      supplier: supDisplay(inv),
-      entry_date: inv.date,
+      purchase_cost: purchaseCostCRC,
+      purchase_supplier: supDisplay(inv),
+      purchase_date: inv.date ? inv.date.split('T')[0] : null,
+      price_currency: invCurrency,
+      exchange_rate: invCurrency === 'USD' ? invExchangeRate : null,
       status: 'disponible',
     }).select().single();
     if (error) { alert("Error: " + error.message); return; }
