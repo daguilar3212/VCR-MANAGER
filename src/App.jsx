@@ -166,6 +166,7 @@ export default function App() {
   const [tab, setTab] = useState("Dashboard");
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(null);
+  const [editingVehicle, setEditingVehicle] = useState(null);
   const [invoices, setInvoices] = useState([]);
   const [pickedInv, setPickedInv] = useState(null);
   const [fCat, setFCat] = useState("all");
@@ -260,7 +261,7 @@ export default function App() {
           usd: v.price_usd, crc: v.price_crc, s: v.status || "disponible",
           cabys: v.cabys_code,
           purchase_price: v.purchase_cost, purchase_currency: v.price_currency || "CRC",
-          purchase_supplier: v.supplier, purchase_date: v.entry_date,
+          purchase_supplier: v.purchase_supplier, purchase_date: v.purchase_date || v.entry_date,
           exchange_rate: v.exchange_rate,
           sale_date: v.sale_date, sale_invoice_number: v.sale_invoice_number,
           sale_client: sl ? { name: sl.client_name, cedula: sl.client_cedula, phone: sl.client_phone1, email: sl.client_email, address: sl.client_address } : null,
@@ -417,8 +418,8 @@ export default function App() {
       drivetrain: vehicleForm.drive || null,
       fuel: vehicleForm.fuel || null,
       style: vehicleForm.style || null,
-      price_usd: purchaseCostUSD || parseFloat(vehicleForm.price_usd) || null,
-      price_crc: purchaseCostCRC || parseFloat(vehicleForm.price_crc) || null,
+      price_usd: parseFloat(vehicleForm.price_usd) || null,
+      price_crc: parseFloat(vehicleForm.price_crc) || null,
       cabys_code: vehicleForm.cabys_code || null,
       purchase_cost: purchaseCostCRC,
       purchase_supplier: supDisplay(inv),
@@ -460,6 +461,26 @@ export default function App() {
     setInvoices(prev => prev.map(x => x.key === pickedInv.key ? { ...x, vehicleStatus: 'dismissed' } : x));
     setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'dismissed' } : null);
     setVehicleForm(null);
+  };
+
+  const updateVehicle = async () => {
+    if (!editingVehicle) return;
+    const ev = editingVehicle;
+    const { error } = await supabase.from('vehicles').update({
+      brand: ev.brand || null, model: ev.model || null, year: parseInt(ev.year) || null,
+      color: ev.color || null, km: parseFloat(ev.km) || null,
+      drivetrain: ev.drive || null, fuel: ev.fuel || null, style: ev.style || null,
+      price_usd: parseFloat(ev.price_usd) || null, price_crc: parseFloat(ev.price_crc) || null,
+      purchase_cost: parseFloat(ev.purchase_cost) || null,
+      purchase_supplier: ev.purchase_supplier || null,
+      purchase_date: ev.purchase_date || null,
+      exchange_rate: parseFloat(ev.exchange_rate) || null,
+      cabys_code: ev.cabys_code || null, status: ev.status || 'disponible',
+    }).eq('id', ev.id);
+    if (error) { alert("Error: " + error.message); return; }
+    await loadVehicles();
+    setEditingVehicle(null);
+    setPicked(null);
   };
 
   // ======= EXPORT & BULK ACTIONS =======
@@ -1976,14 +1997,70 @@ export default function App() {
         </React.Fragment>);})}
       </tbody></table></div>)}
 
-      {picked&&<div style={S.modal} onClick={()=>setPicked(null)}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
-        <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{picked.b} {picked.m}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{picked.y} · {picked.p}</p></div><button onClick={()=>setPicked(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button></div>
-        <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO VENTA</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{fmt(picked.crc)}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COSTO COMPRA</div><div style={{fontSize:16,fontWeight:700,color:"#f59e0b"}}>{fmt(picked.purchase_price)}</div></div></div>
-        <div style={S.g2}>{[["Color",picked.co],["Km",picked.km?fK(picked.km):"-"],["Combustible",picked.f],["Tracción",picked.dr],["Estilo",picked.st],["Estado",picked.s],["CABYS",picked.cabys||"-"]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v||"-"}</div></div>)}</div>
-        {picked.purchase_supplier&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Proveedor: {picked.purchase_supplier}</div>}
-        {picked.purchase_date&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Fecha compra: {new Date(picked.purchase_date+"T12:00:00").toLocaleDateString("es-CR")}</div>}
-        {costsByPlate[picked.p]?<div><div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Costos asociados ({fmt(costsByPlate[picked.p].total)})</div>{costsByPlate[picked.p].items.map((inv,i)=><div key={i} style={{padding:"8px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}><div><div style={{fontWeight:600}}>{supDisplay(inv)}</div><div style={{color:"#8b8fa4",fontSize:11}}>{catLabel(inv.catId)}</div></div><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(inv.total)}</span></div>)}</div>:<div style={{fontSize:12,color:"#8b8fa4"}}>Sin costos asociados</div>}
-        {picked.s==="vendido"&&picked.sale_client&&<div style={{marginTop:12,padding:"10px 14px",background:"#10b98110",borderRadius:8}}><div style={{fontSize:12,color:"#10b981",fontWeight:600,marginBottom:4}}>Vendido a: {picked.sale_client.name}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{picked.sale_client.cedula} · {picked.sale_client.phone}</div>{picked.sale_invoice_number&&<div style={{fontSize:11,color:"#4f8cff",marginTop:4}}>Factura: {picked.sale_invoice_number}</div>}</div>}
+      {picked&&<div style={S.modal} onClick={()=>{setPicked(null);setEditingVehicle(null);}}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
+          <div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{picked.b} {picked.m}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{picked.y} · {picked.p}</p></div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {!editingVehicle && <button onClick={()=>setEditingVehicle({
+              id:picked.id, brand:picked.b||"", model:picked.m||"", year:picked.y||"", color:picked.co||"",
+              km:picked.km||"", drive:picked.dr||"", fuel:picked.f||"", style:picked.st||"",
+              price_usd:picked.usd||"", price_crc:picked.crc||"",
+              purchase_cost:picked.purchase_price||"", purchase_supplier:picked.purchase_supplier||"",
+              purchase_date:picked.purchase_date||"", exchange_rate:picked.exchange_rate||"",
+              cabys_code:picked.cabys||"", status:picked.s||"disponible",
+            })} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,fontSize:12}}>Editar</button>}
+            <button onClick={()=>{setPicked(null);setEditingVehicle(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button>
+          </div>
+        </div>
+
+        {editingVehicle ? (
+          <div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px",marginBottom:14}}>
+              {[["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Proveedor","purchase_supplier"],["Costo compra (₡)","purchase_cost"],["TC referencia","exchange_rate"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
+                <div key={k}>
+                  <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
+                  <input value={editingVehicle[k]||""} onChange={e=>setEditingVehicle(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                </div>
+              ))}
+              <div>
+                <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div>
+                <input type="date" value={editingVehicle.purchase_date||""} onChange={e=>setEditingVehicle(prev=>({...prev,purchase_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+              </div>
+              <div>
+                <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div>
+                <select value={editingVehicle.style||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,style:val,cabys_code:suggestCabys(val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
+                  <option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estado</div>
+                <select value={editingVehicle.status||"disponible"} onChange={e=>setEditingVehicle(prev=>({...prev,status:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
+                  <option value="disponible">Disponible</option><option value="reservado">Reservado</option><option value="vendido">Vendido</option>
+                </select>
+              </div>
+              <div style={{gridColumn:"1/3"}}>
+                <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS</div>
+                <select value={editingVehicle.cabys_code||""} onChange={e=>setEditingVehicle(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
+                  <option value="">Seleccionar CABYS</option>
+                  {CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setEditingVehicle(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+              <button onClick={updateVehicle} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Guardar</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO VENTA</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{picked.crc?fmt(picked.crc):picked.usd?fmt(picked.usd,"USD"):"-"}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COSTO COMPRA</div><div style={{fontSize:16,fontWeight:700,color:"#f59e0b"}}>{picked.purchase_price?fmt(picked.purchase_price):"-"}</div></div></div>
+            <div style={S.g2}>{[["Color",picked.co],["Km",picked.km?fK(picked.km):"-"],["Combustible",picked.f],["Tracción",picked.dr],["Estilo",picked.st],["Estado",picked.s],["CABYS",picked.cabys||"-"]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v||"-"}</div></div>)}</div>
+            {picked.purchase_supplier&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Proveedor: {picked.purchase_supplier}</div>}
+            {picked.purchase_date&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Fecha compra: {new Date(picked.purchase_date+"T12:00:00").toLocaleDateString("es-CR")}</div>}
+            {costsByPlate[picked.p]?<div><div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Costos asociados ({fmt(costsByPlate[picked.p].total)})</div>{costsByPlate[picked.p].items.map((inv,i)=><div key={i} style={{padding:"8px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}><div><div style={{fontWeight:600}}>{supDisplay(inv)}</div><div style={{color:"#8b8fa4",fontSize:11}}>{catLabel(inv.catId)}</div></div><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(inv.total)}</span></div>)}</div>:<div style={{fontSize:12,color:"#8b8fa4"}}>Sin costos asociados</div>}
+            {picked.s==="vendido"&&picked.sale_client&&<div style={{marginTop:12,padding:"10px 14px",background:"#10b98110",borderRadius:8}}><div style={{fontSize:12,color:"#10b981",fontWeight:600,marginBottom:4}}>Vendido a: {picked.sale_client.name}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{picked.sale_client.cedula} · {picked.sale_client.phone}</div>{picked.sale_invoice_number&&<div style={{fontSize:11,color:"#4f8cff",marginTop:4}}>Factura: {picked.sale_invoice_number}</div>}</div>}
+          </>
+        )}
       </div></div>}
 
       {showAddVehicle&&newVehicleForm&&(<div style={S.modal} onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}}><div style={{...S.mbox,maxWidth:600}} onClick={e=>e.stopPropagation()}>
