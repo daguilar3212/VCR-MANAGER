@@ -198,6 +198,7 @@ export default function App() {
   const [printSale, setPrintSale] = useState(null);
   const [expandedClient, setExpandedClient] = useState(null);
   const [pickedCli, setPickedCli] = useState(null);
+  const [editingClient, setEditingClient] = useState(null);
   const [editingSaleId, setEditingSaleId] = useState(null);
   const [confirmApprove, setConfirmApprove] = useState(null);
   const [selectedCars, setSelectedCars] = useState(new Set());
@@ -861,9 +862,28 @@ export default function App() {
   };
 
   const deleteClients = async () => {
-    // Clients are derived from sales, so we can't delete them directly.
-    // Instead we'd need to delete their sales. For now, alert.
     alert("Los clientes se generan de las ventas. Para eliminar un cliente, elimine sus ventas asociadas.");
+  };
+
+  const updateClient = async (originalCli, newData) => {
+    // Match by cedula if present, otherwise by name
+    const matchKey = originalCli.ce ? 'client_cedula' : 'client_name';
+    const matchValue = originalCli.ce || originalCli.n;
+    const { error } = await supabase.from('sales').update({
+      client_name: newData.n || null,
+      client_cedula: newData.ce || null,
+      client_phone1: newData.ph || null,
+      client_phone2: newData.ph2 || null,
+      client_email: newData.em || null,
+      client_address: newData.ad || null,
+      client_workplace: newData.wk || null,
+      client_occupation: newData.jo || null,
+      client_civil_status: newData.ci || null,
+    }).eq(matchKey, matchValue);
+    if (error) { alert("Error: " + error.message); return; }
+    await loadSales();
+    setEditingClient(null);
+    setPickedCli(null);
   };
 
   // ======= LIQUIDATION FUNCTIONS =======
@@ -2162,19 +2182,52 @@ export default function App() {
         </div>)}
       </div>)}
 
-      {pickedCli&&<div style={S.modal} onClick={()=>setPickedCli(null)}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
+      {pickedCli&&<div style={S.modal} onClick={()=>{setPickedCli(null);setEditingClient(null);}}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
           <div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{pickedCli.n}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{pickedCli.ce}</p></div>
-          <button onClick={()=>setPickedCli(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {!editingClient && <button onClick={()=>setEditingClient({n:pickedCli.n||"",ce:pickedCli.ce||"",ph:pickedCli.ph||"",ph2:pickedCli.ph2||"",em:pickedCli.em||"",ad:pickedCli.ad||"",wk:pickedCli.wk||"",jo:pickedCli.jo||"",ci:pickedCli.ci||""})} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,fontSize:12}}>Editar</button>}
+            <button onClick={()=>{setPickedCli(null);setEditingClient(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button>
+          </div>
         </div>
-        <div style={S.g2}>{[["Teléfono",pickedCli.ph],["Teléfono 2",pickedCli.ph2],["Email",pickedCli.em],["Dirección",pickedCli.ad],["Trabajo",pickedCli.wk],["Oficio",pickedCli.jo],["Estado civil",pickedCli.ci]].filter(([,v])=>v).map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v}</div></div>)}</div>
-        {pickedCli.bu.length>0&&<div>
-          <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Historial de compras</div>
-          {pickedCli.bu.map((b,i)=><div key={i} style={{padding:"10px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}>
-            <div><div style={{fontWeight:600}}>{b.v}</div><div style={{color:"#8b8fa4",fontSize:11}}>{b.pl} · {b.d?new Date(b.d+"T12:00:00").toLocaleDateString("es-CR"):""}</div></div>
-            <div style={{textAlign:"right"}}><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(b.pr,"USD")}</span><div><span style={S.badge(b.st==="approved"?"#10b981":b.st==="rejected"?"#e11d48":"#f59e0b")}>{b.st==="approved"?"Aprobada":b.st==="rejected"?"Rechazada":"Pendiente"}</span></div></div>
-          </div>)}
-        </div>}
+
+        {editingClient ? (
+          <div>
+            <div style={{fontSize:12,color:"#f59e0b",marginBottom:10,padding:"8px 12px",background:"#f59e0b10",borderRadius:6}}>
+              ⓘ Los cambios se aplicarán a todas las ventas de este cliente
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px 12px",marginBottom:14}}>
+              {[["Nombre *","n"],["Cédula","ce"],["Teléfono 1","ph"],["Teléfono 2","ph2"],["Email","em"],["Trabajo","wk"],["Oficio","jo"],["Estado civil","ci"]].map(([l,k])=>(
+                <div key={k}>
+                  <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
+                  <input value={editingClient[k]||""} onChange={e=>setEditingClient(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                </div>
+              ))}
+              <div style={{gridColumn:"1/3"}}>
+                <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Dirección</div>
+                <input value={editingClient.ad||""} onChange={e=>setEditingClient(prev=>({...prev,ad:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setEditingClient(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+              <button onClick={()=>{
+                if (!editingClient.n) { alert("El nombre es requerido"); return; }
+                updateClient(pickedCli, editingClient);
+              }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Guardar</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={S.g2}>{[["Teléfono",pickedCli.ph],["Teléfono 2",pickedCli.ph2],["Email",pickedCli.em],["Dirección",pickedCli.ad],["Trabajo",pickedCli.wk],["Oficio",pickedCli.jo],["Estado civil",pickedCli.ci]].filter(([,v])=>v).map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v}</div></div>)}</div>
+            {pickedCli.bu.length>0&&<div>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Historial de compras</div>
+              {pickedCli.bu.map((b,i)=><div key={i} style={{padding:"10px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}>
+                <div><div style={{fontWeight:600}}>{b.v}</div><div style={{color:"#8b8fa4",fontSize:11}}>{b.pl} · {b.d?new Date(b.d+"T12:00:00").toLocaleDateString("es-CR"):""}</div></div>
+                <div style={{textAlign:"right"}}><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(b.pr,"USD")}</span><div><span style={S.badge(b.st==="approved"?"#10b981":b.st==="rejected"?"#e11d48":"#f59e0b")}>{b.st==="approved"?"Aprobada":b.st==="rejected"?"Rechazada":"Pendiente"}</span></div></div>
+              </div>)}
+            </div>}
+          </>
+        )}
       </div></div>}
     </div>);
   };
