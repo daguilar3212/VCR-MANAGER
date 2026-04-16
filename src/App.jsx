@@ -561,7 +561,7 @@ export default function App() {
     has_tradein: false,
     tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "", tradein_color: "",
     tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
-    sale_type: "propio", sale_price: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
+    sale_type: "propio", sale_price: "", sale_exchange_rate: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
     payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
     deposits: [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
     transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
@@ -647,6 +647,7 @@ export default function App() {
 
   const saveSale = async () => {
     if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
+    if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) { alert("Tipo de cambio es requerido"); return; }
     const balance = calcBalance(saleForm);
     const saleType = saleForm.sale_type;
     const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
@@ -678,6 +679,7 @@ export default function App() {
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
       sale_price: parseFloat(saleForm.sale_price) || 0,
+      sale_exchange_rate: parseFloat(saleForm.sale_exchange_rate) || null,
       tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
       down_payment: parseFloat(saleForm.down_payment) || 0,
       deposit_signal: parseFloat(saleForm.deposit_signal) || 0,
@@ -712,16 +714,18 @@ export default function App() {
     // Save agents - 1% total commission, split if 2 agents
     const agentRows = [];
     const salePrice = parseFloat(saleForm.sale_price) || 0;
+    const saleTC = parseFloat(saleForm.sale_exchange_rate) || 0;
     const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id;
     const splitPct = hasAgent2 ? 0.5 : 1;
     const splitAmt = salePrice * 0.01 * (hasAgent2 ? 0.5 : 1);
+    const splitCrc = Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100;
     if (saleForm.agent1_id) {
       const ag = agents.find(a => a.id === saleForm.agent1_id);
-      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt });
+      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc });
     }
     if (hasAgent2) {
       const ag = agents.find(a => a.id === saleForm.agent2_id);
-      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt });
+      agentRows.push({ sale_id: data.id, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc });
     }
     if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
 
@@ -759,7 +763,7 @@ export default function App() {
       tradein_year: sale.tradein_year || "", tradein_color: sale.tradein_color || "", tradein_km: sale.tradein_km || "",
       tradein_engine: sale.tradein_engine || "", tradein_drive: sale.tradein_drive || "", tradein_fuel: sale.tradein_fuel || "",
       tradein_value: sale.tradein_value || 0,
-      sale_type: sale.sale_type || "propio", sale_price: sale.sale_price || "",
+      sale_type: sale.sale_type || "propio", sale_price: sale.sale_price || "", sale_exchange_rate: sale.sale_exchange_rate || "",
       tradein_amount: sale.tradein_amount || 0, down_payment: sale.down_payment || 0, deposit_signal: sale.deposit_signal || 0,
       payment_method: sale.payment_method || "", financing_term_months: sale.financing_term_months || "",
       financing_interest_pct: sale.financing_interest_pct || "", financing_amount: sale.financing_amount || "",
@@ -777,6 +781,7 @@ export default function App() {
 
   const updateSale = async () => {
     if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
+    if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) { alert("Tipo de cambio es requerido"); return; }
     const balance = calcBalance(saleForm);
     const saleType = saleForm.sale_type;
     const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
@@ -800,6 +805,7 @@ export default function App() {
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
       sale_price: parseFloat(saleForm.sale_price) || 0,
+      sale_exchange_rate: parseFloat(saleForm.sale_exchange_rate) || null,
       tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
       down_payment: parseFloat(saleForm.down_payment) || 0,
       deposit_signal: parseFloat(saleForm.deposit_signal) || 0,
@@ -824,12 +830,14 @@ export default function App() {
     // Replace agents
     await supabase.from('sale_agents').delete().eq('sale_id', editingSaleId);
     const salePrice = parseFloat(saleForm.sale_price) || 0;
+    const saleTC = parseFloat(saleForm.sale_exchange_rate) || 0;
     const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id;
     const splitPct = hasAgent2 ? 0.5 : 1;
     const splitAmt = salePrice * 0.01 * (hasAgent2 ? 0.5 : 1);
+    const splitCrc = Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100;
     const agentRows = [];
-    if (saleForm.agent1_id) { const ag = agents.find(a => a.id === saleForm.agent1_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt }); }
-    if (hasAgent2) { const ag = agents.find(a => a.id === saleForm.agent2_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt }); }
+    if (saleForm.agent1_id) { const ag = agents.find(a => a.id === saleForm.agent1_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc }); }
+    if (hasAgent2) { const ag = agents.find(a => a.id === saleForm.agent2_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc }); }
     if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
     await loadSales();
     setSalesView("list");
@@ -1008,16 +1016,24 @@ export default function App() {
   };
 
   const getAgentCommissions = (agentId, month, year) => {
+    // Returns { total_crc, missing_tc_count } - sum in colones, and count of sales without TC
     return sales.filter(s => {
       if (s.status !== 'approved') return false;
       if (!s.sale_date) return false;
       const d = new Date(s.sale_date + 'T12:00:00');
       return d.getMonth() === month && d.getFullYear() === year;
-    }).reduce((total, s) => {
+    }).reduce((acc, s) => {
       const sAgents = s.sale_agents || [];
       const match = sAgents.find(a => a.agent_id === agentId);
-      return total + (match ? (match.commission_amount || 0) : 0);
-    }, 0);
+      if (!match) return acc;
+      const crcAmt = match.commission_crc || 0;
+      const hasTC = s.sale_exchange_rate && s.sale_exchange_rate > 0;
+      if (!hasTC && match.commission_amount > 0) {
+        // Sale without TC - count but don't include
+        return { total_crc: acc.total_crc, missing_tc_count: acc.missing_tc_count + 1 };
+      }
+      return { total_crc: acc.total_crc + crcAmt, missing_tc_count: acc.missing_tc_count };
+    }, { total_crc: 0, missing_tc_count: 0 });
   };
 
   const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
@@ -1032,13 +1048,14 @@ export default function App() {
 
     const lines = employees.map(emp => {
       const salary = r2(emp.salary || 0);
-      const comms = r2(isMensual ? getAgentCommissions(emp.id, month, year) : 0);
+      const commData = isMensual ? getAgentCommissions(emp.id, month, year) : { total_crc: 0, missing_tc_count: 0 };
+      const comms = r2(commData.total_crc);
       const grossQ = r2(salary + comms);
       const ccssAmt = r2(grossQ * ccss / 100);
 
       let rentAmt = 0;
       if (isMensual) {
-        // Renta sobre salario mensual bruto (Q1 + Q2 con comisiones)
+        // Renta sobre salario mensual bruto (Q1 + Q2 con comisiones en colones)
         const monthlyGross = salary + salary + comms;
         rentAmt = calcRent(monthlyGross, emp.pension_deduction || 0);
       }
@@ -1050,6 +1067,7 @@ export default function App() {
         rent_base: isMensual ? r2(salary * 2 + comms) : 0,
         pension_deduction: r2(emp.pension_deduction || 0),
         rent_amount: rentAmt, net_pay: netPay,
+        missing_tc_count: commData.missing_tc_count,
       };
     });
 
@@ -1460,7 +1478,7 @@ export default function App() {
               <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Bruto</div><div style={{fontWeight:700}}>{fmt2(totals.gross)}</div></div>
               <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>CCSS</div><div style={{fontWeight:700,color:"#e11d48"}}>{fmt2(totals.ccss)}</div></div>
               {isMensual && <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Renta</div><div style={{fontWeight:700,color:"#e11d48"}}>{fmt2(totals.rent)}</div></div>}
-              {isMensual && <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Comisiones</div><div style={{fontWeight:700,color:"#f97316"}}>{totals.comms>0?fmt2(totals.comms,"USD"):"-"}</div></div>}
+              {isMensual && <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Comisiones</div><div style={{fontWeight:700,color:"#f97316"}}>{totals.comms>0?fmt2(totals.comms):"-"}</div></div>}
               <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Neto</div><div style={{fontWeight:800,color:"#4f8cff",fontSize:14}}>{fmt2(totals.net)}</div></div>
             </div>
             <div style={{padding:"0"}}>
@@ -1473,9 +1491,12 @@ export default function App() {
                 <tbody>
                   {lines.map((l,i) => (
                     <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
-                      <td style={{padding:"6px 10px",fontSize:12,fontWeight:600}}>{l.agent_name}</td>
+                      <td style={{padding:"6px 10px",fontSize:12,fontWeight:600}}>
+                        {l.agent_name}
+                        {l.missing_tc_count > 0 && <span style={{marginLeft:6,fontSize:10,color:"#e11d48",fontWeight:700}} title="Ventas sin TC asignado">⚠ {l.missing_tc_count} sin TC</span>}
+                      </td>
                       <td style={{padding:"6px 10px",textAlign:"right",fontSize:12}}>{fmt2(l.salary)}</td>
-                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt2(l.commissions,"USD"):"-"}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt2(l.commissions):"-"}</td>
                       <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,fontWeight:600}}>{fmt2(l.gross_total)}</td>
                       <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
                       {isMensual && <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount>0?fmt2(l.rent_amount):"-"}</td>}
@@ -1547,7 +1568,7 @@ export default function App() {
                             <span style={S.badge(p.period_type==="mensual"?"#8b5cf6":"#0ea5e9")}>
                               {p.period_type==="mensual"?"Mensual":"Quincenal"}
                             </span>
-                            {p.total_commissions > 0 && <span style={S.badge("#f97316")}>Com: {fmt2(p.total_commissions,"USD")}</span>}
+                            {p.total_commissions > 0 && <span style={S.badge("#f97316")}>Com: {fmt2(p.total_commissions)}</span>}
                           </div>
                         </div>
                         <div style={{textAlign:"right"}}>
@@ -1591,7 +1612,7 @@ export default function App() {
                   <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
                     <td style={{padding:"10px 12px",fontSize:13,fontWeight:600}}>{l.agent_name}{l.pension_deduction > 0 && <div style={{fontSize:10,color:"#8b8fa4"}}>Pensión: -{fmt2(l.pension_deduction)}</div>}</td>
                     <td style={{padding:"10px 12px",textAlign:"right",fontSize:13}}>{fmt2(l.salary)}</td>
-                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions > 0 ? fmt2(l.commissions,"USD") : "-"}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions > 0 ? fmt2(l.commissions) : "-"}</td>
                     <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,fontWeight:600}}>{fmt2(l.gross_total)}</td>
                     <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
                     {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount > 0 ? fmt2(l.rent_amount) : "-"}</td>}
@@ -1601,7 +1622,7 @@ export default function App() {
                 <tr style={{background:"#1e2130"}}>
                   <td style={{padding:"10px 12px",fontWeight:800}}>TOTALES</td>
                   <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt2(pv.lines.reduce((s,l)=>s+l.salary,0))}</td>
-                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#f97316"}}>{pv.totals.comms > 0 ? fmt2(pv.totals.comms,"USD") : "-"}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#f97316"}}>{pv.totals.comms > 0 ? fmt2(pv.totals.comms) : "-"}</td>
                   <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt2(pv.totals.gross)}</td>
                   <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt2(pv.totals.ccss)}</td>
                   {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt2(pv.totals.rent)}</td>}
@@ -2326,6 +2347,7 @@ export default function App() {
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Condiciones de Venta</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
               {fld("Precio de venta ($) *", "sale_price", { inputType: "number" })}
+              {fld("Tipo de cambio (₡) *", "sale_exchange_rate", { inputType: "number", ph: "Ej: 520" })}
               {fld("Vehículo recibido ($)", "tradein_amount", { inputType: "number" })}
               {fld("Prima ($)", "down_payment", { inputType: "number" })}
               {fld("Señal de trato ($)", "deposit_signal", { inputType: "number" })}
@@ -2419,10 +2441,14 @@ export default function App() {
               const has2 = F.agent2_id && F.agent2_id !== F.agent1_id;
               const totalComm = (parseFloat(F.sale_price) || 0) * 0.01;
               const each = has2 ? totalComm / 2 : totalComm;
+              const tc = parseFloat(F.sale_exchange_rate) || 0;
+              const totalCommCrc = totalComm * tc;
+              const eachCrc = each * tc;
               return (
                 <div style={{ fontSize: 12, color: "#8b8fa4", marginTop: 4 }}>
-                  Comisión total: {fmt(totalComm, "USD")}
-                  {has2 ? ` (${fmt(each, "USD")} por vendedor)` : ""}
+                  <div>Comisión total: {fmt(totalComm, "USD")} {tc > 0 && <span style={{color:"#10b981"}}>= {fmt(totalCommCrc)}</span>}</div>
+                  {has2 && <div>Por vendedor: {fmt(each, "USD")} {tc > 0 && <span style={{color:"#10b981"}}>= {fmt(eachCrc)}</span>}</div>}
+                  {!tc && <div style={{color:"#e11d48",marginTop:4}}>⚠ Ingrese el tipo de cambio para ver la comisión en colones</div>}
                 </div>
               );
             })()}
@@ -2991,7 +3017,7 @@ export default function App() {
                           <thead><tr><th style={P.th}>Nombre</th><th style={{ ...P.th, textAlign: "right" }}>Comisión</th></tr></thead>
                           <tbody>
                             {sAgents.map((a, i) => (
-                              <tr key={i}><td style={P.td}>{a.agent_name}</td><td style={P.tdR}>{a.commission_pct}% = {fmt(a.commission_amount, "USD")}</td></tr>
+                              <tr key={i}><td style={P.td}>{a.agent_name}</td><td style={P.tdR}>{a.commission_pct}% = {fmt(a.commission_amount, "USD")}{a.commission_crc > 0 ? ` (${fmt(a.commission_crc)})` : ""}</td></tr>
                             ))}
                           </tbody>
                         </table>
@@ -3209,7 +3235,7 @@ export default function App() {
                         <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
                           <td style={{padding:"8px 12px",fontSize:12,fontWeight:600}}>{l.agent_name}</td>
                           <td style={{padding:"8px 12px",textAlign:"right",fontSize:12}}>{fmt2(l.salary)}</td>
-                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt2(l.commissions,"USD"):"-"}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt2(l.commissions):"-"}</td>
                           <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,fontWeight:600}}>{fmt2(l.gross_total)}</td>
                           <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
                           {pickedPay.period_type==="mensual"&&<td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount>0?fmt2(l.rent_amount):"-"}</td>}
