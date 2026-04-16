@@ -175,6 +175,8 @@ export default function App() {
   const [pickedSale, setPickedSale] = useState(null);
   const [saleFilter, setSaleFilter] = useState("all");
   const [printSale, setPrintSale] = useState(null);
+  const [expandedClient, setExpandedClient] = useState(null);
+  const [pickedCli, setPickedCli] = useState(null);
 
   // Load data on mount
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); }, []);
@@ -777,7 +779,6 @@ export default function App() {
     const thS = { padding:"10px 12px", textAlign:"left", fontSize:10, fontWeight:700, color:"#8b8fa4", textTransform:"uppercase", letterSpacing:0.4, borderBottom:"2px solid #2a2d3d", whiteSpace:"nowrap" };
     const tdS = { padding:"10px 12px", borderBottom:"1px solid #2a2d3d", fontSize:12, verticalAlign:"middle" };
     const showHist = invFilter !== "disponible";
-    const [expandedClient, setExpandedClient] = useState(null);
 
     const exportInventory = () => {
       const rows = filteredCars.map(v => {
@@ -1044,7 +1045,6 @@ export default function App() {
   };
 
   const renderCli = () => {
-    const [pickedCli, setPickedCli] = useState(null);
     return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
