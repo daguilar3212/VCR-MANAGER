@@ -126,6 +126,7 @@ export default function App() {
   const [saleForm, setSaleForm] = useState(null);
   const [pickedSale, setPickedSale] = useState(null);
   const [saleFilter, setSaleFilter] = useState("all");
+  const [printSale, setPrintSale] = useState(null);
 
   // Load data on mount
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); }, []);
@@ -415,12 +416,14 @@ export default function App() {
   const loadSales = async () => {
     const { data } = await supabase.from('sales').select('*').order('created_at', { ascending: false });
     if (data) {
-      // Fetch deposits for all sales
       const ids = data.map(s => s.id);
       const { data: deps } = ids.length > 0 ? await supabase.from('sale_deposits').select('*').in('sale_id', ids).order('deposit_date') : { data: [] };
+      const { data: sAgents } = ids.length > 0 ? await supabase.from('sale_agents').select('*').in('sale_id', ids) : { data: [] };
       const depMap = {};
       (deps || []).forEach(d => { if (!depMap[d.sale_id]) depMap[d.sale_id] = []; depMap[d.sale_id].push(d); });
-      setSales(data.map(s => ({ ...s, deposits: depMap[s.id] || [] })));
+      const agMap = {};
+      (sAgents || []).forEach(a => { if (!agMap[a.sale_id]) agMap[a.sale_id] = []; agMap[a.sale_id].push(a); });
+      setSales(data.map(s => ({ ...s, deposits: depMap[s.id] || [], sale_agents: agMap[s.id] || [] })));
     }
   };
 
@@ -1182,7 +1185,7 @@ export default function App() {
   // ======= MAIN RENDER =======
   return (
     <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:"#0f1117",color:"#e8eaf0",minHeight:"100vh"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}`}</style>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}@media print{body{background:#fff!important}body>*{display:none!important}#plan-de-ventas-print{display:block!important;position:fixed;inset:0;z-index:99999;background:#fff;padding:30px 40px;overflow:visible}.no-print{display:none!important}}`}</style>
       <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
         <div style={{width:200,background:"#181a23",borderRight:"1px solid #2a2d3d",padding:"20px 8px",flexShrink:0,overflowY:"auto"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 10px 20px",borderBottom:"1px solid #2a2d3d",marginBottom:12}}>
@@ -1515,6 +1518,14 @@ export default function App() {
                     </button>
                   </div>
                 )}
+                {pickedSale.status === "approved" && (
+                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                    <button onClick={() => { setPrintSale(pickedSale); setPickedSale(null); }}
+                      style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
+                      Ver Plan de Ventas
+                    </button>
+                  </div>
+                )}
                 {pickedSale.status === "rejected" && pickedSale.rejected_reason && (
                   <div style={{ marginTop: 12, padding: "10px 14px", background: "#e11d4810", borderRadius: 8, fontSize: 12, color: "#e11d48" }}>
                     Rechazada: {pickedSale.rejected_reason}
@@ -1523,6 +1534,170 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* ======= PRINTABLE PLAN DE VENTAS ======= */}
+          {printSale && (() => {
+            const s = printSale;
+            const deps = s.deposits || [];
+            const depsSum = deps.reduce((t, d) => t + (d.amount || 0), 0);
+            const sAgents = s.sale_agents || [];
+            const P = { page: { background: "#fff", color: "#1a1a2e", padding: "40px 50px", maxWidth: 800, margin: "0 auto", fontFamily: "'DM Sans', system-ui, sans-serif", fontSize: 13, lineHeight: 1.6 }, h: { textAlign: "center", marginBottom: 30 }, logo: { fontSize: 22, fontWeight: 800, color: "#e11d48", letterSpacing: 1 }, sub: { fontSize: 11, color: "#666", marginTop: 2 }, title: { fontSize: 18, fontWeight: 800, color: "#1a1a2e", margin: "20px 0 6px", borderBottom: "2px solid #e11d48", paddingBottom: 6 }, sect: { marginBottom: 20 }, row: { display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #eee", fontSize: 12 }, lbl: { color: "#666" }, val: { fontWeight: 600 }, tbl: { width: "100%", borderCollapse: "collapse", fontSize: 12, marginTop: 6 }, th: { background: "#f5f5f5", padding: "8px 12px", textAlign: "left", fontWeight: 700, borderBottom: "2px solid #ddd", fontSize: 11, textTransform: "uppercase", color: "#555" }, td: { padding: "6px 12px", borderBottom: "1px solid #eee" }, tdR: { padding: "6px 12px", borderBottom: "1px solid #eee", textAlign: "right", fontWeight: 600 }, total: { background: "#f8f8f8", fontWeight: 800 }, sig: { display: "inline-block", width: "45%", textAlign: "center", marginTop: 60, borderTop: "1px solid #333", paddingTop: 8, fontSize: 11, color: "#666" } };
+            const R = (l, v) => v ? <div style={P.row}><span style={P.lbl}>{l}</span><span style={P.val}>{v}</span></div> : null;
+            return (
+              <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "#0f1117ee", overflowY: "auto" }}>
+                <div style={{ maxWidth: 850, margin: "20px auto", position: "relative" }}>
+                  {/* Action bar */}
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginBottom: 10, padding: "0 10px" }} className="no-print">
+                    <button onClick={() => window.print()} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 600, padding: "8px 20px", border: "none" }}>Imprimir / PDF</button>
+                    <button onClick={() => setPrintSale(null)} style={{ ...S.sel, color: "#8b8fa4", padding: "8px 20px" }}>Cerrar</button>
+                  </div>
+                  <div id="plan-de-ventas-print" style={P.page}>
+                    {/* Header */}
+                    <div style={P.h}>
+                      <div style={P.logo}>VEHÍCULOS DE COSTA RICA</div>
+                      <div style={P.sub}>Cédula Jurídica 3-101-124464</div>
+                      <div style={{ fontSize: 16, fontWeight: 700, marginTop: 16, color: "#1a1a2e" }}>PLAN DE VENTAS #{s.sale_number}</div>
+                      <div style={{ fontSize: 12, color: "#666" }}>Fecha: {new Date(s.sale_date).toLocaleDateString("es-CR", { day: "numeric", month: "long", year: "numeric" })}</div>
+                      <div style={{ marginTop: 6 }}>
+                        <span style={{ display: "inline-block", background: s.status === "approved" ? "#10b981" : "#f59e0b", color: "#fff", padding: "3px 14px", borderRadius: 20, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>
+                          {s.status === "approved" ? "Aprobada" : s.status === "rejected" ? "Rechazada" : "Pendiente"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Client */}
+                    <div style={P.sect}>
+                      <div style={P.title}>Datos del Cliente</div>
+                      {R("Nombre", s.client_name)}
+                      {R("Cédula", s.client_cedula)}
+                      {R("Teléfono 1", s.client_phone1)}
+                      {R("Teléfono 2", s.client_phone2)}
+                      {R("Email", s.client_email)}
+                      {R("Dirección", s.client_address)}
+                      {R("Lugar de trabajo", s.client_workplace)}
+                      {R("Oficio", s.client_occupation)}
+                      {R("Estado civil", s.client_civil_status)}
+                    </div>
+
+                    {/* Vehicle sold */}
+                    <div style={P.sect}>
+                      <div style={P.title}>Vehículo que Compra</div>
+                      <table style={P.tbl}>
+                        <thead><tr>
+                          <th style={P.th}>Placa</th><th style={P.th}>Marca</th><th style={P.th}>Modelo</th><th style={P.th}>Año</th><th style={P.th}>Color</th><th style={P.th}>Km</th><th style={P.th}>Tracción</th><th style={P.th}>Combustible</th>
+                        </tr></thead>
+                        <tbody><tr>
+                          <td style={P.td}>{s.vehicle_plate}</td><td style={P.td}>{s.vehicle_brand}</td><td style={P.td}>{s.vehicle_model}</td><td style={P.td}>{s.vehicle_year}</td><td style={P.td}>{s.vehicle_color}</td><td style={P.td}>{s.vehicle_km ? fK(s.vehicle_km) : "-"}</td><td style={P.td}>{s.vehicle_drive}</td><td style={P.td}>{s.vehicle_fuel}</td>
+                        </tr></tbody>
+                      </table>
+                    </div>
+
+                    {/* Trade-in */}
+                    {s.has_tradein && (
+                      <div style={P.sect}>
+                        <div style={P.title}>Vehículo que se Recibe (Trade-in)</div>
+                        <table style={P.tbl}>
+                          <thead><tr>
+                            <th style={P.th}>Placa</th><th style={P.th}>Marca</th><th style={P.th}>Modelo</th><th style={P.th}>Año</th><th style={P.th}>Color</th><th style={P.th}>Km</th><th style={P.th}>Valor</th>
+                          </tr></thead>
+                          <tbody><tr>
+                            <td style={P.td}>{s.tradein_plate}</td><td style={P.td}>{s.tradein_brand}</td><td style={P.td}>{s.tradein_model}</td><td style={P.td}>{s.tradein_year}</td><td style={P.td}>{s.tradein_color}</td><td style={P.td}>{s.tradein_km ? fK(s.tradein_km) : "-"}</td><td style={{ ...P.td, fontWeight: 700 }}>{fmt(s.tradein_value, "USD")}</td>
+                          </tr></tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Conditions */}
+                    <div style={P.sect}>
+                      <div style={P.title}>Condiciones de Venta</div>
+                      <table style={P.tbl}>
+                        <tbody>
+                          <tr><td style={P.td}>Tipo de venta</td><td style={P.tdR}>
+                            {s.sale_type === "propio" ? "Propio" : s.sale_type === "consignacion_grupo" ? "Consignación Grupo (1%)" : "Consignación Externa (5%)"}
+                          </td></tr>
+                          <tr><td style={P.td}>Precio de venta</td><td style={{ ...P.tdR, fontSize: 15, color: "#1a1a2e" }}>{fmt(s.sale_price, "USD")}</td></tr>
+                          {s.tradein_amount > 0 && <tr><td style={P.td}>Vehículo recibido</td><td style={P.tdR}>- {fmt(s.tradein_amount, "USD")}</td></tr>}
+                          {s.down_payment > 0 && <tr><td style={P.td}>Prima</td><td style={P.tdR}>- {fmt(s.down_payment, "USD")}</td></tr>}
+                          {s.deposit_signal > 0 && <tr><td style={P.td}>Señal de trato</td><td style={P.tdR}>- {fmt(s.deposit_signal, "USD")}</td></tr>}
+                          {depsSum > 0 && <tr><td style={P.td}>Depósitos ({deps.length})</td><td style={P.tdR}>- {fmt(depsSum, "USD")}</td></tr>}
+                          <tr style={P.total}><td style={{ ...P.td, fontWeight: 800 }}>SALDO PENDIENTE</td><td style={{ ...P.tdR, fontSize: 16, color: "#e11d48" }}>{fmt(s.total_balance, "USD")}</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Deposits detail */}
+                    {deps.length > 0 && (
+                      <div style={P.sect}>
+                        <div style={P.title}>Detalle de Depósitos</div>
+                        <table style={P.tbl}>
+                          <thead><tr>
+                            <th style={P.th}>#</th><th style={P.th}>Banco</th><th style={P.th}>Referencia</th><th style={P.th}>Fecha</th><th style={{ ...P.th, textAlign: "right" }}>Monto</th>
+                          </tr></thead>
+                          <tbody>
+                            {deps.map((d, i) => (
+                              <tr key={i}>
+                                <td style={P.td}>{i + 1}</td><td style={P.td}>{d.bank || "-"}</td><td style={P.td}>{d.reference || "-"}</td>
+                                <td style={P.td}>{d.deposit_date ? new Date(d.deposit_date + "T12:00:00").toLocaleDateString("es-CR") : "-"}</td>
+                                <td style={P.tdR}>{fmt(d.amount, "USD")}</td>
+                              </tr>
+                            ))}
+                            {deps.length > 1 && <tr style={P.total}><td style={P.td} colSpan={4}><strong>Total depósitos</strong></td><td style={P.tdR}>{fmt(depsSum, "USD")}</td></tr>}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Payment method */}
+                    <div style={P.sect}>
+                      <div style={P.title}>Forma de Pago</div>
+                      {R("Método", s.payment_method)}
+                      {s.financing_term_months && R("Plazo", `${s.financing_term_months} meses`)}
+                      {s.financing_interest_pct && R("Interés", `${s.financing_interest_pct}%`)}
+                      {s.financing_amount && R("Monto financiado", fmt(s.financing_amount, "USD"))}
+                      {s.transfer_included && R("Traspaso", s.transfer_in_price ? "Incluido en precio" : s.transfer_in_financing ? "Incluido en financiamiento" : "Incluido")}
+                      {s.has_insurance && R("Seguro", `${s.insurance_months} meses`)}
+                      {s.sale_type !== "propio" && R("Comisión consignación", `${s.commission_pct}% = ${fmt(s.commission_amount, "USD")}`)}
+                    </div>
+
+                    {/* Agents */}
+                    {sAgents.length > 0 && (
+                      <div style={P.sect}>
+                        <div style={P.title}>Vendedores</div>
+                        <table style={P.tbl}>
+                          <thead><tr><th style={P.th}>Nombre</th><th style={{ ...P.th, textAlign: "right" }}>Comisión</th></tr></thead>
+                          <tbody>
+                            {sAgents.map((a, i) => (
+                              <tr key={i}><td style={P.td}>{a.agent_name}</td><td style={P.tdR}>{a.commission_pct}% = {fmt(a.commission_amount, "USD")}</td></tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+
+                    {/* Observations */}
+                    {s.observations && (
+                      <div style={P.sect}>
+                        <div style={P.title}>Observaciones</div>
+                        <div style={{ background: "#f8f8f8", padding: "12px 16px", borderRadius: 6, fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{s.observations}</div>
+                      </div>
+                    )}
+
+                    {/* Signatures */}
+                    <div style={{ marginTop: 50, display: "flex", justifyContent: "space-around" }}>
+                      <div style={P.sig}>Firma del Vendedor</div>
+                      <div style={P.sig}>Firma del Cliente</div>
+                      <div style={P.sig}>Aprobado por Gerencia</div>
+                    </div>
+
+                    {/* Footer */}
+                    <div style={{ marginTop: 40, textAlign: "center", fontSize: 10, color: "#999", borderTop: "1px solid #ddd", paddingTop: 12 }}>
+                      Vehículos de Costa Rica S.R.L. · Cédula Jurídica 3-101-124464 · Documento generado el {new Date().toLocaleDateString("es-CR", { day: "numeric", month: "long", year: "numeric" })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
         </main>
       </div>
