@@ -414,7 +414,14 @@ export default function App() {
   // ======= SALES FUNCTIONS =======
   const loadSales = async () => {
     const { data } = await supabase.from('sales').select('*').order('created_at', { ascending: false });
-    if (data) setSales(data);
+    if (data) {
+      // Fetch deposits for all sales
+      const ids = data.map(s => s.id);
+      const { data: deps } = ids.length > 0 ? await supabase.from('sale_deposits').select('*').in('sale_id', ids).order('deposit_date') : { data: [] };
+      const depMap = {};
+      (deps || []).forEach(d => { if (!depMap[d.sale_id]) depMap[d.sale_id] = []; depMap[d.sale_id].push(d); });
+      setSales(data.map(s => ({ ...s, deposits: depMap[s.id] || [] })));
+    }
   };
 
   const loadAgents = async () => {
@@ -433,7 +440,7 @@ export default function App() {
     tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
     sale_type: "propio", sale_price: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
     payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
-    deposit_bank: "", deposit_reference: "",
+    deposits: [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
     transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
     has_insurance: false, insurance_months: "",
     observations: "",
@@ -455,7 +462,74 @@ export default function App() {
     const tradein = parseFloat(form.tradein_amount) || 0;
     const down = parseFloat(form.down_payment) || 0;
     const signal = parseFloat(form.deposit_signal) || 0;
-    return Math.max(0, price - tradein - down - signal);
+    const depositsTotal = (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+    return Math.max(0, price - tradein - down - signal - depositsTotal);
+  };
+
+  const depositsTotal = (form) => (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+
+  const generateObservations = (form) => {
+    const brand = form.vehicle_brand || "";
+    const model = form.vehicle_model || "";
+    const year = form.vehicle_year || "";
+    const plate = form.vehicle_plate || "";
+    const vehicle = `${brand} ${model} ${year} ${plate}`.trim();
+
+    const deps = (form.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
+    let depText = "";
+    if (deps.length > 0) {
+      depText = deps.map(d => {
+        const parts = [];
+        if (d.reference) parts.push(`#${d.reference}`);
+        if (d.bank) parts.push(`de ${d.bank}`);
+        if (d.date) parts.push(`fecha ${new Date(d.date + "T12:00:00").toLocaleDateString("es-CR")}`);
+        if (d.amount) parts.push(`por ${fmt(parseFloat(d.amount), "USD")}`);
+        return parts.join(" ");
+      }).join("; ");
+    }
+
+    let tradeVeh = "";
+    if (form.has_tradein) {
+      const tBrand = form.tradein_brand || "";
+      const tModel = form.tradein_model || "";
+      const tYear = form.tradein_year || "";
+      const tPlate = form.tradein_plate || "";
+      tradeVeh = `${tBrand} ${tModel} ${tPlate} ${tYear}`.trim();
+    }
+
+    const isFinanced = form.payment_method === "Financiamiento" || form.payment_method === "Mixto";
+    const primaTotal = (parseFloat(form.down_payment) || 0) + depositsTotal(form);
+    const plazo = form.financing_term_months || "";
+
+    if (isFinanced) {
+      // FINANCIADO
+      let obs = "";
+      if (form.has_tradein) {
+        obs = `VENTA FINANCIADA. Se vende ${vehicle} y se recibe ${tradeVeh} como parte de pago.`;
+      } else {
+        obs = `VENTA FINANCIADA de ${vehicle}.`;
+      }
+      if (primaTotal > 0) {
+        obs += ` Cliente aporta prima de ${fmt(primaTotal, "USD")}`;
+        if (depText) obs += ` en deposito(s) ${depText}`;
+        obs += ".";
+      }
+      if (plazo) {
+        obs += ` El saldo pendiente debe cancelarse en un plazo de ${plazo} meses a mas tardar.`;
+      }
+      return obs;
+    } else {
+      // CONTADO
+      if (form.has_tradein) {
+        let obs = `VENTA DE CONTADO. Se vende ${vehicle} y se recibe ${tradeVeh} como parte de pago.`;
+        if (depText) obs += ` Saldo restante cancelado mediante deposito(s) ${depText}.`;
+        return obs;
+      } else {
+        let obs = `VENTA DE CONTADO de ${vehicle}.`;
+        if (depText) obs += ` Cancelado mediante deposito(s) ${depText}.`;
+        return obs;
+      }
+    }
   };
 
   const saveSale = async () => {
@@ -492,21 +566,33 @@ export default function App() {
       tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
       down_payment: parseFloat(saleForm.down_payment) || 0,
       deposit_signal: parseFloat(saleForm.deposit_signal) || 0,
+      deposits_total: depositsTotal(saleForm),
       total_balance: balance,
       payment_method: saleForm.payment_method,
       financing_term_months: parseInt(saleForm.financing_term_months) || null,
       financing_interest_pct: parseFloat(saleForm.financing_interest_pct) || null,
       financing_amount: parseFloat(saleForm.financing_amount) || null,
-      deposit_bank: saleForm.deposit_bank, deposit_reference: saleForm.deposit_reference,
       transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
       transfer_in_financing: saleForm.transfer_in_financing,
       has_insurance: saleForm.has_insurance,
       insurance_months: parseInt(saleForm.insurance_months) || null,
-      observations: saleForm.observations,
+      observations: saleForm.observations || generateObservations(saleForm),
     };
 
     const { data, error } = await supabase.from('sales').insert(row).select().single();
     if (error) { alert("Error: " + error.message); return; }
+
+    // Save deposits
+    const depRows = (saleForm.deposits || [])
+      .filter(d => d.amount && parseFloat(d.amount) > 0)
+      .map(d => ({
+        sale_id: data.id,
+        bank: d.bank || null,
+        reference: d.reference || null,
+        deposit_date: d.date || null,
+        amount: parseFloat(d.amount) || 0,
+      }));
+    if (depRows.length > 0) await supabase.from('sale_deposits').insert(depRows);
 
     // Save agents - 1% total commission, split if 2 agents
     const agentRows = [];
@@ -964,16 +1050,51 @@ export default function App() {
             </div>
           </div>
 
-          {/* PAYMENT + DEPOSIT */}
+          {/* PAYMENT + DEPOSITS */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Forma de Pago y Depósito</div>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Forma de Pago</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
               {fld("Forma de pago", "payment_method", { type: "select", options: [{ v: "Contado", l: "Contado" }, { v: "Financiamiento", l: "Financiamiento" }, { v: "Mixto", l: "Mixto" }] })}
               {fld("Plazo (meses)", "financing_term_months", { inputType: "number" })}
               {fld("Interés (%)", "financing_interest_pct", { inputType: "number" })}
               {fld("Monto financiado ($)", "financing_amount", { inputType: "number" })}
-              {fld("Banco del depósito", "deposit_bank")}
-              {fld("Número de depósito", "deposit_reference")}
+            </div>
+
+            <div style={{ marginTop: 14, borderTop: "1px solid #2a2d3d", paddingTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Depósitos</div>
+                <button onClick={() => setSaleForm(prev => ({ ...prev, deposits: [...(prev.deposits || []), { bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }] }))}
+                  style={{ ...S.sel, fontSize: 11, color: "#10b981", background: "#10b98110", padding: "5px 12px" }}>+ Agregar depósito</button>
+              </div>
+              {(F.deposits || []).map((dep, di) => (
+                <div key={di} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Banco</div>
+                    <input value={dep.bank} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], bank: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}># Referencia</div>
+                    <input value={dep.reference} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], reference: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Fecha</div>
+                    <input type="date" value={dep.date} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], date: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Monto ($)</div>
+                    <input type="number" value={dep.amount} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], amount: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
+                  </div>
+                  {F.deposits.length > 1 && (
+                    <button onClick={() => { const d = F.deposits.filter((_, j) => j !== di); uf("deposits", d); }}
+                      style={{ background: "none", border: "none", color: "#e11d48", cursor: "pointer", fontSize: 16, padding: "6px", marginBottom: 2 }}>✕</button>
+                  )}
+                </div>
+              ))}
+              {depositsTotal(F) > 0 && (
+                <div style={{ display: "flex", justifyContent: "flex-end", fontSize: 13, color: "#10b981", fontWeight: 600, marginTop: 4 }}>
+                  Total depósitos: {fmt(depositsTotal(F), "USD")}
+                </div>
+              )}
             </div>
           </div>
 
@@ -1023,9 +1144,15 @@ export default function App() {
 
           {/* OBSERVATIONS */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: "#4f8cff" }}>Observaciones</div>
-            <textarea value={F.observations || ""} onChange={e => uf("observations", e.target.value)} rows={3}
-              style={{ ...S.inp, width: "100%", resize: "vertical", fontFamily: "inherit" }} placeholder="Notas adicionales..." />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#4f8cff" }}>Observaciones</div>
+              <button onClick={() => uf("observations", generateObservations(F))}
+                style={{ ...S.sel, fontSize: 11, color: "#f59e0b", background: "#f59e0b10", padding: "5px 12px" }}>
+                Auto-generar
+              </button>
+            </div>
+            <textarea value={F.observations || ""} onChange={e => uf("observations", e.target.value)} rows={4}
+              style={{ ...S.inp, width: "100%", resize: "vertical", fontFamily: "inherit" }} placeholder="Haga clic en 'Auto-generar' o escriba manualmente..." />
           </div>
 
           {/* SUBMIT */}
@@ -1314,6 +1441,7 @@ export default function App() {
                     {pickedSale.tradein_amount > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Vehículo recibido</span><span>- {fmt(pickedSale.tradein_amount, "USD")}</span></div>}
                     {pickedSale.down_payment > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Prima</span><span>- {fmt(pickedSale.down_payment, "USD")}</span></div>}
                     {pickedSale.deposit_signal > 0 && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Señal de trato</span><span>- {fmt(pickedSale.deposit_signal, "USD")}</span></div>}
+                    {(pickedSale.deposits_total > 0 || (pickedSale.deposits && pickedSale.deposits.length > 0)) && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "4px 0", borderBottom: "1px solid #2a2d3d" }}><span style={{ color: "#8b8fa4" }}>Depósitos ({(pickedSale.deposits || []).length})</span><span>- {fmt(pickedSale.deposits_total || (pickedSale.deposits || []).reduce((s, d) => s + (d.amount || 0), 0), "USD")}</span></div>}
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, padding: "8px 0", fontWeight: 700 }}>
                       <span>Saldo total</span><span style={{ color: "#e11d48" }}>{fmt(pickedSale.total_balance, "USD")}</span>
                     </div>
@@ -1337,10 +1465,28 @@ export default function App() {
                     </div>
                   </div>
                   <div style={S.card}>
-                    <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Depósito</div>
+                    <div style={{ padding: "10px 16px", borderBottom: "1px solid #2a2d3d", fontWeight: 700, fontSize: 13, color: "#4f8cff" }}>Depósitos</div>
                     <div style={{ padding: "10px 16px", fontSize: 12 }}>
-                      {pickedSale.deposit_bank && <div><span style={{ color: "#8b8fa4" }}>Banco: </span>{pickedSale.deposit_bank}</div>}
-                      {pickedSale.deposit_reference && <div><span style={{ color: "#8b8fa4" }}># Depósito: </span>{pickedSale.deposit_reference}</div>}
+                      {(pickedSale.deposits && pickedSale.deposits.length > 0) ? pickedSale.deposits.map((dep, di) => (
+                        <div key={di} style={{ padding: "6px 0", borderBottom: di < pickedSale.deposits.length - 1 ? "1px solid #2a2d3d" : "none" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ color: "#e8eaf0", fontWeight: 600 }}>{fmt(dep.amount, "USD")}</span>
+                            <span style={{ color: "#8b8fa4", fontSize: 11 }}>{dep.deposit_date ? new Date(dep.deposit_date + "T12:00:00").toLocaleDateString("es-CR") : ""}</span>
+                          </div>
+                          <div style={{ color: "#8b8fa4", fontSize: 11 }}>
+                            {dep.bank && <span>{dep.bank}</span>}
+                            {dep.bank && dep.reference && <span> · </span>}
+                            {dep.reference && <span>#{dep.reference}</span>}
+                          </div>
+                        </div>
+                      )) : (
+                        <div style={{ color: "#8b8fa4" }}>Sin depósitos registrados</div>
+                      )}
+                      {pickedSale.deposits && pickedSale.deposits.length > 1 && (
+                        <div style={{ display: "flex", justifyContent: "space-between", paddingTop: 6, marginTop: 4, borderTop: "1px solid #2a2d3d", fontWeight: 700, color: "#10b981" }}>
+                          <span>Total</span><span>{fmt(pickedSale.deposits.reduce((s, d) => s + (d.amount || 0), 0), "USD")}</span>
+                        </div>
+                      )}
                       <div style={{ marginTop: 6 }}>
                         {pickedSale.transfer_included && <span style={S.badge("#8b5cf6")}>Traspaso incluido</span>}
                         {pickedSale.has_insurance && <span style={{ ...S.badge("#0ea5e9"), marginLeft: 4 }}>Seguro {pickedSale.insurance_months}m</span>}
