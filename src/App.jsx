@@ -172,6 +172,7 @@ export default function App() {
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
   const [fType, setFType] = useState("all");
+  const [fMethod, setFMethod] = useState("all");
   const [selectedInvs, setSelectedInvs] = useState(new Set());
   const [costView, setCostView] = useState("vehicles");
   const [syncing, setSyncing] = useState(false);
@@ -1978,7 +1979,7 @@ export default function App() {
   };
 
   const renderFac = () => {
-    const fList = invoices.filter(x => (fType==="all"||catType(x.catId)===fType)&&(fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign));
+    const fList = invoices.filter(x => (fType==="all"||catType(x.catId)===fType)&&(fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign)&&(fMethod==="all"||x.payCode===fMethod));
     return (
       <div>
         <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Facturas</h1>
@@ -2068,6 +2069,22 @@ export default function App() {
             <select value={fCat} onChange={e=>setFCat(e.target.value)} style={S.sel}><option value="all">Categoría</option>{CATS.map(c=><option key={c.id} value={c.id}>{c.l}</option>)}</select>
             <select value={fPay} onChange={e=>setFPay(e.target.value)} style={S.sel}><option value="all">Pago</option><option value="pending">Pendiente</option><option value="paid">Pagada</option></select>
             <select value={fAssign} onChange={e=>setFAssign(e.target.value)} style={S.sel}><option value="all">Asignación</option><option value="assigned">Asignada</option><option value="unassigned">Sin asignar</option><option value="operational">Operativo</option></select>
+            <select value={fMethod} onChange={e=>setFMethod(e.target.value)} style={S.sel}><option value="all">Medio pago</option><option value="01">Efectivo</option><option value="02">Tarjeta</option><option value="04">Transferencia</option><option value="03">Cheque</option><option value="99">Otros</option></select>
+          </div>
+          {/* Payment method summary */}
+          <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",fontSize:11}}>
+            {[["01","Efectivo","#10b981"],["02","Tarjeta","#f97316"],["04","Transfer.","#4f8cff"],["03","Cheque","#8b5cf6"],["99","Otros","#8b8fa4"]].map(([code,label,color])=>{
+              const items = fList.filter(x=>x.payCode===code);
+              if (items.length===0) return null;
+              const totalCRC = items.filter(x=>x.currency!=="USD").reduce((s,x)=>s+x.total,0);
+              const totalUSD = items.filter(x=>x.currency==="USD").reduce((s,x)=>s+x.total,0);
+              return (<div key={code} onClick={()=>setFMethod(fMethod===code?"all":code)} style={{padding:"6px 12px",background:fMethod===code?color+"20":"#1e2130",borderRadius:8,cursor:"pointer",border:`1px solid ${fMethod===code?color+"40":"#2a2d3d"}`}}>
+                <span style={{color,fontWeight:700}}>{label}</span>
+                <span style={{color:"#8b8fa4",marginLeft:6}}>({items.length})</span>
+                {totalCRC > 0 && <span style={{marginLeft:6,fontWeight:600}}>{fmt(totalCRC)}</span>}
+                {totalUSD > 0 && <span style={{marginLeft:6,fontWeight:600,color:"#10b981"}}>{fmt(totalUSD,"USD")}</span>}
+              </div>);
+            })}
           </div>
           <div style={{fontSize:13,color:"#8b8fa4",marginBottom:10,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
