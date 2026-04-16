@@ -179,6 +179,7 @@ export default function App() {
   const [fDateTo, setFDateTo] = useState("");
   const [selectedInvs, setSelectedInvs] = useState(new Set());
   const [costView, setCostView] = useState("vehicles");
+  const [costExpanded, setCostExpanded] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState(null);
   const [lastSync, setLastSync] = useState(null);
@@ -2252,44 +2253,141 @@ export default function App() {
 
   const renderCostos = () => {
     const plates = Object.keys(costsByPlate);
+    const totalVehicleCosts = plates.reduce((s,p) => s + costsByPlate[p].total, 0);
+    const totalOpCosts = opCosts.reduce((s,i) => s + i.total, 0);
+    // Only show cost-type invoices in unassigned (not gastos)
+    const unassignedCosts = unassigned.filter(i => catType(i.catId) === "costo" || i.catId === "otro");
+
     return (
       <div>
-        <h1 style={{fontSize:24,fontWeight:800,marginBottom:4}}>Costos</h1>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
-          <p style={{fontSize:13,color:"#8b8fa4"}}>Facturas asignadas a vehículos y costos operativos</p>
+          <h1 style={{fontSize:24,fontWeight:800}}>Costos</h1>
           <button onClick={()=>{
             const rows = [];
-            Object.keys(costsByPlate).forEach(plate=>{const car=cars.find(c=>c.p===plate);costsByPlate[plate].items.forEach(inv=>{rows.push({"Placa":plate,"Vehículo":car?`${car.b} ${car.m} ${car.y}`:"","Proveedor":supDisplay(inv),"Categoría":catLabel(inv.catId),"Grupo":catGroupLabel(inv.catId),"Fecha":inv.date,"Total":inv.total,"Estado":inv.payStatus==="paid"?"Pagada":"Pendiente"});});});
-            opCosts.forEach(inv=>{rows.push({"Placa":"OPERATIVO","Vehículo":"","Proveedor":supDisplay(inv),"Categoría":catLabel(inv.catId),"Grupo":catGroupLabel(inv.catId),"Fecha":inv.date,"Total":inv.total,"Estado":inv.payStatus==="paid"?"Pagada":"Pendiente"});});
+            plates.forEach(plate=>{const car=cars.find(c=>c.p===plate);costsByPlate[plate].items.forEach(inv=>{rows.push({"Placa":plate,"Vehículo":car?`${car.b} ${car.m} ${car.y}`:"","Proveedor":supDisplay(inv),"Categoría":catLabel(inv.catId),"Fecha":inv.date,"Total":inv.total,"Moneda":inv.currency||"CRC","Estado":inv.payStatus==="paid"?"Pagada":"Pendiente"});});});
+            opCosts.forEach(inv=>{rows.push({"Placa":"OPERATIVO","Vehículo":"","Proveedor":supDisplay(inv),"Categoría":catLabel(inv.catId),"Fecha":inv.date,"Total":inv.total,"Moneda":inv.currency||"CRC","Estado":inv.payStatus==="paid"?"Pagada":"Pendiente"});});
             exportXLS(rows,"Costos_VCR");
           }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
         </div>
-        <div style={{display:"flex",gap:8,marginBottom:16}}>
-          {[["vehicles","Por vehículo",plates.length],["operational","Operativos",opCosts.length],["unassigned","Sin asignar",unassigned.length]].map(([id,l,n])=>(
-            <button key={id} onClick={()=>setCostView(id)} style={{...S.sel,background:costView===id?"#4f8cff20":"#1e2130",color:costView===id?"#4f8cff":"#8b8fa4",fontWeight:costView===id?600:400}}>{l} ({n})</button>
-          ))}
+
+        {/* Summary cards */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+          <div onClick={()=>setCostView("vehicles")} style={{...S.card,padding:"14px 18px",cursor:"pointer",border:costView==="vehicles"?"1px solid #4f8cff":"1px solid #2a2d3d"}}>
+            <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Por vehículo ({plates.length})</div>
+            <div style={{fontSize:20,fontWeight:800,color:"#e11d48"}}>{fmt(totalVehicleCosts)}</div>
+          </div>
+          <div onClick={()=>setCostView("operational")} style={{...S.card,padding:"14px 18px",cursor:"pointer",border:costView==="operational"?"1px solid #4f8cff":"1px solid #2a2d3d"}}>
+            <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Operativos ({opCosts.length})</div>
+            <div style={{fontSize:20,fontWeight:800,color:"#f97316"}}>{fmt(totalOpCosts)}</div>
+          </div>
+          <div onClick={()=>setCostView("unassigned")} style={{...S.card,padding:"14px 18px",cursor:"pointer",border:costView==="unassigned"?"1px solid #4f8cff":"1px solid #2a2d3d"}}>
+            <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Sin asignar</div>
+            <div style={{fontSize:20,fontWeight:800,color:"#8b8fa4"}}>{unassignedCosts.length}</div>
+          </div>
         </div>
-        {costView==="vehicles"&&(plates.length===0?<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay facturas asignadas a vehículos</div>:plates.map(plate=>{
-          const car=cars.find(c=>c.p===plate);const data=costsByPlate[plate];
-          return <div key={plate} style={{...S.card,marginBottom:12}}>
-            <div style={{padding:"14px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <div><div style={{fontWeight:700,fontSize:14}}>{car?car.b+" "+car.m+" "+car.y:plate}</div><div style={{fontSize:12,color:"#8b8fa4"}}>{plate} · {data.items.length} factura{data.items.length!==1?"s":""}</div></div>
-              <div style={{fontSize:20,fontWeight:800,color:"#e11d48"}}>{fmt(data.total)}</div>
-            </div>
-            {data.items.map((inv,i)=><div key={i} onClick={()=>openInvoice(inv)} style={{padding:"10px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",fontSize:12,cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
-              <div><div style={{fontWeight:600}}>{supDisplay(inv)}</div><div style={{color:"#8b8fa4",fontSize:11}}>{catGroupLabel(inv.catId)} → {catLabel(inv.catId)} · {new Date(inv.date).toLocaleDateString("es-CR")}</div></div>
-              <div style={{display:"flex",alignItems:"center",gap:8}}><div><div style={{fontWeight:700}}>{fmt(inv.total)}</div><span style={S.badge(inv.payStatus==="paid"?"#10b981":"#f59e0b")}>{inv.payStatus==="paid"?"Pagada":"Pendiente"}</span></div><span style={{color:"#8b8fa4",fontSize:11}}>editar</span></div>
-            </div>)}
-          </div>;
-        }))}
-        {costView==="operational"&&(opCosts.length===0?<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay costos operativos</div>:<div style={S.card}>{opCosts.map((inv,i)=><div key={i} onClick={()=>openInvoice(inv)} style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
-          <div><div style={{fontWeight:600,fontSize:13}}>{supDisplay(inv)}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{catGroupLabel(inv.catId)} → {catLabel(inv.catId)} · {new Date(inv.date).toLocaleDateString("es-CR")}</div></div>
-          <div style={{display:"flex",alignItems:"center",gap:8}}><div style={{fontWeight:700,color:"#4f8cff"}}>{fmt(inv.total)}</div><span style={{color:"#8b8fa4",fontSize:11}}>editar</span></div>
-        </div>)}</div>)}
-        {costView==="unassigned"&&(unassigned.length===0?<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>Todas las facturas están asignadas</div>:<div style={S.card}>{unassigned.map((inv,i)=><div key={i} onClick={()=>openInvoice(inv)} style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",alignItems:"center",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
-          <div><div style={{fontWeight:600,fontSize:13}}>{supDisplay(inv)}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{catGroupLabel(inv.catId)} → {catLabel(inv.catId)} · {fmt(inv.total)}{inv.warnPlate?" · ⚠ Placa "+inv.warnPlate+" no en inventario":""}</div></div>
-          <span style={{color:"#8b8fa4",fontSize:11}}>editar</span>
-        </div>)}</div>)}
+
+        {/* VEHICLES TABLE */}
+        {costView==="vehicles"&&(plates.length===0 ? (
+          <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay facturas asignadas a vehículos</div>
+        ) : (
+          <div style={S.card}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr style={{background:"#1e2130"}}>
+                {["Vehículo","Placa","Facturas","Total",""].map(h=>(
+                  <th key={h} style={{padding:"10px 14px",textAlign:h==="Total"?"right":(h===""?"center":"left"),fontSize:10,fontWeight:700,color:"#8b8fa4",textTransform:"uppercase",borderBottom:"2px solid #2a2d3d"}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {plates.map(plate => {
+                  const car = cars.find(c=>c.p===plate);
+                  const data = costsByPlate[plate];
+                  const isOpen = costExpanded === plate;
+                  return (
+                    <React.Fragment key={plate}>
+                      <tr onClick={()=>setCostExpanded(isOpen?null:plate)} style={{cursor:"pointer",borderBottom:"1px solid #2a2d3d"}}
+                        onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                        <td style={{padding:"10px 14px",fontWeight:600,fontSize:13}}>
+                          {car ? `${car.b} ${car.m} ${car.y}` : plate}
+                          {car && car.s === "vendido" && <span style={{...S.badge("#10b981"),marginLeft:8,fontSize:9}}>Vendido</span>}
+                        </td>
+                        <td style={{padding:"10px 14px",fontSize:12,color:"#8b8fa4"}}>{plate}</td>
+                        <td style={{padding:"10px 14px",fontSize:12}}>{data.items.length}</td>
+                        <td style={{padding:"10px 14px",textAlign:"right",fontWeight:700,fontSize:14,color:"#e11d48"}}>{fmt(data.total)}</td>
+                        <td style={{padding:"10px 14px",textAlign:"center",color:"#8b8fa4",fontSize:12}}>{isOpen?"▲":"▼"}</td>
+                      </tr>
+                      {isOpen && data.items.map((inv,j) => (
+                        <tr key={j} onClick={()=>openInvoice(inv)} style={{cursor:"pointer",background:"#1e2130",borderBottom:"1px solid #2a2d3d"}}
+                          onMouseEnter={e=>e.currentTarget.style.background="#252840"} onMouseLeave={e=>e.currentTarget.style.background="#1e2130"}>
+                          <td style={{padding:"8px 14px 8px 30px",fontSize:12}}>
+                            <div style={{fontWeight:600}}>{supDisplay(inv)}</div>
+                            <div style={{fontSize:10,color:"#8b8fa4"}}>{catLabel(inv.catId)}</div>
+                          </td>
+                          <td style={{padding:"8px 14px",fontSize:11,color:"#8b8fa4"}}>{inv.date ? new Date(inv.date).toLocaleDateString("es-CR") : ""}</td>
+                          <td style={{padding:"8px 14px"}}><span style={S.badge(inv.payStatus==="paid"?"#10b981":"#f59e0b")}>{inv.payStatus==="paid"?"Pagada":"Pendiente"}</span></td>
+                          <td style={{padding:"8px 14px",textAlign:"right",fontWeight:600,fontSize:12,color:inv.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(inv.total,inv.currency==="USD"?"USD":undefined)}</td>
+                          <td></td>
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ))}
+
+        {/* OPERATIONAL */}
+        {costView==="operational"&&(opCosts.length===0 ? (
+          <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay costos operativos</div>
+        ) : (
+          <div style={S.card}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr style={{background:"#1e2130"}}>
+                {["Proveedor","Categoría","Fecha","Monto"].map(h=>(
+                  <th key={h} style={{padding:"10px 14px",textAlign:h==="Monto"?"right":"left",fontSize:10,fontWeight:700,color:"#8b8fa4",textTransform:"uppercase",borderBottom:"2px solid #2a2d3d"}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {opCosts.map((inv,i)=>(
+                  <tr key={i} onClick={()=>openInvoice(inv)} style={{cursor:"pointer",borderBottom:"1px solid #2a2d3d"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                    <td style={{padding:"10px 14px",fontSize:12,fontWeight:600}}>{supDisplay(inv)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,color:"#8b8fa4"}}>{catLabel(inv.catId)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,color:"#8b8fa4"}}>{inv.date ? new Date(inv.date).toLocaleDateString("es-CR") : ""}</td>
+                    <td style={{padding:"10px 14px",textAlign:"right",fontWeight:600,color:inv.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(inv.total,inv.currency==="USD"?"USD":undefined)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
+
+        {/* UNASSIGNED - only cost-type invoices */}
+        {costView==="unassigned"&&(unassignedCosts.length===0 ? (
+          <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay costos sin asignar</div>
+        ) : (
+          <div style={S.card}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr style={{background:"#1e2130"}}>
+                {["Proveedor","Categoría","Fecha","Placa detectada","Monto"].map(h=>(
+                  <th key={h} style={{padding:"10px 14px",textAlign:h==="Monto"?"right":"left",fontSize:10,fontWeight:700,color:"#8b8fa4",textTransform:"uppercase",borderBottom:"2px solid #2a2d3d"}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {unassignedCosts.map((inv,i)=>(
+                  <tr key={i} onClick={()=>openInvoice(inv)} style={{cursor:"pointer",borderBottom:"1px solid #2a2d3d"}}
+                    onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                    <td style={{padding:"10px 14px",fontSize:12,fontWeight:600}}>{supDisplay(inv)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,color:"#8b8fa4"}}>{catLabel(inv.catId)}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,color:"#8b8fa4"}}>{inv.date ? new Date(inv.date).toLocaleDateString("es-CR") : ""}</td>
+                    <td style={{padding:"10px 14px",fontSize:12}}>{inv.warnPlate ? <span style={{color:"#f59e0b"}}>⚠ {inv.warnPlate}</span> : <span style={{color:"#8b8fa4"}}>-</span>}</td>
+                    <td style={{padding:"10px 14px",textAlign:"right",fontWeight:600,color:inv.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(inv.total,inv.currency==="USD"?"USD":undefined)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ))}
       </div>
     );
   };
