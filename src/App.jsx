@@ -187,6 +187,8 @@ export default function App() {
   const [deletePin, setDeletePin] = useState("");
   const [deleteErr, setDeleteErr] = useState("");
   const [vehicleForm, setVehicleForm] = useState(null);
+  const [vehicleFormLine, setVehicleFormLine] = useState(null); // which invoice line is selected
+  const [completedVehicleLines, setCompletedVehicleLines] = useState(new Set()); // line indices already added
   const [cars, setCars] = useState([]);
   const [invFilter, setInvFilter] = useState("disponible"); // disponible, reservado, vendido, all
   const [showAddVehicle, setShowAddVehicle] = useState(false);
@@ -315,12 +317,15 @@ export default function App() {
     setShowDelete(false);
     setDeletePin("");
     setDeleteErr("");
+    setVehicleForm(null);
+    setVehicleFormLine(null);
+    setCompletedVehicleLines(new Set());
     if (!inv.lines || inv.lines.length === 0) {
       const { data: dbInv } = await supabase.from('invoices').select('id').eq('xml_key', inv.key).single();
       if (dbInv) {
         const { data: lines } = await supabase.from('invoice_lines').select('*').eq('invoice_id', dbInv.id).order('line_number');
         if (lines) {
-          const mapped = lines.map(l => ({ desc: l.description, cabys: l.cabys_code, price: l.unit_price, taxRate: l.tax_rate, taxAmt: l.tax_amount, total: l.line_total }));
+          const mapped = lines.map(l => ({ desc: l.description, cabys: l.cabys_code, qty: l.quantity || 1, price: l.unit_price, taxRate: l.tax_rate, taxAmt: l.tax_amount, total: l.line_total }));
           setPickedInv(prev => prev ? { ...prev, lines: mapped } : null);
         }
       }
@@ -391,13 +396,16 @@ export default function App() {
   const saveVehicleFromInvoice = async () => {
     if (!vehicleForm || !vehicleForm.plate) { alert("La placa es requerida"); return; }
     const inv = pickedInv;
-    // Determine purchase cost in CRC based on invoice currency
     const invCurrency = inv.currency || 'CRC';
-    const invTotal = inv.total || 0;
     const invExchangeRate = inv.exchangeRate || 1;
-    // If invoice is in USD, convert to CRC using the invoice's exchange rate
-    const purchaseCostCRC = invCurrency === 'USD' ? Math.round(invTotal * invExchangeRate) : invTotal;
-    const purchaseCostUSD = invCurrency === 'USD' ? invTotal : (invExchangeRate > 1 ? Math.round(invTotal / invExchangeRate) : null);
+
+    // Use line cost if a specific line is selected, otherwise use total
+    const lineCost = vehicleFormLine != null && inv.lines && inv.lines[vehicleFormLine]
+      ? inv.lines[vehicleFormLine].total
+      : inv.total;
+
+    const purchaseCostCRC = invCurrency === 'USD' ? Math.round(lineCost * invExchangeRate) : lineCost;
+    const purchaseCostUSD = invCurrency === 'USD' ? lineCost : (invExchangeRate > 1 ? Math.round(lineCost / invExchangeRate) : null);
 
     const { data: veh, error } = await supabase.from('vehicles').insert({
       plate: vehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
@@ -420,17 +428,31 @@ export default function App() {
       status: 'disponible',
     }).select().single();
     if (error) { alert("Error: " + error.message); return; }
-    // Update invoice
-    await supabase.from('invoices').update({ 
-      vehicle_purchase_status: 'completed',
-      plate: vehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
-      assign_status: 'assigned',
-    }).eq('xml_key', inv.key);
-    setInvoices(prev => prev.map(x => x.key === inv.key ? { ...x, vehicleStatus: 'completed', plate: vehicleForm.plate.toUpperCase() } : x));
-    setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'completed' } : null);
+
+    // Track which lines have been completed
+    const newCompleted = new Set(completedVehicleLines);
+    if (vehicleFormLine != null) newCompleted.add(vehicleFormLine);
+    setCompletedVehicleLines(newCompleted);
+
+    // Check if all lines are done (or if single-line invoice)
+    const totalLines = (inv.lines || []).length;
+    const allDone = totalLines <= 1 || newCompleted.size >= totalLines;
+
+    if (allDone) {
+      // All vehicles added, mark invoice as completed
+      await supabase.from('invoices').update({ 
+        vehicle_purchase_status: 'completed',
+        plate: vehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
+        assign_status: 'assigned',
+      }).eq('xml_key', inv.key);
+      setInvoices(prev => prev.map(x => x.key === inv.key ? { ...x, vehicleStatus: 'completed', plate: vehicleForm.plate.toUpperCase() } : x));
+      setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'completed' } : null);
+    }
+
     setVehicleForm(null);
+    setVehicleFormLine(null);
     await loadVehicles();
-    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase());
+    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase() + (allDone ? "" : ` (${newCompleted.size}/${totalLines} líneas completadas)`));
   };
 
   const dismissVehicle = async () => {
@@ -2905,16 +2927,74 @@ export default function App() {
                 {/* Vehicle purchase form */}
                 {pickedInv.isVehicle && pickedInv.vehicleStatus === 'detected' && (
                   <div style={{marginTop:16,background:"#f59e0b10",border:"1px solid #f59e0b30",borderRadius:12,padding:"14px 16px"}}>
-                    <div style={{fontWeight:700,fontSize:13,color:"#f59e0b",marginBottom:10}}>🚗 Compra de vehículo detectada</div>
+                    <div style={{fontWeight:700,fontSize:13,color:"#f59e0b",marginBottom:10}}>
+                      🚗 Compra de vehículo detectada
+                      {(pickedInv.lines||[]).length > 1 && <span style={{fontWeight:400,fontSize:11,color:"#8b8fa4",marginLeft:8}}>({(pickedInv.lines||[]).length} líneas, {completedVehicleLines.size} agregada{completedVehicleLines.size!==1?"s":""})</span>}
+                    </div>
+
                     {!vehicleForm ? (
-                      <div style={{display:"flex",gap:8}}>
-                        <button onClick={() => setVehicleForm({plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",cabys_code:"",consignment:false,consignment_owner:""})} style={{...S.sel,background:"#f59e0b",color:"#fff",fontWeight:600,flex:1,border:"none"}}>
-                          Completar datos del vehículo
-                        </button>
-                        <button onClick={dismissVehicle} style={{...S.sel,color:"#8b8fa4"}}>No es un vehículo</button>
+                      <div>
+                        {/* Show lines to pick from if multiple lines */}
+                        {(pickedInv.lines||[]).length > 1 ? (
+                          <div style={{marginBottom:10}}>
+                            <div style={{fontSize:11,color:"#8b8fa4",marginBottom:6}}>Seleccione la línea del vehículo a agregar:</div>
+                            {(pickedInv.lines||[]).map((line, idx) => {
+                              const isDone = completedVehicleLines.has(idx);
+                              return (
+                                <div key={idx} onClick={() => {
+                                  if (isDone) return;
+                                  setVehicleFormLine(idx);
+                                  setVehicleForm({plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",cabys_code:"",consignment:false,consignment_owner:""});
+                                }} style={{padding:"8px 12px",marginBottom:4,borderRadius:8,cursor:isDone?"default":"pointer",background:isDone?"#10b98110":"#1e2130",border:isDone?"1px solid #10b98130":"1px solid #2a2d3d",opacity:isDone?0.6:1,display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                                  onMouseEnter={e=>{if(!isDone)e.currentTarget.style.background="#f59e0b10"}} onMouseLeave={e=>{if(!isDone)e.currentTarget.style.background=isDone?"#10b98110":"#1e2130"}}>
+                                  <div style={{fontSize:12,flex:1}}>
+                                    {isDone && <span style={{color:"#10b981",marginRight:6}}>✓</span>}
+                                    <span style={{fontWeight:600}}>{line.desc ? (line.desc.length > 60 ? line.desc.slice(0,60)+"..." : line.desc) : `Línea ${idx+1}`}</span>
+                                  </div>
+                                  <span style={{fontWeight:700,color:pickedInv.currency==="USD"?"#10b981":"#4f8cff",fontSize:13}}>
+                                    {fmt(line.total, pickedInv.currency==="USD"?"USD":undefined)}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                            {completedVehicleLines.size > 0 && completedVehicleLines.size < (pickedInv.lines||[]).length && (
+                              <button onClick={async () => {
+                                await supabase.from('invoices').update({ vehicle_purchase_status: 'completed', assign_status: 'assigned' }).eq('xml_key', pickedInv.key);
+                                setInvoices(prev => prev.map(x => x.key === pickedInv.key ? { ...x, vehicleStatus: 'completed' } : x));
+                                setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'completed' } : null);
+                              }} style={{...S.sel,color:"#10b981",background:"#10b98110",fontWeight:600,width:"100%",marginTop:8,fontSize:12}}>
+                                Listo, no hay más vehículos en esta factura
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{display:"flex",gap:8}}>
+                            <button onClick={() => {
+                              setVehicleFormLine(0);
+                              setVehicleForm({plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",cabys_code:"",consignment:false,consignment_owner:""});
+                            }} style={{...S.sel,background:"#f59e0b",color:"#fff",fontWeight:600,flex:1,border:"none"}}>
+                              Completar datos del vehículo
+                            </button>
+                            <button onClick={dismissVehicle} style={{...S.sel,color:"#8b8fa4"}}>No es un vehículo</button>
+                          </div>
+                        )}
+                        {(pickedInv.lines||[]).length <= 1 && (
+                          <div style={{marginTop:6}}>
+                            <button onClick={dismissVehicle} style={{...S.sel,color:"#8b8fa4",fontSize:11,width:"100%"}}>No es un vehículo</button>
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div>
+                        {vehicleFormLine != null && pickedInv.lines && pickedInv.lines[vehicleFormLine] && (
+                          <div style={{background:"#1e2130",borderRadius:8,padding:"8px 12px",marginBottom:10,fontSize:12}}>
+                            <div style={{color:"#8b8fa4",fontSize:10}}>Línea seleccionada:</div>
+                            <div style={{fontWeight:600}}>{pickedInv.lines[vehicleFormLine].desc}</div>
+                            <div style={{fontWeight:700,color:pickedInv.currency==="USD"?"#10b981":"#4f8cff"}}>
+                              Costo: {fmt(pickedInv.lines[vehicleFormLine].total, pickedInv.currency==="USD"?"USD":undefined)}
+                            </div>
+                          </div>
+                        )}
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
                           {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Estilo","style"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
                             <div key={k}>
@@ -2947,7 +3027,7 @@ export default function App() {
                           </div>
                         </div>
                         <div style={{display:"flex",gap:8,marginTop:12,justifyContent:"flex-end"}}>
-                          <button onClick={()=>setVehicleForm(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                          <button onClick={()=>{setVehicleForm(null);setVehicleFormLine(null);}} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
                           <button onClick={saveVehicleFromInvoice} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none"}}>
                             Confirmar y agregar al inventario
                           </button>
