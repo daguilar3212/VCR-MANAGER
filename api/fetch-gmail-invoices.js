@@ -23,7 +23,6 @@ function parseXMLServer(xmlStr) {
   const supEmail = tag(emisorBlock, 'CorreoElectronico');
   const telBlock = tagAll(emisorBlock, 'Telefono')[0] || "";
   const supPhone = tag(telBlock, 'NumTelefono');
-  // New: supplier address and canton
   const ubicacionBlock = tagAll(emisorBlock, 'Ubicacion')[0] || "";
   const supCanton = tag(ubicacionBlock, 'Canton') || tag(ubicacionBlock, 'NombreCanton');
   const supAddress = tag(emisorBlock, 'OtrasSenas');
@@ -42,7 +41,6 @@ function parseXMLServer(xmlStr) {
   const otrosCargosBlock = tagAll(xmlStr, 'OtrosCargos')[0] || "";
   const otherChargesDetail = tag(otrosCargosBlock, 'Detalle');
   const creditDays = parseInt(tag(xmlStr, 'PlazoCredito') || '0');
-  // New: calculate due date
   let dueDate = null;
   if (fechaEmision && creditDays > 0) {
     const d = new Date(fechaEmision);
@@ -51,7 +49,6 @@ function parseXMLServer(xmlStr) {
   } else if (fechaEmision) {
     dueDate = fechaEmision.split('T')[0];
   }
-  // Map supplier ID type to Alegra format
   const idTypeMap = {"01":"Cédula Física","02":"Cédula Jurídica","03":"DIMEX","04":"NITE"};
   const supIdTypeLabel = idTypeMap[supIdType] || supIdType;
   const lineBlocks = tagAll(xmlStr, 'LineaDetalle');
@@ -62,7 +59,6 @@ function parseXMLServer(xmlStr) {
     const pm = desc.match(plateRx);
     if (pm && !detectedPlate) detectedPlate = pm[1].toUpperCase().replace(/\s+/g, '-');
     const impBlock = tagAll(lb, 'Impuesto')[0] || "";
-    // New: extract discount per line
     const descuentoBlock = tagAll(lb, 'Descuento')[0] || "";
     const discPct = parseFloat(tag(descuentoBlock, 'NaturalezaDescuento') ? tag(lb, 'MontoDescuento') : '0');
     const lineSubtotal = parseFloat(tag(lb, 'SubTotal') || '0');
@@ -115,7 +111,6 @@ function parseXMLServer(xmlStr) {
   };
 }
 
-// Category ID -> Alegra category name mapping
 const ALEGRA_NAMES = {
   rep_vehiculos: "Reparaciones de Vehículos",
   combustible: "Combustibles y Lubricantes",
@@ -204,11 +199,27 @@ export default async function handler(req, res) {
       sinceEpoch = Math.floor(since.getTime() / 1000);
     }
 
+    // ============================================
+    // PAGINATION FIX: fetch ALL matching messages
+    // Gmail API returns max 100 per page with nextPageToken
+    // Loop until no more pages (safety cap: 10 pages = ~1000 emails)
+    // ============================================
     const query = `has:attachment filename:xml after:${sinceEpoch}`;
-    const searchResult = await gmailAPI(`messages?q=${encodeURIComponent(query)}&maxResults=50`, token);
+    let allMessages = [];
+    let pageToken = null;
+    let pageCount = 0;
 
-    if (!searchResult.messages || searchResult.messages.length === 0) {
-      return res.json({ processed: 0, message: 'No new emails with XML' });
+    do {
+      const url = `messages?q=${encodeURIComponent(query)}&maxResults=100${pageToken ? `&pageToken=${pageToken}` : ''}`;
+      const page = await gmailAPI(url, token);
+      if (page.messages) allMessages.push(...page.messages);
+      pageToken = page.nextPageToken || null;
+      pageCount++;
+      if (pageCount > 10) break; // safety: max ~1000 emails per run
+    } while (pageToken);
+
+    if (allMessages.length === 0) {
+      return res.json({ processed: 0, skipped: 0, rejected: 0, total: 0, pages: pageCount, message: 'No new emails with XML' });
     }
 
     // Valid receptor IDs for this company
@@ -228,7 +239,7 @@ export default async function handler(req, res) {
     const rejectedList = [];
     const errors = [];
 
-    for (const msg of searchResult.messages) {
+    for (const msg of allMessages) {
       const { data: existing } = await supabase.from('invoices').select('id').eq('gmail_message_id', msg.id).limit(1);
       if (existing && existing.length > 0) { skipped++; continue; }
 
@@ -257,7 +268,6 @@ export default async function handler(req, res) {
           if (!parsed.xml_key) continue;
 
           // === RECEPTOR VALIDATION ===
-          // Only accept invoices addressed to Vehiculos de Costa Rica
           const receptorBlock = (xmlContent.match(/<(?:[\w]+:)?Receptor[\s\S]*?<\/(?:[\w]+:)?Receptor>/i) || [""])[0];
           const recIdBlock = (receptorBlock.match(/<(?:[\w]+:)?Identificacion[\s\S]*?<\/(?:[\w]+:)?Identificacion>/i) || [""])[0];
           const recId = (recIdBlock.match(/<(?:[\w]+:)?Numero[^>]*>([\s\S]*?)<\/(?:[\w]+:)?Numero>/i) || ["",""])[1].trim();
@@ -346,7 +356,6 @@ export default async function handler(req, res) {
           if (!alegraCategory) alegraCategory = ALEGRA_NAMES[catId] || "Otros Gastos";
 
           // === VEHICLE PURCHASE DETECTION ===
-          // Check if any line has a vehicle CABYS code (491x = passenger, 492x = cargo)
           let isVehiclePurchase = false;
           for (const line of parsed.lines) {
             const code = line.cabys_code || "";
@@ -355,7 +364,6 @@ export default async function handler(req, res) {
               break;
             }
           }
-          // Also detect by description keywords + high amount
           if (!isVehiclePurchase) {
             const allDescsLower = parsed.lines.map(l => l.description).join(' ').toLowerCase();
             const hasVehicleKeywords = /\b(autom[oó]vil|veh[ií]culo|camioneta|pick.?up|sedan|suv|todo.?terreno|station.?wagon|hatchback)\b/i.test(allDescsLower);
@@ -364,7 +372,6 @@ export default async function handler(req, res) {
               isVehiclePurchase = true;
             }
           }
-          // If vehicle purchase, override category to costo_inv
           if (isVehiclePurchase) {
             catId = "costo_inv";
             groupId = "costos_merc";
@@ -377,7 +384,6 @@ export default async function handler(req, res) {
           let vehicleId = null;
           let vehicleObservation = null;
 
-          // Extract plate references from descriptions
           const plateRx2 = /\b([A-Z]{2,3}[-\s]?\d{3,6})\b/gi;
           const clRx = /\b(CL[-\s]?\d{5,7})\b/gi;
           const allDescs = parsed.lines.map(l => l.description).join(' ');
@@ -460,7 +466,9 @@ export default async function handler(req, res) {
     }
 
     return res.json({ 
-      processed, skipped, rejected, total: searchResult.messages.length, 
+      processed, skipped, rejected, 
+      total: allMessages.length, 
+      pages: pageCount,
       rejectedList: rejectedList.length > 0 ? rejectedList : undefined,
       errors: errors.length > 0 ? errors : undefined 
     });
