@@ -356,20 +356,23 @@ export default async function handler(req, res) {
           if (!alegraCategory) alegraCategory = ALEGRA_NAMES[catId] || "Otros Gastos";
 
           // === VEHICLE PURCHASE DETECTION ===
+          // ONLY detect via CABYS codes starting with 491 (passenger) or 492 (cargo vehicles)
+          // Keyword detection removed because supplier names like "Autostar Vehiculos" 
+          // or "Auto Partes" trigger false positives
           let isVehiclePurchase = false;
           for (const line of parsed.lines) {
             const code = line.cabys_code || "";
+            // CABYS 491xxxx = passenger vehicles, 492xxxx = cargo vehicles
             if (code.startsWith('491') || code.startsWith('492')) {
-              isVehiclePurchase = true;
-              break;
-            }
-          }
-          if (!isVehiclePurchase) {
-            const allDescsLower = parsed.lines.map(l => l.description).join(' ').toLowerCase();
-            const hasVehicleKeywords = /\b(autom[oó]vil|veh[ií]culo|camioneta|pick.?up|sedan|suv|todo.?terreno|station.?wagon|hatchback)\b/i.test(allDescsLower);
-            const isHighAmount = (parsed.currency === 'USD' && parsed.total >= 3000) || (parsed.currency !== 'USD' && parsed.total >= 2000000);
-            if (hasVehicleKeywords && isHighAmount) {
-              isVehiclePurchase = true;
+              // Extra check: line total must be significant (> $3000 or > ₡2M) 
+              // to avoid detecting vehicle PARTS that share similar CABYS prefixes
+              const lineAmt = line.line_total || 0;
+              const isSignificant = (parsed.currency === 'USD' && lineAmt >= 3000) || 
+                                    (parsed.currency !== 'USD' && lineAmt >= 2000000);
+              if (isSignificant) {
+                isVehiclePurchase = true;
+                break;
+              }
             }
           }
           if (isVehiclePurchase) {
