@@ -1,20 +1,64 @@
-import { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { supabase } from './supabase.js';
+import * as XLSX from 'xlsx';
 
-const cars = [
-  {p:"BVQ934",b:"Hyundai",m:"Tucson",y:2022,co:"Blanco",km:60000,f:"Gasolina",dr:"4x4",st:"SUV",usd:27900,crc:13172000,s:"disponible"},
-  {p:"CL306089",b:"Toyota",m:"Hilux",y:2018,co:"Blanco",km:116000,f:"Diesel",dr:"4x4",st:"PICK UP",usd:32000,crc:15108000,s:"disponible"},
-  {p:"BYH-390",b:"Mitsubishi",m:"Montero Sport",y:2023,co:"Gris",km:51900,f:"Diesel",dr:"4x4",st:"SUV",usd:48500,crc:22898000,s:"disponible"},
-  {p:"BWX-020",b:"Toyota",m:"Yaris",y:2022,co:"Gris",km:50000,f:"Gasolina",dr:"4x2",st:"SEDAN",usd:18000,crc:8498000,s:"reservado"},
-  {p:"MJW-999",b:"Porsche",m:"Cayenne",y:2018,co:"Negro",km:115000,f:"Diesel",dr:"4x4",st:"SUV",usd:56000,crc:26439000,s:"disponible"},
-  {p:"BYD-440",b:"Toyota",m:"Prado TX-L",y:2023,co:"Blanco",km:56000,f:"Diesel",dr:"4x4",st:"SUV",usd:61000,crc:28800000,s:"disponible"},
-  {p:"CONSIGNA",b:"Ford",m:"Ranger Wildtrak",y:2022,co:"Gris",km:32000,f:"Diesel",dr:"4x4",st:"PICK UP",usd:47900,crc:22615000,s:"disponible"},
-  {p:"BNK-915",b:"BMW",m:"X6",y:2017,co:"Blanco",km:99000,f:"Diesel",dr:"4x4",st:"SUV",usd:45500,crc:21482000,s:"disponible"},
-  {p:"DEM-003",b:"Jeep",m:"Wrangler",y:2020,co:"Verde",km:58000,f:"Gasolina",dr:"4x4",st:"SUV",usd:45000,crc:21240000,s:"reservado"},
-  {p:"DEM-004",b:"Honda",m:"Civic",y:2023,co:"Azul",km:25000,f:"Gasolina",dr:"4x2",st:"SEDAN",usd:26000,crc:12272000,s:"disponible"},
-  {p:"CBP-424",b:"Toyota",m:"RAV4",y:2024,co:"Blanco",km:44900,f:"Gasolina",dr:"4x4",st:"SUV",usd:34000,crc:16052000,s:"disponible"},
-  {p:"GCR-909",b:"Kia",m:"Sportage",y:2016,co:"Azul",km:117000,f:"Gasolina",dr:"4x2",st:"SUV",usd:15000,crc:6850000,s:"disponible"},
+const exportXLS = (rows, name) => {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, name.slice(0,31));
+  XLSX.writeFile(wb, `${name}_${new Date().toISOString().split('T')[0]}.xlsx`);
+};
+
+// CABYS codes for vehicles (most used)
+const CABYS_VEHICLES = [
+  { code: "4911200000100", label: "Microbús", type: "microbus" },
+  { code: "4911200000200", label: "Buseta", type: "buseta" },
+  { code: "4911305000100", label: "Coupé <= 2000cc", type: "coupe" },
+  { code: "4911305000200", label: "Coupé > 2000cc", type: "coupe" },
+  { code: "4911306010100", label: "SUV 2 puertas <= 2000cc", type: "suv" },
+  { code: "4911306010200", label: "SUV 2 puertas > 2000cc", type: "suv" },
+  { code: "4911306020100", label: "SUV 4 puertas <= 2000cc", type: "suv" },
+  { code: "4911306020200", label: "SUV 4 puertas > 2000cc", type: "suv" },
+  { code: "4911307010100", label: "Todoterreno 2 puertas <= 2000cc", type: "todoterreno" },
+  { code: "4911307010200", label: "Todoterreno 2 puertas > 2000cc", type: "todoterreno" },
+  { code: "4911307020100", label: "Todoterreno 4 puertas <= 2000cc", type: "todoterreno" },
+  { code: "4911307020200", label: "Todoterreno 4 puertas > 2000cc", type: "todoterreno" },
+  { code: "4911308010100", label: "Sedán 2p deportivo <= 2000cc", type: "sedan" },
+  { code: "4911308010200", label: "Sedán 2p deportivo > 2000cc", type: "sedan" },
+  { code: "4911308020100", label: "Sedán 2 puertas <= 2000cc", type: "sedan" },
+  { code: "4911308020200", label: "Sedán 2 puertas > 2000cc", type: "sedan" },
+  { code: "4911308030100", label: "Sedán 2p hatchback <= 2000cc", type: "sedan" },
+  { code: "4911308030200", label: "Sedán 2p hatchback > 2000cc", type: "sedan" },
+  { code: "4911308040100", label: "Sedán 3p hatchback <= 2000cc", type: "sedan" },
+  { code: "4911308040200", label: "Sedán 3p hatchback > 2000cc", type: "sedan" },
+  { code: "4911308050100", label: "Sedán 4 puertas <= 2000cc", type: "sedan" },
+  { code: "4911308050200", label: "Sedán 4 puertas > 2000cc", type: "sedan" },
+  { code: "4911308060000", label: "Sedán 2p 3 ruedas <= 1000cc", type: "sedan" },
+  { code: "4911308070000", label: "Sedán 4p 3 ruedas <= 1000cc", type: "sedan" },
+  { code: "4911308080000", label: "Sedán 4p 4 ruedas <= 1000cc", type: "sedan" },
+  { code: "4911309000100", label: "Familiar/Camioneta <= 2000cc", type: "familiar" },
+  { code: "4911309000200", label: "Familiar/Camioneta > 2000cc", type: "familiar" },
+  { code: "4911315000000", label: "Híbrido-eléctrico", type: "hibrido" },
+  { code: "4911401000100", label: "Adrales carga <= 5t", type: "carga" },
+  { code: "4911401000200", label: "Adrales carga 5-20t", type: "carga" },
+  { code: "4911404000000", label: "Pick up <= 5t", type: "pickup" },
 ];
+
+// Auto-suggest CABYS based on vehicle style
+const suggestCabys = (style) => {
+  if (!style) return "";
+  const s = style.toLowerCase();
+  if (s.includes("pick up") || s.includes("pickup")) return "4911404000000";
+  if (s.includes("suv")) return "4911306020200";
+  if (s.includes("sedan") || s.includes("sedán")) return "4911308050200";
+  if (s.includes("hatchback")) return "4911308040200";
+  if (s.includes("todoterreno")) return "4911307020200";
+  if (s.includes("coupe") || s.includes("coupé")) return "4911305000200";
+  if (s.includes("familiar") || s.includes("camioneta")) return "4911309000200";
+  if (s.includes("microbus") || s.includes("microbús")) return "4911200000100";
+  if (s.includes("hibrido") || s.includes("híbrido") || s.includes("electri")) return "4911315000000";
+  return "";
+};
 
 const GROUPS = [
   {id:"costos_ventas",l:"Costos de Ventas y Operación",t:"costo"},
@@ -118,6 +162,10 @@ export default function App() {
   const [deletePin, setDeletePin] = useState("");
   const [deleteErr, setDeleteErr] = useState("");
   const [vehicleForm, setVehicleForm] = useState(null);
+  const [cars, setCars] = useState([]);
+  const [invFilter, setInvFilter] = useState("disponible"); // disponible, reservado, vendido, all
+  const [showAddVehicle, setShowAddVehicle] = useState(false);
+  const [newVehicleForm, setNewVehicleForm] = useState(null);
 
   // Sales state
   const [sales, setSales] = useState([]);
@@ -129,7 +177,34 @@ export default function App() {
   const [printSale, setPrintSale] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); }, []);
+
+  const loadVehicles = async () => {
+    const { data } = await supabase.from('vehicles').select('*').order('created_at', { ascending: false });
+    if (data) {
+      // Get sale info for sold vehicles
+      const soldPlates = data.filter(v => v.status === 'vendido').map(v => v.plate);
+      let saleMap = {};
+      if (soldPlates.length > 0) {
+        const { data: saleData } = await supabase.from('sales').select('vehicle_plate,client_name,client_cedula,client_phone1,client_email,client_address,sale_date,status').in('vehicle_plate', soldPlates).eq('status','approved');
+        (saleData || []).forEach(s => { saleMap[s.vehicle_plate] = s; });
+      }
+      setCars(data.map(v => {
+        const sl = saleMap[v.plate];
+        return {
+          id: v.id, p: v.plate, b: v.brand, m: v.model, y: v.year, co: v.color,
+          km: v.km, f: v.fuel, dr: v.drivetrain, st: v.style,
+          usd: v.price_usd, crc: v.price_crc, s: v.status || "disponible",
+          cabys: v.cabys_code,
+          purchase_price: v.purchase_cost, purchase_currency: v.price_currency || "CRC",
+          purchase_supplier: v.supplier, purchase_date: v.entry_date,
+          sale_date: v.sale_date, sale_invoice_number: v.sale_invoice_number,
+          sale_client: sl ? { name: sl.client_name, cedula: sl.client_cedula, phone: sl.client_phone1, email: sl.client_email, address: sl.client_address } : null,
+          notes: v.notes, created_at: v.created_at,
+        };
+      }));
+    }
+  };
 
   const loadInvoices = async () => {
     const { data } = await supabase.from('invoices').select('*').order('emission_date', { ascending: false });
@@ -260,19 +335,16 @@ export default function App() {
       year: parseInt(vehicleForm.year) || null,
       color: vehicleForm.color || null,
       km: parseFloat(vehicleForm.km) || null,
-      drive: vehicleForm.drive || null,
+      drivetrain: vehicleForm.drive || null,
       fuel: vehicleForm.fuel || null,
       style: vehicleForm.style || null,
       price_usd: parseFloat(vehicleForm.price_usd) || null,
       price_crc: parseFloat(vehicleForm.price_crc) || null,
-      purchase_price: inv.total,
-      purchase_currency: inv.currency || 'CRC',
-      purchase_date: inv.date,
-      purchase_invoice_id: inv.dbId,
-      purchase_supplier: supDisplay(inv),
+      cabys_code: vehicleForm.cabys_code || null,
+      purchase_cost: inv.total,
+      supplier: supDisplay(inv),
+      entry_date: inv.date,
       status: 'disponible',
-      consignment: vehicleForm.consignment || false,
-      consignment_owner: vehicleForm.consignment_owner || null,
     }).select().single();
     if (error) { alert("Error: " + error.message); return; }
     // Update invoice
@@ -284,6 +356,7 @@ export default function App() {
     setInvoices(prev => prev.map(x => x.key === inv.key ? { ...x, vehicleStatus: 'completed', plate: vehicleForm.plate.toUpperCase() } : x));
     setPickedInv(prev => prev ? { ...prev, vehicleStatus: 'completed' } : null);
     setVehicleForm(null);
+    await loadVehicles();
     alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase());
   };
 
@@ -454,8 +527,10 @@ export default function App() {
     const car = cars.find(c => c.p === plate);
     if (!car) return;
     setSaleForm(prev => ({ ...prev,
+      vehicle_id: car.id || null,
       vehicle_plate: car.p, vehicle_brand: car.b, vehicle_model: car.m, vehicle_year: car.y,
       vehicle_color: car.co, vehicle_km: car.km, vehicle_drive: car.dr, vehicle_fuel: car.f,
+      vehicle_cabys: car.cabys || "",
       sale_price: car.usd,
     }));
   };
@@ -472,66 +547,54 @@ export default function App() {
   const depositsTotal = (form) => (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
 
   const generateObservations = (form) => {
-    const brand = form.vehicle_brand || "";
-    const model = form.vehicle_model || "";
-    const year = form.vehicle_year || "";
-    const plate = form.vehicle_plate || "";
-    const vehicle = `${brand} ${model} ${year} ${plate}`.trim();
+    const vehicle = `${form.vehicle_brand || ""} ${form.vehicle_model || ""} ${form.vehicle_year || ""} ${form.vehicle_plate || ""}`.trim().toLowerCase();
 
     const deps = (form.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
     let depText = "";
     if (deps.length > 0) {
-      depText = deps.map(d => {
+      depText = "deposito(s) " + deps.map(d => {
         const parts = [];
-        if (d.reference) parts.push(`#${d.reference}`);
-        if (d.bank) parts.push(`de ${d.bank}`);
-        if (d.date) parts.push(`fecha ${new Date(d.date + "T12:00:00").toLocaleDateString("es-CR")}`);
-        if (d.amount) parts.push(`por ${fmt(parseFloat(d.amount), "USD")}`);
+        if (d.bank) parts.push((d.bank || "").toLowerCase());
+        if (d.reference) parts.push(`numero ${d.reference}`);
+        if (d.date) parts.push(`del ${new Date(d.date + "T12:00:00").toLocaleDateString("es-CR")}`);
         return parts.join(" ");
-      }).join("; ");
+      }).join(", ");
     }
 
     let tradeVeh = "";
     if (form.has_tradein) {
-      const tBrand = form.tradein_brand || "";
-      const tModel = form.tradein_model || "";
-      const tYear = form.tradein_year || "";
-      const tPlate = form.tradein_plate || "";
-      tradeVeh = `${tBrand} ${tModel} ${tPlate} ${tYear}`.trim();
+      tradeVeh = `${form.tradein_brand || ""} ${form.tradein_model || ""} ${form.tradein_year || ""} ${form.tradein_plate || ""}`.trim().toLowerCase();
     }
 
     const isFinanced = form.payment_method === "Financiamiento" || form.payment_method === "Mixto";
-    const primaTotal = (parseFloat(form.down_payment) || 0) + depositsTotal(form);
     const plazo = form.financing_term_months || "";
 
     if (isFinanced) {
-      // FINANCIADO
       let obs = "";
       if (form.has_tradein) {
-        obs = `VENTA FINANCIADA. Se vende ${vehicle} y se recibe ${tradeVeh} como parte de pago.`;
+        obs = `venta financiada, se vende ${vehicle} y se recibe ${tradeVeh} como parte de pago`;
       } else {
-        obs = `VENTA FINANCIADA de ${vehicle}.`;
+        obs = `venta financiada de ${vehicle}`;
       }
+      const primaTotal = (parseFloat(form.down_payment) || 0) + depositsTotal(form);
       if (primaTotal > 0) {
-        obs += ` Cliente aporta prima de ${fmt(primaTotal, "USD")}`;
-        if (depText) obs += ` en deposito(s) ${depText}`;
-        obs += ".";
+        obs += `, cliente aporta prima de ${fmt(primaTotal, "USD")}`;
+        if (depText) obs += ` en ${depText}`;
       }
       if (plazo) {
-        obs += ` El saldo pendiente debe cancelarse en un plazo de ${plazo} meses a mas tardar.`;
+        obs += `, saldo pendiente debe cancelarse en un plazo de ${plazo} meses a mas tardar`;
       }
       return obs;
     } else {
-      // CONTADO
+      let obs = "";
       if (form.has_tradein) {
-        let obs = `VENTA DE CONTADO. Se vende ${vehicle} y se recibe ${tradeVeh} como parte de pago.`;
-        if (depText) obs += ` Saldo restante cancelado mediante deposito(s) ${depText}.`;
-        return obs;
+        obs = `venta de contado, se vende ${vehicle} y se recibe ${tradeVeh} como parte de pago`;
+        if (depText) obs += `, saldo restante cancelado mediante ${depText}`;
       } else {
-        let obs = `VENTA DE CONTADO de ${vehicle}.`;
-        if (depText) obs += ` Cancelado mediante deposito(s) ${depText}.`;
-        return obs;
+        obs = `venta de contado, se vende ${vehicle}`;
+        if (depText) obs += `, ${depText}`;
       }
+      return obs;
     }
   };
 
@@ -549,10 +612,12 @@ export default function App() {
       client_email: saleForm.client_email, client_address: saleForm.client_address,
       client_workplace: saleForm.client_workplace, client_occupation: saleForm.client_occupation,
       client_civil_status: saleForm.client_civil_status,
+      vehicle_id: saleForm.vehicle_id || null,
       vehicle_plate: saleForm.vehicle_plate, vehicle_brand: saleForm.vehicle_brand,
       vehicle_model: saleForm.vehicle_model, vehicle_year: parseInt(saleForm.vehicle_year) || null,
       vehicle_color: saleForm.vehicle_color, vehicle_km: parseFloat(saleForm.vehicle_km) || null,
       vehicle_engine: saleForm.vehicle_engine, vehicle_drive: saleForm.vehicle_drive, vehicle_fuel: saleForm.vehicle_fuel,
+      vehicle_cabys: saleForm.vehicle_cabys || null,
       has_tradein: saleForm.has_tradein,
       tradein_plate: saleForm.has_tradein ? saleForm.tradein_plate : null,
       tradein_brand: saleForm.has_tradein ? saleForm.tradein_brand : null,
@@ -630,7 +695,7 @@ export default function App() {
     setPickedSale(prev => prev ? { ...prev, status: "rejected" } : null);
   };
 
-  const filtered = cars.filter(v => { const s = q.toLowerCase(); return !q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => x.toLowerCase().includes(s)); });
+  const filtered = cars.filter(v => { const s = q.toLowerCase(); return (!q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => (x||"").toLowerCase().includes(s))) && (invFilter === "all" || v.s === invFilter); });
 
   const costsByPlate = useMemo(() => {
     const map = {};
@@ -645,13 +710,16 @@ export default function App() {
   const opCosts = useMemo(() => invoices.filter(i => i.assignStatus === "operational"), [invoices]);
   const unassigned = useMemo(() => invoices.filter(i => i.assignStatus === "unassigned" || i.assignStatus === "warning"), [invoices]);
 
-  const clients = [
-    {n:"Carlos Jiménez Mora",ce:"1-0987-0456",ph:"8845-2301",em:"cjimenez@gmail.com",jo:"Ingeniero",ci:"Casado",ad:"Escazú",bu:[{d:"2026-01-15",v:"Suzuki Vitara 2023",pr:"$22,500"}]},
-    {n:"María Fernanda Solís",ce:"3-0456-0789",ph:"7012-8834",em:"mfsolis@hotmail.com",jo:"Contadora",ci:"Soltera",ad:"Heredia",bu:[{d:"2026-02-12",v:"Chery Tiggo 7 2026",pr:"$23,000"},{d:"2025-11-27",v:"Montero Sport 2023",pr:"$49,500"}]},
-    {n:"Roberto Araya Vindas",ce:"1-1234-0567",ph:"6098-4412",em:"raraya@outlook.com",jo:"Empresario",ci:"Casado",ad:"Cartago",bu:[{d:"2026-03-18",v:"BMW X6 2020",pr:"$78,000"}]},
-    {n:"Ana Lucía Bermúdez",ce:"2-0678-0123",ph:"8534-7790",em:"albermudez@gmail.com",jo:"Médica",ci:"Divorciada",ad:"Alajuela",bu:[]},
-    {n:"José Pablo Quesada",ce:"1-1567-0890",ph:"7123-5567",em:"jpquesada@icloud.com",jo:"Abogado",ci:"Casado",ad:"Santa Ana",bu:[{d:"2026-04-08",v:"Nissan Kicks 2021",pr:"₡9,950,000"}]},
-  ];
+  const clients = useMemo(() => {
+    const map = {};
+    sales.forEach(s => {
+      if (!s.client_name) return;
+      const key = s.client_cedula || s.client_name;
+      if (!map[key]) map[key] = { n: s.client_name, ce: s.client_cedula, ph: s.client_phone1, ph2: s.client_phone2, em: s.client_email, ad: s.client_address, jo: s.client_occupation, ci: s.client_civil_status, wk: s.client_workplace, bu: [] };
+      map[key].bu.push({ d: s.sale_date, v: `${s.vehicle_brand} ${s.vehicle_model} ${s.vehicle_year}`, pl: s.vehicle_plate, pr: s.sale_price, st: s.status });
+    });
+    return Object.values(map);
+  }, [sales]);
 
   // ======= RENDER FUNCTIONS =======
 
@@ -679,35 +747,120 @@ export default function App() {
     </div>
   );
 
-  const renderInv = () => (
-    <div>
-      <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Inventario</h1>
-      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar placa, marca, modelo..." style={{...S.inp,width:"100%",maxWidth:400,marginBottom:16}} />
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:12}}>
-        {filtered.map((v,i)=>(
-          <div key={i} onClick={()=>setPicked(v)} style={{...S.card,cursor:"pointer"}}>
-            <div style={{height:4,background:v.s==="reservado"?"#f59e0b":v.p==="CONSIGNA"?"#8b5cf6":"#10b981"}}/>
-            <div style={{padding:"14px 18px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
-                <div><div style={{fontSize:16,fontWeight:800}}>{v.b} {v.m}</div><div style={{fontSize:12,color:"#8b8fa4"}}>{v.y} · {v.co}</div></div>
-                <span style={S.badge(v.s==="reservado"?"#f59e0b":"#10b981")}>{v.s==="reservado"?"Reservado":"Disponible"}</span>
-              </div>
-              <div style={{display:"flex",gap:14,marginBottom:10,fontSize:11,color:"#8b8fa4"}}><span>{v.p}</span><span>{fK(v.km)}</span><span>{v.f}</span><span>{v.dr}</span></div>
-              <span style={{fontSize:19,fontWeight:800,color:"#4f8cff"}}>{fmt(v.usd,"USD")}</span>
-              <span style={{fontSize:11,color:"#8b8fa4",marginLeft:8}}>{fmt(v.crc)}</span>
-              {costsByPlate[v.p]&&<div style={{marginTop:8,fontSize:11,color:"#f59e0b"}}>Costos: {fmt(costsByPlate[v.p].total)} ({costsByPlate[v.p].items.length} fact.)</div>}
-            </div>
-          </div>
+  const updateVehicleField = async (id, field, value) => {
+    await supabase.from('vehicles').update({ [field]: value }).eq('id', id);
+    setCars(prev => prev.map(c => c.id === id ? { ...c, ...(field === 'price_usd' ? { usd: value } : {}) } : c));
+  };
+
+  const renderInv = () => {
+    const filteredCars = cars.filter(v => {
+      const matchSearch = !q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => (x||"").toLowerCase().includes(q.toLowerCase()));
+      const matchFilter = invFilter === "all" || v.s === invFilter;
+      return matchSearch && matchFilter;
+    });
+    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",cabys_code:"",status:"disponible" });
+    const saveNewVehicle = async () => {
+      if (!newVehicleForm || !newVehicleForm.plate) { alert("La placa es requerida"); return; }
+      if (!newVehicleForm.cabys_code) { alert("El código CABYS es requerido"); return; }
+      const { error } = await supabase.from('vehicles').insert({
+        plate: newVehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
+        brand: newVehicleForm.brand || null, model: newVehicleForm.model || null,
+        year: parseInt(newVehicleForm.year) || null, color: newVehicleForm.color || null,
+        km: parseFloat(newVehicleForm.km) || null, drivetrain: newVehicleForm.drive || null,
+        fuel: newVehicleForm.fuel || null, style: newVehicleForm.style || null,
+        price_usd: parseFloat(newVehicleForm.price_usd) || null, price_crc: parseFloat(newVehicleForm.price_crc) || null,
+        cabys_code: newVehicleForm.cabys_code, status: newVehicleForm.status || "disponible",
+      });
+      if (error) { alert("Error: " + error.message); return; }
+      await loadVehicles(); setNewVehicleForm(null); setShowAddVehicle(false);
+    };
+    const thS = { padding:"10px 12px", textAlign:"left", fontSize:10, fontWeight:700, color:"#8b8fa4", textTransform:"uppercase", letterSpacing:0.4, borderBottom:"2px solid #2a2d3d", whiteSpace:"nowrap" };
+    const tdS = { padding:"10px 12px", borderBottom:"1px solid #2a2d3d", fontSize:12, verticalAlign:"middle" };
+    const showHist = invFilter !== "disponible";
+    const [expandedClient, setExpandedClient] = useState(null);
+
+    const exportInventory = () => {
+      const rows = filteredCars.map(v => {
+        const costs = costsByPlate[v.p]; const costoCRC = v.purchase_price || 0; const costosAsoc = costs ? costs.total : 0;
+        const tc = costoCRC && v.usd ? Math.round(costoCRC / v.usd) : 0; const costoUSD = tc > 0 ? costoCRC / tc : 0;
+        const row = { "Marca": v.b, "Modelo": v.m, "Año": v.y, "Placa": v.p, "Color": v.co, "Km": v.km || "", "Fecha Compra": v.purchase_date || "", "Proveedor": v.purchase_supplier || "", "Costo CRC": costoCRC, "Tipo Cambio": tc || "", "CABYS": v.cabys || "", "Precio Venta USD": v.usd || "", "Costos Asociados CRC": costosAsoc, "Utilidad USD": v.usd && costoUSD ? Math.round(v.usd - costoUSD - costosAsoc) : "", "Estado": v.s };
+        if (v.s === "vendido") { row["Fecha Venta"] = v.sale_date || ""; row["Consecutivo"] = v.sale_invoice_number || ""; row["Cliente"] = v.sale_client ? v.sale_client.name : ""; }
+        return row;
+      });
+      exportXLS(rows, "Inventario_VCR");
+    };
+
+    return (<div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h1 style={{fontSize:24,fontWeight:800}}>Inventario</h1>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={exportInventory} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
+          <button onClick={()=>{ setNewVehicleForm(emptyVeh()); setShowAddVehicle(true); }} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,padding:"10px 20px"}}>+ Agregar vehículo</button>
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}>
+        <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar placa, marca, modelo..." style={{...S.inp,flex:1,maxWidth:300}} />
+        {[["disponible","Disponibles"],["vendido","Históricos"],["all","Todos"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setInvFilter(v)} style={{...S.sel,background:invFilter===v?"#4f8cff20":"#1e2130",color:invFilter===v?"#4f8cff":"#8b8fa4",fontWeight:invFilter===v?600:400}}>{l} ({cars.filter(c=>v==="all"||c.s===v).length})</button>
         ))}
       </div>
-      {picked&&<div style={S.modal} onClick={()=>setPicked(null)}><div style={{...S.mbox,maxWidth:500}} onClick={e=>e.stopPropagation()}>
+      {filteredCars.length===0?(<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>{cars.length===0?"No hay vehículos en inventario.":"No hay vehículos con este filtro."}</div>):(
+      <div style={{...S.card,overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{background:"#1e2130"}}>
+        <th style={thS}>Vehículo</th><th style={thS}>Placa</th><th style={thS}>Color</th><th style={thS}>Km</th><th style={thS}>Fecha compra</th><th style={thS}>Proveedor</th><th style={thS}>Costo (₡)</th><th style={thS}>T/C</th><th style={thS}>CABYS</th><th style={thS}>Precio venta</th><th style={thS}>Costos asoc.</th><th style={thS}>Utilidad</th>
+        {showHist&&<><th style={thS}>Fecha venta</th><th style={thS}>Consecutivo</th><th style={thS}>Cliente</th></>}
+      </tr></thead><tbody>
+        {filteredCars.map(v=>{const costs=costsByPlate[v.p];const costoCRC=v.purchase_price||0;const costosAsoc=costs?costs.total:0;const precioVenta=v.usd||0;const tc=costoCRC&&precioVenta?Math.round(costoCRC/precioVenta):0;const costoUSD=tc>0?costoCRC/tc:0;const utilidad=precioVenta>0&&costoUSD>0?precioVenta-costoUSD-costosAsoc:0;const cabysItem=CABYS_VEHICLES.find(c=>c.code===v.cabys);
+        return(<React.Fragment key={v.id}><tr style={{cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+          <td style={tdS} onClick={()=>setPicked(v)}><div style={{fontWeight:700,fontSize:13}}>{v.b} {v.m}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{v.y}</div></td>
+          <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:600}}>{v.p}</span></td>
+          <td style={tdS} onClick={()=>setPicked(v)}>{v.co||"-"}</td>
+          <td style={tdS} onClick={()=>setPicked(v)}>{v.km?fK(v.km):"-"}</td>
+          <td style={tdS} onClick={()=>setPicked(v)}><div style={{fontSize:11}}>{v.purchase_date?new Date(v.purchase_date+"T12:00:00").toLocaleDateString("es-CR"):"-"}</div></td>
+          <td style={{...tdS,maxWidth:120}} onClick={()=>setPicked(v)}><div style={{fontSize:11,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{v.purchase_supplier||"-"}</div></td>
+          <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:600}}>{costoCRC?fmt(costoCRC):"-"}</span></td>
+          <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontSize:11,color:"#8b8fa4"}}>{tc>0?tc:"-"}</span></td>
+          <td style={tdS} onClick={()=>setPicked(v)}><div style={{fontSize:10,color:"#8b8fa4"}} title={cabysItem?cabysItem.label:v.cabys}>{v.cabys?"..."+v.cabys.slice(-6):"-"}</div></td>
+          <td style={tdS}><input type="number" value={v.usd||""} onChange={e=>{const val=parseFloat(e.target.value)||null;setCars(prev=>prev.map(c=>c.id===v.id?{...c,usd:val}:c));}} onBlur={e=>updateVehicleField(v.id,'price_usd',parseFloat(e.target.value)||null)} style={{...S.inp,width:90,padding:"4px 8px",fontSize:12,textAlign:"right"}} /></td>
+          <td style={tdS} onClick={()=>setPicked(v)}><span style={{color:"#f59e0b",fontWeight:600}}>{costosAsoc>0?fmt(costosAsoc):"-"}</span>{costs&&<div style={{fontSize:10,color:"#8b8fa4"}}>{costs.items.length} fact.</div>}</td>
+          <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:700,color:utilidad>0?"#10b981":utilidad<0?"#e11d48":"#8b8fa4"}}>{precioVenta>0&&costoUSD>0?fmt(utilidad,"USD"):"-"}</span></td>
+          {showHist&&<td style={tdS}><div style={{fontSize:11}}>{v.sale_date?new Date(v.sale_date+"T12:00:00").toLocaleDateString("es-CR"):"-"}</div></td>}
+          {showHist&&<td style={tdS}><div style={{fontSize:11,color:"#4f8cff"}}>{v.sale_invoice_number||"-"}</div></td>}
+          {showHist&&<td style={tdS}>{v.sale_client?<button onClick={()=>setExpandedClient(expandedClient===v.id?null:v.id)} style={{...S.sel,fontSize:11,padding:"4px 10px",background:"#4f8cff18",color:"#4f8cff"}}>{v.sale_client.name}</button>:"-"}</td>}
+        </tr>
+        {showHist&&expandedClient===v.id&&v.sale_client&&(<tr><td colSpan={15} style={{padding:"12px 20px",background:"#1e2130",borderBottom:"2px solid #4f8cff30"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,fontSize:12}}>
+            <div><span style={{color:"#8b8fa4",fontSize:10,textTransform:"uppercase"}}>Nombre</span><div style={{fontWeight:600}}>{v.sale_client.name}</div></div>
+            <div><span style={{color:"#8b8fa4",fontSize:10,textTransform:"uppercase"}}>Cédula</span><div style={{fontWeight:600}}>{v.sale_client.cedula||"-"}</div></div>
+            <div><span style={{color:"#8b8fa4",fontSize:10,textTransform:"uppercase"}}>Teléfono</span><div style={{fontWeight:600}}>{v.sale_client.phone||"-"}</div></div>
+            <div><span style={{color:"#8b8fa4",fontSize:10,textTransform:"uppercase"}}>Email</span><div style={{fontWeight:600}}>{v.sale_client.email||"-"}</div></div>
+          </div>
+          {v.sale_client.address&&<div style={{marginTop:6,fontSize:11,color:"#8b8fa4"}}>Dirección: {v.sale_client.address}</div>}
+        </td></tr>)}
+        </React.Fragment>);})}
+      </tbody></table></div>)}
+
+      {picked&&<div style={S.modal} onClick={()=>setPicked(null)}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{picked.b} {picked.m}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{picked.y} · {picked.p}</p></div><button onClick={()=>setPicked(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button></div>
-        <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{fmt(picked.usd,"USD")}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COLONES</div><div style={{fontSize:16,fontWeight:700}}>{fmt(picked.crc)}</div></div></div>
-        <div style={S.g2}>{[["Color",picked.co],["Km",fK(picked.km)],["Combustible",picked.f],["Tracción",picked.dr],["Estilo",picked.st],["Estado",picked.s]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v}</div></div>)}</div>
-        {costsByPlate[picked.p]?<div><div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Costos ({fmt(costsByPlate[picked.p].total)})</div>{costsByPlate[picked.p].items.map((inv,i)=><div key={i} style={{padding:"8px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}><div><div style={{fontWeight:600}}>{supDisplay(inv)}</div><div style={{color:"#8b8fa4",fontSize:11}}>{catLabel(inv.catId)}</div></div><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(inv.total)}</span></div>)}</div>:<div style={{fontSize:12,color:"#8b8fa4"}}>Sin costos asignados</div>}
+        <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO VENTA</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{fmt(picked.usd,"USD")}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COSTO COMPRA</div><div style={{fontSize:16,fontWeight:700,color:"#f59e0b"}}>{fmt(picked.purchase_price)}</div></div></div>
+        <div style={S.g2}>{[["Color",picked.co],["Km",picked.km?fK(picked.km):"-"],["Combustible",picked.f],["Tracción",picked.dr],["Estilo",picked.st],["Estado",picked.s],["CABYS",picked.cabys||"-"]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v||"-"}</div></div>)}</div>
+        {picked.purchase_supplier&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Proveedor: {picked.purchase_supplier}</div>}
+        {picked.purchase_date&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Fecha compra: {new Date(picked.purchase_date+"T12:00:00").toLocaleDateString("es-CR")}</div>}
+        {costsByPlate[picked.p]?<div><div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Costos asociados ({fmt(costsByPlate[picked.p].total)})</div>{costsByPlate[picked.p].items.map((inv,i)=><div key={i} style={{padding:"8px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}><div><div style={{fontWeight:600}}>{supDisplay(inv)}</div><div style={{color:"#8b8fa4",fontSize:11}}>{catLabel(inv.catId)}</div></div><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(inv.total)}</span></div>)}</div>:<div style={{fontSize:12,color:"#8b8fa4"}}>Sin costos asociados</div>}
+        {picked.s==="vendido"&&picked.sale_client&&<div style={{marginTop:12,padding:"10px 14px",background:"#10b98110",borderRadius:8}}><div style={{fontSize:12,color:"#10b981",fontWeight:600,marginBottom:4}}>Vendido a: {picked.sale_client.name}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{picked.sale_client.cedula} · {picked.sale_client.phone}</div>{picked.sale_invoice_number&&<div style={{fontSize:11,color:"#4f8cff",marginTop:4}}>Factura: {picked.sale_invoice_number}</div>}</div>}
       </div></div>}
-    </div>
-  );
+
+      {showAddVehicle&&newVehicleForm&&(<div style={S.modal} onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}}><div style={{...S.mbox,maxWidth:600}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h3 style={{fontSize:18,fontWeight:800,margin:0}}>Agregar Vehículo</h3><button onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button></div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
+          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Precio USD","price_usd"],["Precio CRC","price_crc"]].map(([l,k])=>(<div key={k}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div><input value={newVehicleForm[k]||""} onChange={e=>setNewVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>))}
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estado</div><select value={newVehicleForm.status||"disponible"} onChange={e=>setNewVehicleForm(prev=>({...prev,status:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="disponible">Disponible</option><option value="reservado">Reservado</option></select></div>
+          <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div><select value={newVehicleForm.cabys_code||""} onChange={e=>setNewVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar CABYS</option>{CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}</select></div>
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:16,justifyContent:"flex-end"}}><button onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button><button onClick={saveNewVehicle} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none",padding:"10px 24px"}}>Guardar vehículo</button></div>
+      </div></div>)}
+    </div>);
+  };
 
   const renderFac = () => {
     const fList = invoices.filter(x => (fType==="all"||catType(x.catId)===fType)&&(fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign));
@@ -718,6 +871,23 @@ export default function App() {
           <button onClick={syncGmail} disabled={syncing} style={{...S.sel,background:syncing?"#1e2130":"#4f8cff18",color:syncing?"#8b8fa4":"#4f8cff",fontWeight:600,padding:"10px 20px"}}>
             {syncing?"Sincronizando...":"Sincronizar Gmail"}
           </button>
+          <button onClick={async ()=>{
+            const rows = [];
+            for (const inv of fList) {
+              const { data: dbInv } = await supabase.from('invoices').select('*').eq('xml_key', inv.key).single();
+              if (!dbInv) continue;
+              const { data: lines } = await supabase.from('invoice_lines').select('*').eq('invoice_id', dbInv.id).order('line_number');
+              const cat = CATS.find(c => c.id === inv.catId);
+              const alegraName = cat?.a || dbInv.alegra_category || 'Otros Gastos';
+              const idTypeMap = {"01":"Cédula Física","02":"Cédula Jurídica","03":"DIMEX","04":"NITE"};
+              const idTypeLabel = idTypeMap[dbInv.supplier_id_type] || dbInv.supplier_id_type || '';
+              const base = {"FECHA DE EMISIÓN":dbInv.emission_date?new Date(dbInv.emission_date).toLocaleDateString("es-CR"):"","CÓDIGO":dbInv.consecutive||"","ESTADO":dbInv.pay_status==="paid"?"Pagado":"Por pagar","ESTADO LEGAL":"","BODEGA":"Principal","CENTRO DE COSTO":"","ÓRDENES DE COMPRA ASOCIADAS":"","PROVEEDOR - NOMBRE":dbInv.supplier_name||"","PROVEEDOR - TIPO DE IDENTIFICACIÓN":idTypeLabel,"PROVEEDOR - IDENTIFICACIÓN":dbInv.supplier_id||"","PROVEEDOR - OTRAS SEÑAS":dbInv.supplier_address||"","PROVEEDOR - TELÉFONO":dbInv.supplier_phone||"","PROVEEDOR - CANTÓN":dbInv.supplier_canton||"","VENCIMIENTO":dbInv.due_date?new Date(dbInv.due_date).toLocaleDateString("es-CR"):"","MONEDA":dbInv.currency||"CRC","TASA DE CAMBIO":dbInv.exchange_rate||1};
+              if (lines && lines.length > 0) {
+                for (const line of lines) rows.push({...base,"ÍTEM - NOMBRE":alegraName,"ÍTEM - OBSERVACIONES":line.description||"","ÍTEM - REFERENCIA":"","ÍTEM - CANTIDAD":line.quantity||1,"ÍTEM - PRECIO":line.unit_price||0,"ÍTEM - DESCUENTO (%)":line.discount_pct||0,"ÍTEM - IMPUESTO":line.tax_code==="01"?"IVA":"","ÍTEM - IMPUESTO (%)":line.tax_rate||0,"ÍTEM - IMPUESTO (VALOR)":line.tax_amount||0,"ÍTEM - TOTAL":line.line_total||0,"ÍTEM - SUBTOTAL":line.subtotal||0,"TOTAL - FACTURA DE VENTA":dbInv.total||0});
+              } else rows.push({...base,"ÍTEM - NOMBRE":alegraName,"ÍTEM - OBSERVACIONES":"","ÍTEM - REFERENCIA":"","ÍTEM - CANTIDAD":1,"ÍTEM - PRECIO":dbInv.subtotal||0,"ÍTEM - DESCUENTO (%)":0,"ÍTEM - IMPUESTO":"IVA","ÍTEM - IMPUESTO (%)":13,"ÍTEM - IMPUESTO (VALOR)":dbInv.tax_total||0,"ÍTEM - TOTAL":dbInv.total||0,"ÍTEM - SUBTOTAL":dbInv.subtotal||0,"TOTAL - FACTURA DE VENTA":dbInv.total||0});
+            }
+            if (rows.length > 0) exportXLS(rows,"Facturas_Alegra_VCR");
+          }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Alegra</button>
           {rejectedInvs.length>0&&<button onClick={()=>setShowRejected(true)} style={{...S.sel,background:"#e11d4810",color:"#e11d48",fontWeight:600,padding:"10px 16px"}}>
             {rejectedInvs.length} rechazada{rejectedInvs.length!==1?"s":""}
           </button>}
@@ -834,7 +1004,15 @@ export default function App() {
     return (
       <div>
         <h1 style={{fontSize:24,fontWeight:800,marginBottom:4}}>Costos</h1>
-        <p style={{fontSize:13,color:"#8b8fa4",marginBottom:16}}>Facturas asignadas a vehículos y costos operativos</p>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <p style={{fontSize:13,color:"#8b8fa4"}}>Facturas asignadas a vehículos y costos operativos</p>
+          <button onClick={()=>{
+            const rows = [];
+            Object.keys(costsByPlate).forEach(plate=>{const car=cars.find(c=>c.p===plate);costsByPlate[plate].items.forEach(inv=>{rows.push({"Placa":plate,"Vehículo":car?`${car.b} ${car.m} ${car.y}`:"","Proveedor":supDisplay(inv),"Categoría":catLabel(inv.catId),"Grupo":catGroupLabel(inv.catId),"Fecha":inv.date,"Total":inv.total,"Estado":inv.payStatus==="paid"?"Pagada":"Pendiente"});});});
+            opCosts.forEach(inv=>{rows.push({"Placa":"OPERATIVO","Vehículo":"","Proveedor":supDisplay(inv),"Categoría":catLabel(inv.catId),"Grupo":catGroupLabel(inv.catId),"Fecha":inv.date,"Total":inv.total,"Estado":inv.payStatus==="paid"?"Pagada":"Pendiente"});});
+            exportXLS(rows,"Costos_VCR");
+          }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
+        </div>
         <div style={{display:"flex",gap:8,marginBottom:16}}>
           {[["vehicles","Por vehículo",plates.length],["operational","Operativos",opCosts.length],["unassigned","Sin asignar",unassigned.length]].map(([id,l,n])=>(
             <button key={id} onClick={()=>setCostView(id)} style={{...S.sel,background:costView===id?"#4f8cff20":"#1e2130",color:costView===id?"#4f8cff":"#8b8fa4",fontWeight:costView===id?600:400}}>{l} ({n})</button>
@@ -865,14 +1043,46 @@ export default function App() {
     );
   };
 
-  const renderCli = () => (
+  const renderCli = () => {
+    const [pickedCli, setPickedCli] = useState(null);
+    return (
     <div>
-      <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Clientes</h1>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:12}}>
-        {clients.map((c,i)=><div key={i} style={{...S.card,padding:"16px 20px",cursor:"pointer"}}><div style={{fontSize:16,fontWeight:700,marginBottom:4}}>{c.n}</div><div style={{fontSize:12,color:"#8b8fa4"}}>{c.ce} · {c.ph}</div>{c.bu.length>0&&<div style={{marginTop:8,...S.badge("#10b981")}}>{c.bu.length} compra{c.bu.length>1?"s":""}</div>}</div>)}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <h1 style={{fontSize:24,fontWeight:800}}>Clientes</h1>
+        <button onClick={()=>{
+          const rows = clients.map(c=>({Nombre:c.n,Cédula:c.ce||"",Teléfono:c.ph||"","Teléfono 2":c.ph2||"",Email:c.em||"",Dirección:c.ad||"",Trabajo:c.wk||"",Oficio:c.jo||"","Estado Civil":c.ci||"",Compras:c.bu.length}));
+          exportXLS(rows,"Clientes_VCR");
+        }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
       </div>
-    </div>
-  );
+      {clients.length===0?(<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay clientes. Los clientes se generan automáticamente al crear planes de venta.</div>):(
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:12}}>
+        {clients.map((c,i)=><div key={i} onClick={()=>setPickedCli(c)} style={{...S.card,padding:"16px 20px",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background="#181a23"}>
+          <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>{c.n}</div>
+          <div style={{fontSize:12,color:"#8b8fa4"}}>{c.ce} · {c.ph}</div>
+          {c.em&&<div style={{fontSize:11,color:"#8b8fa4"}}>{c.em}</div>}
+          {c.bu.length>0&&<div style={{marginTop:8,display:"flex",gap:6}}>
+            <span style={S.badge("#10b981")}>{c.bu.length} compra{c.bu.length>1?"s":""}</span>
+            <span style={S.badge("#4f8cff")}>{fmt(c.bu.reduce((s,b)=>s+(b.pr||0),0),"USD")}</span>
+          </div>}
+        </div>)}
+      </div>)}
+
+      {pickedCli&&<div style={S.modal} onClick={()=>setPickedCli(null)}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
+          <div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{pickedCli.n}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{pickedCli.ce}</p></div>
+          <button onClick={()=>setPickedCli(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button>
+        </div>
+        <div style={S.g2}>{[["Teléfono",pickedCli.ph],["Teléfono 2",pickedCli.ph2],["Email",pickedCli.em],["Dirección",pickedCli.ad],["Trabajo",pickedCli.wk],["Oficio",pickedCli.jo],["Estado civil",pickedCli.ci]].filter(([,v])=>v).map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v}</div></div>)}</div>
+        {pickedCli.bu.length>0&&<div>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Historial de compras</div>
+          {pickedCli.bu.map((b,i)=><div key={i} style={{padding:"10px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}>
+            <div><div style={{fontWeight:600}}>{b.v}</div><div style={{color:"#8b8fa4",fontSize:11}}>{b.pl} · {b.d?new Date(b.d+"T12:00:00").toLocaleDateString("es-CR"):""}</div></div>
+            <div style={{textAlign:"right"}}><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(b.pr,"USD")}</span><div><span style={S.badge(b.st==="approved"?"#10b981":b.st==="rejected"?"#e11d48":"#f59e0b")}>{b.st==="approved"?"Aprobada":b.st==="rejected"?"Rechazada":"Pendiente"}</span></div></div>
+          </div>)}
+        </div>}
+      </div></div>}
+    </div>);
+  };
 
   const PH = ({t}) => <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"55vh"}}><h2 style={{fontSize:22,fontWeight:700,marginBottom:6}}>{t}</h2><p style={{fontSize:13,color:"#8b8fa4"}}>En desarrollo</p></div>;
 
@@ -901,9 +1111,15 @@ export default function App() {
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
             <h1 style={{ fontSize: 24, fontWeight: 800 }}>Ventas</h1>
-            <button onClick={() => { setSaleForm(emptySaleForm()); setSalesView("form"); }} style={{ ...S.sel, background: "#4f8cff18", color: "#4f8cff", fontWeight: 600, padding: "10px 20px" }}>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{
+                const rows = filteredSales.map(s=>({"#":s.sale_number,"Fecha":s.sale_date,"Estado":s.status==="approved"?"Aprobada":s.status==="rejected"?"Rechazada":"Pendiente","Cliente":s.client_name,"Cédula":s.client_cedula,"Teléfono":s.client_phone1,"Vehículo":`${s.vehicle_brand} ${s.vehicle_model} ${s.vehicle_year}`,"Placa":s.vehicle_plate,"Tipo":s.sale_type==="propio"?"Propio":s.sale_type==="consignacion_grupo"?"Consig. Grupo 1%":"Consig. Externa 5%","Precio USD":s.sale_price,"Trade-in":s.tradein_amount||0,"Prima":s.down_payment||0,"Depósitos":s.deposits_total||0,"Saldo":s.total_balance,"Método Pago":s.payment_method||"","Observaciones":s.observations||""}));
+                exportXLS(rows,"Ventas_VCR");
+              }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
+              <button onClick={() => { setSaleForm(emptySaleForm()); setSalesView("form"); }} style={{ ...S.sel, background: "#4f8cff18", color: "#4f8cff", fontWeight: 600, padding: "10px 20px" }}>
               + Nuevo Plan de Ventas
-            </button>
+              </button>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
             {[["all", "Todas"], ["pending", "Pendientes"], ["approved", "Aprobadas"], ["rejected", "Rechazadas"]].map(([v, l]) => (
@@ -1306,7 +1522,7 @@ export default function App() {
                     <div style={{fontWeight:700,fontSize:13,color:"#f59e0b",marginBottom:10}}>🚗 Compra de vehículo detectada</div>
                     {!vehicleForm ? (
                       <div style={{display:"flex",gap:8}}>
-                        <button onClick={() => setVehicleForm({plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",consignment:false,consignment_owner:""})} style={{...S.sel,background:"#f59e0b",color:"#fff",fontWeight:600,flex:1,border:"none"}}>
+                        <button onClick={() => setVehicleForm({plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",price_usd:"",price_crc:"",cabys_code:"",consignment:false,consignment_owner:""})} style={{...S.sel,background:"#f59e0b",color:"#fff",fontWeight:600,flex:1,border:"none"}}>
                           Completar datos del vehículo
                         </button>
                         <button onClick={dismissVehicle} style={{...S.sel,color:"#8b8fa4"}}>No es un vehículo</button>
@@ -1317,9 +1533,23 @@ export default function App() {
                           {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Estilo","style"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
                             <div key={k}>
                               <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
-                              <input value={vehicleForm[k]||""} onChange={e=>setVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                              <input value={vehicleForm[k]||""} onChange={e=>{
+                                const val = e.target.value;
+                                setVehicleForm(prev => {
+                                  const next = {...prev, [k]: val};
+                                  if (k === "style") next.cabys_code = suggestCabys(val) || prev.cabys_code;
+                                  return next;
+                                });
+                              }} style={{...S.inp,width:"100%",fontSize:12}} />
                             </div>
                           ))}
+                          <div style={{gridColumn:"1/3"}}>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div>
+                            <select value={vehicleForm.cabys_code||""} onChange={e=>setVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
+                              <option value="">Seleccionar CABYS</option>
+                              {CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}
+                            </select>
+                          </div>
                           <div>
                             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Consignación</div>
                             <div style={{display:"flex",gap:6}}>
@@ -1520,6 +1750,10 @@ export default function App() {
                 )}
                 {pickedSale.status === "approved" && (
                   <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                    <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
+                      style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
+                      Rechazar
+                    </button>
                     <button onClick={() => { setPrintSale(pickedSale); setPickedSale(null); }}
                       style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
                       Ver Plan de Ventas
