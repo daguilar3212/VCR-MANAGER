@@ -305,6 +305,13 @@ export default async function handler(req, res) {
             catId = pm.default_category_id;
             groupId = parsed.groupMap[catId] || "otros_gastos";
             alegraCategory = pm.default_alegra_category;
+            // Override payment method if provider has a forced method
+            if (pm.force_payment_method) {
+              const payMap = {"01":"Efectivo","02":"Tarjeta","03":"Cheque","04":"Transferencia","05":"Recaudado terceros","99":"Otros"};
+              parsed.payment_method_code = pm.force_payment_method;
+              parsed.payment_method_label = payMap[pm.force_payment_method] || pm.force_payment_method;
+              parsed.is_credit_card = pm.force_payment_method === "02";
+            }
             supabase.from('provider_mapping').update({ 
               times_used: pm.times_used + 1, 
               updated_at: new Date().toISOString() 
