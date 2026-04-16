@@ -379,6 +379,10 @@ export default async function handler(req, res) {
             catId = "costo_inv";
             groupId = "costos_merc";
             alegraCategory = "Inventarios";
+            // Vehicle purchases are ALWAYS paid by transfer, regardless of what the XML says
+            parsed.payment_method_code = "04";
+            parsed.payment_method_label = "Transferencia";
+            parsed.is_credit_card = false;
           }
 
           // === PLATE DETECTION (all lines) ===
