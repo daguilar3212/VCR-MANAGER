@@ -232,6 +232,8 @@ export default function App() {
   const [payrolls, setPayrolls] = useState([]);
   const [payView, setPayView] = useState("list");
   const [payForm, setPayForm] = useState(null);
+  const [payMonth, setPayMonth] = useState(new Date().getMonth());
+  const [payYear, setPayYear] = useState(new Date().getFullYear());
   const [pickedPay, setPickedPay] = useState(null);
   const [printPay, setPrintPay] = useState(null);
   const [payPayForm, setPayPayForm] = useState(null);
@@ -1127,12 +1129,11 @@ export default function App() {
 
   const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
-  const buildPayroll = (type, periodLabel) => {
+  const buildPayroll = (type, periodLabel, targetMonth, targetYear) => {
     const ccss = parseFloat(appSettings.ccss_pct) || 10.83;
     const employees = agents.filter(a => a.is_employee !== false);
-    const now = new Date();
-    const month = now.getMonth();
-    const year = now.getFullYear();
+    const month = targetMonth != null ? targetMonth : new Date().getMonth();
+    const year = targetYear != null ? targetYear : new Date().getFullYear();
     const isMensual = type === 'mensual';
 
     const lines = employees.map(emp => {
@@ -1203,11 +1204,36 @@ export default function App() {
   };
 
   const deletePayroll = async (id) => {
-    const pin = prompt("PIN para eliminar:");
-    if (pin !== "1234") { alert("PIN incorrecto"); return; }
+    if (!confirm("¿Está seguro de eliminar esta planilla? Esta acción no se puede deshacer.")) return;
     await supabase.from('payroll_lines').delete().eq('payroll_id', id);
     await supabase.from('payrolls').delete().eq('id', id);
     await loadPayrolls(); setPickedPay(null);
+  };
+
+  const [editingPayroll, setEditingPayroll] = useState(null);
+
+  const saveEditPayroll = async () => {
+    if (!editingPayroll) return;
+    const ep = editingPayroll;
+    // Update lines
+    await supabase.from('payroll_lines').delete().eq('payroll_id', ep.id);
+    const lineRows = ep.lines.map(l => {
+      const { missing_tc_count, ...lineData } = l;
+      return { payroll_id: ep.id, ...lineData };
+    });
+    if (lineRows.length > 0) await supabase.from('payroll_lines').insert(lineRows);
+    // Update totals
+    const totals = ep.lines.reduce((t, l) => ({
+      gross: t.gross + (l.gross_total||0), ccss: t.ccss + (l.ccss_amount||0),
+      rent: t.rent + (l.rent_amount||0), net: t.net + (l.net_pay||0), comms: t.comms + (l.commissions||0),
+    }), { gross: 0, ccss: 0, rent: 0, net: 0, comms: 0 });
+    await supabase.from('payrolls').update({
+      total_gross: totals.gross, total_ccss: totals.ccss, total_rent: totals.rent,
+      total_net: totals.net, total_commissions: totals.comms, updated_at: new Date().toISOString(),
+    }).eq('id', ep.id);
+    await loadPayrolls();
+    setEditingPayroll(null); setPickedPay(null);
+    alert("Planilla actualizada");
   };
 
   const filtered = cars.filter(v => { const s = q.toLowerCase(); return (!q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => (x||"").toLowerCase().includes(s))) && (invFilter === "all" || v.s === invFilter); });
@@ -1513,22 +1539,24 @@ export default function App() {
   // ======= RENDER: PLANILLAS =======
   const renderPlanillas = () => {
     if (payView === "list") {
-      const now = new Date();
-      const month = now.getMonth();
-      const year = now.getFullYear();
+      const month = payMonth;
+      const year = payYear;
       const monthNames = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
       const mName = monthNames[month];
       const lastDay = new Date(year, month+1, 0).getDate();
       const q1Label = `Planilla 1-15 ${mName} ${year}`;
       const mensualLabel = `Planilla 16-${lastDay} ${mName} ${year}`;
 
+      const isCurrentMonth = month === new Date().getMonth() && year === new Date().getFullYear();
+      const isFuture = year > new Date().getFullYear() || (year === new Date().getFullYear() && month > new Date().getMonth());
+
       // Check if already exist for this month
       const existingQ1 = payrolls.find(p => p.name === q1Label);
       const existingMensual = payrolls.find(p => p.name === mensualLabel);
 
       // Build preview for non-existing ones
-      const previewQ1 = existingQ1 ? null : buildPayroll("quincenal_1", q1Label);
-      const previewMensual = existingMensual ? null : buildPayroll("mensual", mensualLabel);
+      const previewQ1 = existingQ1 ? null : buildPayroll("quincenal_1", q1Label, month, year);
+      const previewMensual = existingMensual ? null : buildPayroll("mensual", mensualLabel, month, year);
 
       const renderPayrollCard = (existing, preview, title, typeColor) => {
         const p = existing || preview;
@@ -1631,6 +1659,30 @@ export default function App() {
             }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar</button>
           </div>
 
+          {/* Month/Year Navigator */}
+          <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+            <button onClick={()=>{
+              if (payMonth === 0) { setPayMonth(11); setPayYear(payYear-1); }
+              else setPayMonth(payMonth-1);
+            }} style={{...S.sel,padding:"8px 14px",fontSize:16,fontWeight:700,color:"#4f8cff"}}>◀</button>
+            <div style={{display:"flex",gap:6,alignItems:"center"}}>
+              <select value={payMonth} onChange={e=>setPayMonth(parseInt(e.target.value))} style={{...S.sel,fontSize:14,fontWeight:700,padding:"8px 12px"}}>
+                {monthNames.map((m,i)=><option key={i} value={i}>{m}</option>)}
+              </select>
+              <select value={payYear} onChange={e=>setPayYear(parseInt(e.target.value))} style={{...S.sel,fontSize:14,fontWeight:700,padding:"8px 12px"}}>
+                {[2025,2026,2027,2028].map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+            </div>
+            <button onClick={()=>{
+              if (payMonth === 11) { setPayMonth(0); setPayYear(payYear+1); }
+              else setPayMonth(payMonth+1);
+            }} style={{...S.sel,padding:"8px 14px",fontSize:16,fontWeight:700,color:"#4f8cff"}}>▶</button>
+            {!isCurrentMonth && (
+              <button onClick={()=>{setPayMonth(new Date().getMonth());setPayYear(new Date().getFullYear());}} style={{...S.sel,fontSize:11,color:"#8b8fa4",padding:"6px 12px"}}>Hoy</button>
+            )}
+            {isFuture && <span style={{fontSize:11,color:"#f59e0b",fontWeight:600}}>Preview futuro (datos predeterminados)</span>}
+          </div>
+
           {agents.filter(a=>a.is_employee!==false).length === 0 ? (
             <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>
               No hay empleados configurados. Vaya a <strong>Settings</strong> para agregarlos.
@@ -1638,7 +1690,7 @@ export default function App() {
           ) : (
             <>
               <div style={{fontSize:13,fontWeight:700,color:"#8b8fa4",marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>
-                Planillas de {mName} {year}
+                Planillas de {mName} {year} {isFuture ? "(Preview)" : ""}
               </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr",gap:14,marginBottom:24}}>
                 {renderPayrollCard(existingQ1, previewQ1, "Primera Quincena (1-15)", "#0ea5e9")}
@@ -2840,7 +2892,8 @@ export default function App() {
         type: 'planilla',
         date: p.paid_date || p.created_at,
         title: p.name,
-        subtitle: `Planilla · ${(p.lines||[]).length} empleados`,
+        subtitle: `Gastos de Personal · ${(p.lines||[]).length} empleados`,
+        classification: "Gastos > Administración y Ventas > Gastos de Personal",
         amount: p.total_net,
         currency: 'CRC',
         bank: p.paid_bank,
@@ -2923,6 +2976,7 @@ export default function App() {
                       {e.bank && ` · ${e.bank}`}
                       {e.reference && ` · #${e.reference}`}
                     </div>
+                    {e.classification && <div style={{fontSize:10,color:"#6366f1",marginTop:2}}>{e.classification}</div>}
                   </div>
                   <div style={{textAlign:"right",display:"flex",alignItems:"center",gap:10}}>
                     <div>
@@ -3821,17 +3875,62 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
-                  {pickedPay.status === "draft" && (<>
-                    <button onClick={()=>deletePayroll(pickedPay.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16,flexWrap:"wrap"}}>
+                  <button onClick={()=>deletePayroll(pickedPay.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                  <button onClick={()=>{
+                    setEditingPayroll({
+                      id: pickedPay.id,
+                      lines: (pickedPay.lines||[]).map(l => ({...l})),
+                    });
+                  }} style={{...S.sel,color:"#f97316",background:"#f97316"+"10",fontWeight:600}}>Editar</button>
+                  {pickedPay.status === "draft" && (
                     <button onClick={()=>confirmPayroll(pickedPay.id)} style={{...S.sel,background:"#6366f1",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Confirmar</button>
-                  </>)}
-                  {pickedPay.status === "confirmed" && !payPayForm && (<>
-                    <button onClick={()=>deletePayroll(pickedPay.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                  )}
+                  {pickedPay.status === "confirmed" && !payPayForm && (
                     <button onClick={()=>setPayPayForm({bank:"",reference:"",date:new Date().toISOString().split('T')[0]})} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Registrar Pago</button>
-                  </>)}
+                  )}
                   <button onClick={()=>{setPrintPay(pickedPay);setPickedPay(null);}} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600}}>Imprimir</button>
                 </div>
+
+                {/* EDIT PAYROLL MODAL */}
+                {editingPayroll && (
+                  <div style={{marginTop:16,background:"#f97316"+"10",border:"1px solid #f97316"+"30",borderRadius:12,padding:"14px 16px"}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"#f97316",marginBottom:10}}>Editar líneas de planilla</div>
+                    <div style={{fontSize:11,color:"#f59e0b",marginBottom:10}}>Modifique los montos directamente. Al guardar se recalculan los totales.</div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:10}}>
+                      <thead><tr style={{background:"#1e2130"}}>
+                        {["Empleado","Sueldo","Comisiones","CCSS","Renta","Neto"].map(h=>(
+                          <th key={h} style={{padding:"6px 8px",textAlign:h==="Empleado"?"left":"right",fontSize:9,fontWeight:700,color:"#8b8fa4"}}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {editingPayroll.lines.map((l,i) => (
+                          <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
+                            <td style={{padding:"6px 8px",fontWeight:600,fontSize:11}}>{l.agent_name}</td>
+                            <td style={{padding:"4px 4px"}}><input type="number" value={l.salary||""} onChange={e=>{
+                              const v = parseFloat(e.target.value)||0;
+                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]={...nl[i],salary:v,gross_total:v+(nl[i].commissions||0),ccss_amount:r2((v+(nl[i].commissions||0))*(nl[i].ccss_pct||10.83)/100),net_pay:r2(v+(nl[i].commissions||0)-r2((v+(nl[i].commissions||0))*(nl[i].ccss_pct||10.83)/100)-(nl[i].rent_amount||0))};return{...prev,lines:nl};});
+                            }} style={{...S.inp,width:"100%",fontSize:11,textAlign:"right"}} /></td>
+                            <td style={{padding:"4px 4px"}}><input type="number" value={l.commissions||""} onChange={e=>{
+                              const v = parseFloat(e.target.value)||0;
+                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]={...nl[i],commissions:v,gross_total:(nl[i].salary||0)+v,ccss_amount:r2(((nl[i].salary||0)+v)*(nl[i].ccss_pct||10.83)/100),net_pay:r2((nl[i].salary||0)+v-r2(((nl[i].salary||0)+v)*(nl[i].ccss_pct||10.83)/100)-(nl[i].rent_amount||0))};return{...prev,lines:nl};});
+                            }} style={{...S.inp,width:"100%",fontSize:11,textAlign:"right"}} /></td>
+                            <td style={{padding:"6px 8px",textAlign:"right",fontSize:11,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
+                            <td style={{padding:"4px 4px"}}><input type="number" value={l.rent_amount||""} onChange={e=>{
+                              const v = parseFloat(e.target.value)||0;
+                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]={...nl[i],rent_amount:v,net_pay:r2((nl[i].gross_total||0)-(nl[i].ccss_amount||0)-v)};return{...prev,lines:nl};});
+                            }} style={{...S.inp,width:"100%",fontSize:11,textAlign:"right"}} /></td>
+                            <td style={{padding:"6px 8px",textAlign:"right",fontSize:11,fontWeight:700,color:"#4f8cff"}}>{fmt2(l.net_pay)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                      <button onClick={()=>setEditingPayroll(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                      <button onClick={saveEditPayroll} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Guardar cambios</button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
