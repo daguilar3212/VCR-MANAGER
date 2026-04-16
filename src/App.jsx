@@ -261,6 +261,7 @@ export default function App() {
         return {
           id: v.id, p: v.plate, b: v.brand, m: v.model, y: v.year, co: v.color,
           km: v.km, f: v.fuel, dr: v.drivetrain, st: v.style,
+          engine_cc: v.engine_cc, passengers: v.passengers, chassis: v.chassis,
           usd: v.price_usd, crc: v.price_crc, s: v.status || "disponible",
           cabys: v.cabys_code,
           purchase_price: v.purchase_cost, purchase_currency: v.price_currency || "CRC",
@@ -421,6 +422,9 @@ export default function App() {
       drivetrain: vehicleForm.drive || null,
       fuel: vehicleForm.fuel || null,
       style: vehicleForm.style || null,
+      engine_cc: vehicleForm.engine_cc || null,
+      passengers: parseInt(vehicleForm.passengers) || null,
+      chassis: vehicleForm.chassis || null,
       price_usd: parseFloat(vehicleForm.price_usd) || null,
       price_crc: parseFloat(vehicleForm.price_crc) || null,
       cabys_code: vehicleForm.cabys_code || null,
@@ -473,6 +477,7 @@ export default function App() {
       brand: ev.brand || null, model: ev.model || null, year: parseInt(ev.year) || null,
       color: ev.color || null, km: parseFloat(ev.km) || null,
       drivetrain: ev.drive || null, fuel: ev.fuel || null, style: ev.style || null,
+      engine_cc: ev.engine_cc || null, passengers: parseInt(ev.passengers) || null, chassis: ev.chassis || null,
       price_usd: parseFloat(ev.price_usd) || null, price_crc: parseFloat(ev.price_crc) || null,
       purchase_cost: parseFloat(ev.purchase_cost) || null,
       purchase_supplier: ev.purchase_supplier || null,
@@ -1963,7 +1968,7 @@ export default function App() {
       const matchFilter = invFilter === "all" || v.s === invFilter;
       return matchSearch && matchFilter;
     });
-    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",purchase_cost:"",exchange_rate:"",price_crc:"",cabys_code:"",status:"disponible",entry_date:new Date().toISOString().split('T')[0] });
+    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",engine_cc:"",passengers:"",chassis:"",purchase_cost:"",exchange_rate:"",price_crc:"",cabys_code:"",status:"disponible",entry_date:new Date().toISOString().split('T')[0] });
     const saveNewVehicle = async () => {
       if (!newVehicleForm || !newVehicleForm.plate) { alert("La placa es requerida"); return; }
       if (!newVehicleForm.cabys_code) { alert("El código CABYS es requerido"); return; }
@@ -1973,6 +1978,9 @@ export default function App() {
         year: parseInt(newVehicleForm.year) || null, color: newVehicleForm.color || null,
         km: parseFloat(newVehicleForm.km) || null, drivetrain: newVehicleForm.drive || null,
         fuel: newVehicleForm.fuel || null, style: newVehicleForm.style || null,
+        engine_cc: newVehicleForm.engine_cc || null,
+        passengers: parseInt(newVehicleForm.passengers) || null,
+        chassis: newVehicleForm.chassis || null,
         price_usd: (parseFloat(newVehicleForm.price_crc) && parseFloat(newVehicleForm.exchange_rate)) ? Math.round(parseFloat(newVehicleForm.price_crc) / parseFloat(newVehicleForm.exchange_rate)) : null,
         price_crc: parseFloat(newVehicleForm.price_crc) || null,
         purchase_cost: parseFloat(newVehicleForm.purchase_cost) || null,
@@ -1992,11 +2000,36 @@ export default function App() {
       const rows = filteredCars.map(v => {
         const costs = costsByPlate[v.p]; const costoCRC = v.purchase_price || 0; const costosAsoc = costs ? costs.total : 0;
         const tc = costoCRC && v.usd ? Math.round(costoCRC / v.usd) : 0; const costoUSD = tc > 0 ? costoCRC / tc : 0;
-        const row = { "Marca": v.b, "Modelo": v.m, "Año": v.y, "Placa": v.p, "Color": v.co, "Km": v.km || "", "Fecha Compra": v.purchase_date || "", "Proveedor": v.purchase_supplier || "", "Costo CRC": costoCRC, "TC Compra": tc || "", "CABYS": v.cabys || "", "Precio Venta CRC": v.crc || "", "Costos Asociados CRC": costosAsoc, "Utilidad CRC": v.crc && costoCRC ? Math.round((v.crc||0) - costoCRC - costosAsoc) : "", "Estado": v.s };
+        const row = { "Marca": v.b, "Modelo": v.m, "Año": v.y, "Placa": v.p, "Color": v.co, "Km": v.km || "", "CC": v.engine_cc || "", "Pasajeros": v.passengers || "", "Chasis": v.chassis || "", "Fecha Compra": v.purchase_date || "", "Proveedor": v.purchase_supplier || "", "Costo CRC": costoCRC, "TC Compra": tc || "", "CABYS": v.cabys || "", "Precio Venta CRC": v.crc || "", "Costos Asociados CRC": costosAsoc, "Utilidad CRC": v.crc && costoCRC ? Math.round((v.crc||0) - costoCRC - costosAsoc) : "", "Estado": v.s };
         if (v.s === "vendido") { row["Fecha Venta"] = v.sale_date || ""; row["Consecutivo"] = v.sale_invoice_number || ""; row["Cliente"] = v.sale_client ? v.sale_client.name : ""; }
         return row;
       });
       exportXLS(rows, "Inventario_VCR");
+    };
+
+    const exportAlegraItems = () => {
+      const rows = filteredCars.map(v => {
+        const alegraName = `${(v.b||"").toUpperCase()} ${(v.m||"").toUpperCase()} ${v.y||""} ${v.p||""}`.trim();
+        const descParts = [(v.b||"").toUpperCase() + " " + (v.m||"").toUpperCase(), v.y, (v.co||"").toUpperCase()];
+        if (v.engine_cc) descParts.push(v.engine_cc + " CC");
+        if (v.dr) descParts.push(v.dr.toUpperCase());
+        if (v.passengers) descParts.push(v.passengers + " PASAJEROS");
+        if (v.f) descParts.push(v.f.toUpperCase());
+        descParts.push("PLACAS# " + (v.p||""));
+        if (v.chassis) descParts.push("SERIE# " + v.chassis.toUpperCase());
+        return {
+          "Tipo": "Producto", "Ítem inventariable": "Si", "Ítem con variantes": "No",
+          "Venta en negativo": "No", "Nombre": alegraName,
+          "Código de producto o servicio": v.cabys || "",
+          "Unidad de medida": "Unidad", "Categoría": "",
+          "Descripción": descParts.filter(Boolean).join(", "),
+          "Costo inicial": v.purchase_price || 0, "Precio base": v.crc || 0,
+          "Impuesto": "", "Precio total": v.crc || 0, "Precio: General": v.crc || 0,
+          "Cuenta contable": "Ventas", "Cuenta de inventario": "Inventarios",
+          "Cuenta de costo de venta": "Costos del inventario",
+        };
+      });
+      exportXLS(rows, "Items_Alegra_VCR");
     };
 
     return (<div>
@@ -2064,6 +2097,7 @@ export default function App() {
             {!editingVehicle && <button onClick={()=>setEditingVehicle({
               id:picked.id, brand:picked.b||"", model:picked.m||"", year:picked.y||"", color:picked.co||"",
               km:picked.km||"", drive:picked.dr||"", fuel:picked.f||"", style:picked.st||"",
+              engine_cc:picked.engine_cc||"", passengers:picked.passengers||"", chassis:picked.chassis||"",
               price_usd:picked.usd||"", price_crc:picked.crc||"",
               purchase_cost:picked.purchase_price||"", purchase_supplier:picked.purchase_supplier||"",
               purchase_date:picked.purchase_date||"", exchange_rate:picked.exchange_rate||"",
@@ -2076,7 +2110,7 @@ export default function App() {
         {editingVehicle ? (
           <div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px",marginBottom:14}}>
-              {[["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Proveedor","purchase_supplier"],["Costo compra (₡)","purchase_cost"],["TC referencia","exchange_rate"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
+              {[["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Cilindrada (CC)","engine_cc"],["# Pasajeros","passengers"],["Serie/Chasis","chassis"],["Proveedor","purchase_supplier"],["Costo compra (₡)","purchase_cost"],["TC referencia","exchange_rate"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
                 <div key={k}>
                   <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
                   <input value={editingVehicle[k]||""} onChange={e=>setEditingVehicle(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
@@ -2114,7 +2148,7 @@ export default function App() {
         ) : (
           <>
             <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO VENTA</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{picked.crc?fmt(picked.crc):picked.usd?fmt(picked.usd,"USD"):"-"}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COSTO COMPRA</div><div style={{fontSize:16,fontWeight:700,color:"#f59e0b"}}>{picked.purchase_price?fmt(picked.purchase_price):"-"}</div></div></div>
-            <div style={S.g2}>{[["Color",picked.co],["Km",picked.km?fK(picked.km):"-"],["Combustible",picked.f],["Tracción",picked.dr],["Estilo",picked.st],["Estado",picked.s],["CABYS",picked.cabys||"-"]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v||"-"}</div></div>)}</div>
+            <div style={S.g2}>{[["Color",picked.co],["Km",picked.km?fK(picked.km):"-"],["Combustible",picked.f],["Tracción",picked.dr],["Cilindrada",picked.engine_cc?picked.engine_cc+" CC":"-"],["Pasajeros",picked.passengers||"-"],["Estilo",picked.st],["Estado",picked.s],["CABYS",picked.cabys||"-"],["Chasis",picked.chassis||"-"]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v||"-"}</div></div>)}</div>
             {picked.purchase_supplier&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Proveedor: {picked.purchase_supplier}</div>}
             {picked.purchase_date&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Fecha compra: {new Date(picked.purchase_date+"T12:00:00").toLocaleDateString("es-CR")}</div>}
             {costsByPlate[picked.p]?<div><div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Costos asociados ({fmt(costsByPlate[picked.p].total)})</div>{costsByPlate[picked.p].items.map((inv,i)=><div key={i} style={{padding:"8px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}><div><div style={{fontWeight:600}}>{supDisplay(inv)}</div><div style={{color:"#8b8fa4",fontSize:11}}>{catLabel(inv.catId)}</div></div><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(inv.total)}</span></div>)}</div>:<div style={{fontSize:12,color:"#8b8fa4"}}>Sin costos asociados</div>}
@@ -2126,7 +2160,7 @@ export default function App() {
       {showAddVehicle&&newVehicleForm&&(<div style={S.modal} onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}}><div style={{...S.mbox,maxWidth:600}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h3 style={{fontSize:18,fontWeight:800,margin:0}}>Agregar Vehículo</h3><button onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button></div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
-          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"]].map(([l,k])=>(<div key={k}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div><input value={newVehicleForm[k]||""} onChange={e=>setNewVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>))}
+          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Cilindrada (CC)","engine_cc"],["# Pasajeros","passengers"],["Serie/Chasis","chassis"]].map(([l,k])=>(<div key={k}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div><input value={newVehicleForm[k]||""} onChange={e=>setNewVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>))}
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div><input type="date" value={newVehicleForm.entry_date||""} onChange={e=>setNewVehicleForm(prev=>({...prev,entry_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Costo compra (₡)</div><input type="number" value={newVehicleForm.purchase_cost||""} onChange={e=>setNewVehicleForm(prev=>({...prev,purchase_cost:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tipo cambio (ref.)</div><input type="number" value={newVehicleForm.exchange_rate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,exchange_rate:e.target.value}))} placeholder="Ej: 530" style={{...S.inp,width:"100%",fontSize:12}} /></div>
@@ -3232,7 +3266,7 @@ export default function App() {
                           </div>
                         )}
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
-                          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Estilo","style"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
+                          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Cilindrada (CC)","engine_cc"],["# Pasajeros","passengers"],["Serie/Chasis","chassis"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
                             <div key={k}>
                               <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
                               <input value={vehicleForm[k]||""} onChange={e=>{
