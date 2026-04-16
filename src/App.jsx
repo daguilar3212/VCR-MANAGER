@@ -115,12 +115,22 @@ const CATS = [
   {id:"otro",g:"otros_gastos",l:"Otro",a:"Otros Gastos"},
 ];
 
+// ===== LIQUIDATION CATEGORY MAPPING =====
+const LIQ_CATS = [
+  { id: "viaticos", label: "Viáticos", catIds: ["viaticos_emp", "atencion_cli"] },
+  { id: "combustibles", label: "Combustibles", catIds: ["combustible"] },
+  { id: "reparaciones", label: "Reparaciones de Vehículos", catIds: ["rep_vehiculos", "marchamo", "herramientas", "lavado", "traspaso"] },
+  { id: "otros", label: "Otros", catIds: null },
+];
+const getLiqCategory = (catId) => { for (const lc of LIQ_CATS) { if (lc.catIds && lc.catIds.includes(catId)) return lc.id; } return "otros"; };
+const getLiqCatLabel = (liqCatId) => LIQ_CATS.find(c => c.id === liqCatId)?.label || "Otros";
+
 const fmt = (n, c) => {
   if (n == null || isNaN(n)) return "-";
   return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", {minimumFractionDigits:0, maximumFractionDigits:0});
 };
 const fK = (n) => Number(n).toLocaleString("es-CR") + " km";
-const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Pagos","Planillas","Reportes"];
+const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Liquidaciones","Pagos","Planillas","Reportes"];
 
 const S = {
   card: {background:"#181a23",borderRadius:14,border:"1px solid #2a2d3d",overflow:"hidden"},
@@ -182,8 +192,20 @@ export default function App() {
   const [selectedCars, setSelectedCars] = useState(new Set());
   const [selectedClis, setSelectedClis] = useState(new Set());
 
+  // ===== LIQUIDATION STATE =====
+  const [liquidations, setLiquidations] = useState([]);
+  const [liqView, setLiqView] = useState("list");
+  const [liqForm, setLiqForm] = useState(null);
+  const [pickedLiq, setPickedLiq] = useState(null);
+  const [liqFilter, setLiqFilter] = useState("all");
+  const [printLiq, setPrintLiq] = useState(null);
+  const [liqOptResult, setLiqOptResult] = useState(null);
+  const [liqManualMode, setLiqManualMode] = useState(false);
+  const [liqManualSelected, setLiqManualSelected] = useState(new Set());
+  const [liqPayForm, setLiqPayForm] = useState(null);
+
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); }, []);
 
   const loadVehicles = async () => {
     const { data } = await supabase.from('vehicles').select('*').order('created_at', { ascending: false });
@@ -226,6 +248,7 @@ export default function App() {
         catId: inv.category_id || 'otro', assignStatus: inv.assign_status || 'unassigned',
         payStatus: inv.pay_status || 'pending', paidBank: inv.paid_bank || '', paidRef: inv.paid_reference || '',
         isVehicle: inv.is_vehicle_purchase || false, vehicleStatus: inv.vehicle_purchase_status || null,
+        paidDate: inv.paid_date || '', liquidationId: inv.liquidation_id || null,
         lines: [], dbId: inv.id,
       })));
     }
@@ -811,6 +834,121 @@ export default function App() {
     alert("Los clientes se generan de las ventas. Para eliminar un cliente, elimine sus ventas asociadas.");
   };
 
+  // ======= LIQUIDATION FUNCTIONS =======
+  const loadLiquidations = async () => {
+    const { data } = await supabase.from('liquidations').select('*').order('created_at', { ascending: false });
+    if (data) {
+      const ids = data.map(l => l.id);
+      let liMap = {};
+      if (ids.length > 0) {
+        const { data: items } = await supabase.from('liquidation_invoices').select('*').in('liquidation_id', ids).order('liq_category');
+        (items || []).forEach(i => { if (!liMap[i.liquidation_id]) liMap[i.liquidation_id] = []; liMap[i.liquidation_id].push(i); });
+      }
+      setLiquidations(data.map(l => ({ ...l, items: liMap[l.id] || [] })));
+    }
+  };
+
+  const eligibleInvoices = useMemo(() => {
+    return invoices.filter(inv => inv.payCode !== '04' && !inv.liquidationId && inv.payStatus === 'pending');
+  }, [invoices]);
+
+  const getEligibleByCurrency = (currency) => eligibleInvoices.filter(inv => inv.currency === currency);
+
+  const getEligibleByCategory = (currency) => {
+    const map = { viaticos: [], combustibles: [], reparaciones: [], otros: [] };
+    getEligibleByCurrency(currency).forEach(inv => { map[getLiqCategory(inv.catId)].push(inv); });
+    return map;
+  };
+
+  const optimizeLiquidation = (target, pcts, currency) => {
+    const byCat = getEligibleByCategory(currency);
+    const result = { viaticos: [], combustibles: [], reparaciones: [], otros: [] };
+    let totalSelected = 0;
+    const hasPcts = Object.values(pcts).some(v => v > 0);
+
+    if (hasPcts) {
+      for (const cat of ["viaticos", "combustibles", "reparaciones", "otros"]) {
+        const catTarget = target * (pcts[cat] || 0) / 100;
+        if (catTarget <= 0) continue;
+        const available = [...byCat[cat]].sort((a, b) => b.total - a.total);
+        let catTotal = 0;
+        const selected = [];
+        for (const inv of available) { if (catTotal >= catTarget) break; selected.push(inv); catTotal += inv.total; }
+        if (catTotal < catTarget) {
+          const remaining = available.filter(inv => !selected.includes(inv));
+          for (const inv of remaining.sort((a, b) => a.total - b.total)) { if (catTotal >= catTarget) break; selected.push(inv); catTotal += inv.total; }
+        }
+        result[cat] = selected;
+        totalSelected += catTotal;
+      }
+      if (totalSelected < target) {
+        const used = new Set(Object.values(result).flat().map(i => i.key));
+        const allRemaining = getEligibleByCurrency(currency).filter(inv => !used.has(inv.key)).sort((a, b) => a.total - b.total);
+        for (const inv of allRemaining) { if (totalSelected >= target) break; const lc = getLiqCategory(inv.catId); result[lc].push(inv); totalSelected += inv.total; }
+      }
+    } else {
+      // Sin porcentajes: agarrar facturas hasta llegar al monto, priorizando las mas grandes
+      const all = getEligibleByCurrency(currency).sort((a, b) => b.total - a.total);
+      for (const inv of all) { if (totalSelected >= target) break; const lc = getLiqCategory(inv.catId); result[lc].push(inv); totalSelected += inv.total; }
+    }
+    return result;
+  };
+
+  const saveLiquidation = async (name, optimized, currency) => {
+    const allItems = [];
+    let total = 0;
+    for (const [cat, invs] of Object.entries(optimized)) {
+      for (const inv of invs) { allItems.push({ cat, inv }); total += inv.total; }
+    }
+    const { data: liq, error } = await supabase.from('liquidations').insert({
+      name, target_amount: liqForm?.target || 0, actual_amount: total, currency: currency || 'CRC', status: 'draft',
+    }).select().single();
+    if (error) { alert("Error: " + error.message); return; }
+    const rows = allItems.map(({ cat, inv }) => ({
+      liquidation_id: liq.id, invoice_id: inv.dbId, invoice_xml_key: inv.key,
+      liq_category: cat, amount: inv.total, supplier_name: supDisplay(inv),
+      emission_date: inv.date, last_four: inv.last4,
+    }));
+    if (rows.length > 0) {
+      await supabase.from('liquidation_invoices').insert(rows);
+      for (const item of allItems) { await supabase.from('invoices').update({ liquidation_id: liq.id }).eq('xml_key', item.inv.key); }
+    }
+    await loadLiquidations(); await loadInvoices();
+    setLiqView("list"); setLiqForm(null); setLiqOptResult(null); setLiqManualMode(false); setLiqManualSelected(new Set());
+  };
+
+  const confirmLiquidation = async (id) => {
+    const liq = liquidations.find(l => l.id === id);
+    if (!liq) return;
+    for (const item of (liq.items || [])) {
+      await supabase.from('invoices').update({ pay_status: 'paid', liquidation_id: id }).eq('xml_key', item.invoice_xml_key);
+    }
+    await supabase.from('liquidations').update({ status: 'confirmed', updated_at: new Date().toISOString() }).eq('id', id);
+    await loadLiquidations(); await loadInvoices();
+    setPickedLiq(prev => prev ? { ...prev, status: 'confirmed' } : null);
+  };
+
+  const payLiquidation = async (id) => {
+    if (!liqPayForm || !liqPayForm.bank) { alert("Ingrese el banco"); return; }
+    await supabase.from('liquidations').update({
+      status: 'paid', paid_bank: liqPayForm.bank, paid_reference: liqPayForm.reference,
+      paid_date: liqPayForm.date, updated_at: new Date().toISOString(),
+    }).eq('id', id);
+    await loadLiquidations();
+    setPickedLiq(prev => prev ? { ...prev, status: 'paid', paid_bank: liqPayForm.bank, paid_reference: liqPayForm.reference, paid_date: liqPayForm.date } : null);
+    setLiqPayForm(null);
+  };
+
+  const deleteLiquidation = async (id) => {
+    const pin = prompt("PIN para eliminar esta liquidación:");
+    if (pin !== "1234") { alert("PIN incorrecto"); return; }
+    const liq = liquidations.find(l => l.id === id);
+    if (liq) { for (const item of (liq.items || [])) { await supabase.from('invoices').update({ liquidation_id: null, pay_status: 'pending' }).eq('xml_key', item.invoice_xml_key); } }
+    await supabase.from('liquidation_invoices').delete().eq('liquidation_id', id);
+    await supabase.from('liquidations').delete().eq('id', id);
+    await loadLiquidations(); await loadInvoices(); setPickedLiq(null);
+  };
+
   const filtered = cars.filter(v => { const s = q.toLowerCase(); return (!q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => (x||"").toLowerCase().includes(s))) && (invFilter === "all" || v.s === invFilter); });
 
   const costsByPlate = useMemo(() => {
@@ -837,13 +975,286 @@ export default function App() {
     return Object.values(map);
   }, [sales]);
 
-  // ======= RENDER FUNCTIONS =======
+  // ======= RENDER: LIQUIDACIONES =======
+  const renderLiquidaciones = () => {
+    const F = liqForm || {};
+    const uf = (k, v) => setLiqForm(prev => ({ ...prev, [k]: v }));
+    const cur = F.currency || "CRC";
+    const curSymbol = cur === "USD" ? "$" : "₡";
+    const eligByCur = getEligibleByCurrency(cur);
+    const eligByCat = getEligibleByCategory(cur);
 
+    if (liqView === "list") {
+      const filteredLiqs = liquidations.filter(l => liqFilter === "all" || l.status === liqFilter);
+      const crcElig = getEligibleByCurrency("CRC");
+      const usdElig = getEligibleByCurrency("USD");
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <h1 style={{fontSize:24,fontWeight:800}}>Liquidaciones</h1>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{
+                const rows = [];
+                for (const l of filteredLiqs) { for (const item of (l.items || [])) { rows.push({"Liquidación":l.name,"Moneda":l.currency||"CRC","Estado":l.status==="paid"?"Pagada":l.status==="confirmed"?"Confirmada":"Borrador","Categoría":getLiqCatLabel(item.liq_category),"Fecha Factura":item.emission_date?new Date(item.emission_date).toLocaleDateString("es-CR"):"","Últimos 4":item.last_four||"","Comercio":item.supplier_name||"","Monto":item.amount}); } }
+                if (rows.length > 0) exportXLS(rows,"Liquidaciones_VCR");
+              }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
+              <button onClick={()=>{
+                setLiqForm({ name:"", target:0, currency:"CRC", pcts:{ viaticos:0, combustibles:0, reparaciones:0, otros:0 } });
+                setLiqOptResult(null); setLiqManualMode(false); setLiqManualSelected(new Set()); setLiqView("create");
+              }} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,padding:"10px 20px"}}>+ Nueva Liquidación</button>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,marginBottom:14}}>
+            {[["all","Todas"],["draft","Borradores"],["confirmed","Confirmadas"],["paid","Pagadas"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setLiqFilter(v)} style={{...S.sel,background:liqFilter===v?"#4f8cff20":"#1e2130",color:liqFilter===v?"#4f8cff":"#8b8fa4",fontWeight:liqFilter===v?600:400}}>
+                {l} ({liquidations.filter(x=>v==="all"||x.status===v).length})
+              </button>
+            ))}
+          </div>
+          <div style={{...S.card,padding:"14px 18px",marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#8b8fa4",marginBottom:8}}>FACTURAS DISPONIBLES PARA LIQUIDAR</div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              <div style={{background:"#1e2130",borderRadius:10,padding:"12px 14px"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#4f8cff",marginBottom:6}}>COLONES (₡)</div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {LIQ_CATS.map(lc => { const arr = getEligibleByCategory("CRC")[lc.id]||[]; return (
+                    <div key={lc.id} style={{flex:"1 1 100px"}}>
+                      <div style={{fontSize:9,color:"#8b8fa4"}}>{lc.label}</div>
+                      <div style={{fontSize:13,fontWeight:700}}>{fmt(arr.reduce((s,i)=>s+i.total,0))}</div>
+                      <div style={{fontSize:9,color:"#8b8fa4"}}>{arr.length} fact.</div>
+                    </div>
+                  );})}
+                </div>
+                <div style={{marginTop:6,fontSize:12,fontWeight:700,color:"#4f8cff"}}>Total: {fmt(crcElig.reduce((s,i)=>s+i.total,0))} ({crcElig.length})</div>
+              </div>
+              <div style={{background:"#1e2130",borderRadius:10,padding:"12px 14px"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#10b981",marginBottom:6}}>DÓLARES ($)</div>
+                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                  {LIQ_CATS.map(lc => { const arr = getEligibleByCategory("USD")[lc.id]||[]; return (
+                    <div key={lc.id} style={{flex:"1 1 100px"}}>
+                      <div style={{fontSize:9,color:"#8b8fa4"}}>{lc.label}</div>
+                      <div style={{fontSize:13,fontWeight:700}}>{fmt(arr.reduce((s,i)=>s+i.total,0),"USD")}</div>
+                      <div style={{fontSize:9,color:"#8b8fa4"}}>{arr.length} fact.</div>
+                    </div>
+                  );})}
+                </div>
+                <div style={{marginTop:6,fontSize:12,fontWeight:700,color:"#10b981"}}>Total: {fmt(usdElig.reduce((s,i)=>s+i.total,0),"USD")} ({usdElig.length})</div>
+              </div>
+            </div>
+          </div>
+          {filteredLiqs.length === 0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay liquidaciones{liqFilter!=="all"?" con este filtro":""}.</div>
+          ) : (
+            <div style={S.card}>
+              {filteredLiqs.map((l,i)=>{
+                const lCur = l.currency || "CRC";
+                const catTotals = {};
+                (l.items||[]).forEach(item => { if (!catTotals[item.liq_category]) catTotals[item.liq_category] = 0; catTotals[item.liq_category] += item.amount; });
+                return (
+                <div key={i} onClick={()=>setPickedLiq(l)} style={{padding:"14px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14}}>{l.name}</div>
+                    <div style={{fontSize:11,color:"#8b8fa4"}}>{(l.items||[]).length} facturas · {lCur} · {new Date(l.created_at).toLocaleDateString("es-CR")}</div>
+                    <div style={{display:"flex",gap:6,marginTop:6,flexWrap:"wrap"}}>
+                      <span style={S.badge(l.status==="paid"?"#10b981":l.status==="confirmed"?"#6366f1":"#f59e0b")}>
+                        {l.status==="paid"?"Pagada":l.status==="confirmed"?"Confirmada":"Borrador"}
+                      </span>
+                      {Object.entries(catTotals).map(([cat,tot])=>(<span key={cat} style={S.badge("#64748b")}>{getLiqCatLabel(cat)}: {fmt(tot,lCur==="USD"?"USD":undefined)}</span>))}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:18,fontWeight:800,color:lCur==="USD"?"#10b981":"#4f8cff"}}>{fmt(l.actual_amount,lCur==="USD"?"USD":undefined)}</div>
+                    {l.target_amount > 0 && <div style={{fontSize:11,color:l.actual_amount >= l.target_amount ? "#10b981" : "#f59e0b"}}>Meta: {fmt(l.target_amount,lCur==="USD"?"USD":undefined)}</div>}
+                  </div>
+                </div>
+              );})}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // CREATE VIEW
+    if (liqView === "create") {
+      const pcts = F.pcts || { viaticos:0, combustibles:0, reparaciones:0, otros:0 };
+      const pctSum = Object.values(pcts).reduce((s,v) => s + (parseFloat(v)||0), 0);
+      const hasPcts = pctSum > 0;
+      const target = parseFloat(F.target) || 0;
+      const previewResult = liqOptResult;
+      let previewTotal = 0;
+      const previewCatTotals = {};
+      if (previewResult) { for (const [cat, invs] of Object.entries(previewResult)) { const catT = invs.reduce((s, inv) => s + inv.total, 0); previewCatTotals[cat] = catT; previewTotal += catT; } }
+      let manualTotal = 0;
+      const manualCatTotals = {};
+      if (liqManualMode) { eligByCur.filter(inv => liqManualSelected.has(inv.key)).forEach(inv => { const lc = getLiqCategory(inv.catId); manualCatTotals[lc] = (manualCatTotals[lc] || 0) + inv.total; manualTotal += inv.total; }); }
+
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <h1 style={{fontSize:24,fontWeight:800}}>Nueva Liquidación</h1>
+            <button onClick={()=>{setLiqView("list");setLiqForm(null);setLiqOptResult(null);setLiqManualMode(false);}} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+          </div>
+          <div style={{...S.card,padding:"18px 20px",marginBottom:14}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12,color:"#4f8cff"}}>Configuración</div>
+            <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:"0 14px"}}>
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:11,color:"#8b8fa4",marginBottom:3}}>Nombre</div>
+                <input value={F.name||""} onChange={e=>uf("name",e.target.value)} placeholder="Ej: Liquidación Marzo 2026, Caja Chica..." style={{...S.inp,width:"100%"}} />
+              </div>
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:11,color:"#8b8fa4",marginBottom:3}}>Moneda</div>
+                <div style={{display:"flex",gap:6}}>
+                  {[["CRC","₡ Colones"],["USD","$ Dólares"]].map(([v,l])=>(
+                    <button key={v} onClick={()=>{uf("currency",v);setLiqOptResult(null);setLiqManualSelected(new Set());}} style={{...S.sel,flex:1,textAlign:"center",background:cur===v?(v==="CRC"?"#4f8cff20":"#10b98120"):"#1e2130",color:cur===v?(v==="CRC"?"#4f8cff":"#10b981"):"#8b8fa4",fontWeight:cur===v?700:400}}>{l}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{marginBottom:10}}>
+                <div style={{fontSize:11,color:"#8b8fa4",marginBottom:3}}>Monto meta ({curSymbol})</div>
+                <input type="number" value={F.target||""} onChange={e=>uf("target",e.target.value)} placeholder="Ej: 3000000" style={{...S.inp,width:"100%"}} />
+              </div>
+            </div>
+          </div>
+          <div style={{...S.card,padding:"18px 20px",marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div style={{fontWeight:700,fontSize:14,color:"#4f8cff"}}>Distribución por Categoría <span style={{fontSize:11,color:"#8b8fa4",fontWeight:400}}>(opcional, dejar en 0 para auto)</span></div>
+              {hasPcts && <span style={{fontSize:12,color:Math.abs(pctSum-100)<0.1?"#10b981":"#e11d48",fontWeight:600}}>Total: {pctSum}%</span>}
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12}}>
+              {LIQ_CATS.map(lc => {
+                const avail = (eligByCat[lc.id] || []).reduce((s,inv)=>s+inv.total,0);
+                const catTarget = hasPcts ? target * (pcts[lc.id]||0) / 100 : 0;
+                return (
+                  <div key={lc.id}>
+                    <div style={{fontSize:11,color:"#8b8fa4",marginBottom:3}}>{lc.label}</div>
+                    <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                      <input type="number" value={pcts[lc.id]||""} onChange={e=>uf("pcts",{...pcts,[lc.id]:parseFloat(e.target.value)||0})} placeholder="0" style={{...S.inp,width:60,textAlign:"center"}} />
+                      <span style={{fontSize:12,color:"#8b8fa4"}}>%</span>
+                    </div>
+                    {hasPcts && <div style={{fontSize:10,color:"#8b8fa4",marginTop:4}}>Meta: {fmt(catTarget,cur==="USD"?"USD":undefined)}</div>}
+                    <div style={{fontSize:10,color:avail > 0 ? "#10b981" : "#e11d48"}}>Disp: {fmt(avail,cur==="USD"?"USD":undefined)} ({(eligByCat[lc.id]||[]).length})</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{display:"flex",gap:8,marginTop:14}}>
+              <button onClick={()=>{
+                if (!F.name) { alert("Ingrese un nombre"); return; }
+                if (!target || target <= 0) { alert("Ingrese un monto meta"); return; }
+                if (hasPcts && Math.abs(pctSum - 100) > 0.1) { alert("Los porcentajes deben sumar 100%"); return; }
+                setLiqOptResult(optimizeLiquidation(target, pcts, cur));
+                setLiqManualMode(false);
+              }} style={{...S.sel,background:"#4f8cff",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px",flex:1}}>
+                {hasPcts ? "Optimizar con %" : "Optimizar automático"}
+              </button>
+              <button onClick={()=>{ setLiqManualMode(!liqManualMode); setLiqOptResult(null); setLiqManualSelected(new Set()); }}
+                style={{...S.sel,background:liqManualMode?"#f59e0b20":"#1e2130",color:liqManualMode?"#f59e0b":"#8b8fa4",fontWeight:600}}>
+                {liqManualMode ? "Manual activo" : "Selección manual"}
+              </button>
+            </div>
+          </div>
+          {/* OPTIMIZER RESULT */}
+          {previewResult && !liqManualMode && (
+            <div style={{...S.card,padding:"18px 20px",marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div style={{fontWeight:700,fontSize:14,color:"#10b981"}}>Resultado del Optimizador</div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:20,fontWeight:800,color:previewTotal>=target?"#10b981":"#f59e0b"}}>{fmt(previewTotal,cur==="USD"?"USD":undefined)}</div>
+                  <div style={{fontSize:11,color:"#8b8fa4"}}>Meta: {fmt(target,cur==="USD"?"USD":undefined)} · Dif: {fmt(previewTotal - target,cur==="USD"?"USD":undefined)}</div>
+                </div>
+              </div>
+              {LIQ_CATS.map(lc => {
+                const invs = previewResult[lc.id] || [];
+                if (invs.length === 0) return null;
+                const catT = previewCatTotals[lc.id] || 0;
+                const catTarget = hasPcts ? target * (pcts[lc.id]||0) / 100 : 0;
+                return (
+                  <div key={lc.id} style={{marginBottom:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",padding:"8px 12px",background:"#1e2130",borderRadius:"8px 8px 0 0"}}>
+                      <span style={{fontWeight:700,fontSize:13}}>{lc.label}</span>
+                      <span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(catT,cur==="USD"?"USD":undefined)} {hasPcts && <span style={{fontSize:10,color:"#8b8fa4",fontWeight:400}}>/ {fmt(catTarget,cur==="USD"?"USD":undefined)}</span>}</span>
+                    </div>
+                    {invs.map((inv,j) => (
+                      <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"6px 12px",borderBottom:"1px solid #2a2d3d",fontSize:12}}>
+                        <div>
+                          <span style={{color:"#8b8fa4"}}>{inv.date ? new Date(inv.date).toLocaleDateString("es-CR") : ""}</span>
+                          <span style={{marginLeft:8,color:"#8b8fa4"}}>{inv.last4||""}</span>
+                          <span style={{marginLeft:8,fontWeight:600}}>{supDisplay(inv)}</span>
+                        </div>
+                        <span style={{fontWeight:600}}>{fmt(inv.total,cur==="USD"?"USD":undefined)}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              <div style={{display:"flex",gap:12,justifyContent:"flex-end",marginTop:16}}>
+                <button onClick={()=>setLiqOptResult(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                <button onClick={()=>saveLiquidation(F.name, previewResult, cur)} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 30px"}}>Crear Liquidación</button>
+              </div>
+            </div>
+          )}
+          {/* MANUAL MODE */}
+          {liqManualMode && (
+            <div style={{...S.card,padding:"18px 20px",marginBottom:14}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <div style={{fontWeight:700,fontSize:14,color:"#f59e0b"}}>Selección Manual ({cur})</div>
+                <div style={{textAlign:"right"}}>
+                  <div style={{fontSize:20,fontWeight:800,color:"#4f8cff"}}>{fmt(manualTotal,cur==="USD"?"USD":undefined)}</div>
+                  <div style={{fontSize:11,color:"#8b8fa4"}}>{liqManualSelected.size} seleccionada{liqManualSelected.size!==1?"s":""}</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap"}}>
+                {LIQ_CATS.map(lc => (<span key={lc.id} style={S.badge(manualCatTotals[lc.id]?"#4f8cff":"#64748b")}>{lc.label}: {fmt(manualCatTotals[lc.id]||0,cur==="USD"?"USD":undefined)}</span>))}
+              </div>
+              {LIQ_CATS.map(lc => {
+                const avail = eligByCat[lc.id] || [];
+                if (avail.length === 0) return null;
+                return (
+                  <div key={lc.id} style={{marginBottom:10}}>
+                    <div style={{fontWeight:700,fontSize:12,color:"#8b8fa4",padding:"6px 0",borderBottom:"1px solid #2a2d3d"}}>{lc.label} ({avail.length})</div>
+                    {avail.map((inv,j) => (
+                      <div key={j} style={{display:"flex",gap:8,alignItems:"center",padding:"6px 0",borderBottom:"1px solid #2a2d3d10",background:liqManualSelected.has(inv.key)?"#4f8cff08":"transparent"}}>
+                        <input type="checkbox" checked={liqManualSelected.has(inv.key)} onChange={()=>{ setLiqManualSelected(prev => { const n = new Set(prev); if (n.has(inv.key)) n.delete(inv.key); else n.add(inv.key); return n; }); }} style={{cursor:"pointer"}} />
+                        <div style={{flex:1,display:"flex",justifyContent:"space-between",fontSize:12}}>
+                          <div>
+                            <span style={{color:"#8b8fa4"}}>{inv.date ? new Date(inv.date).toLocaleDateString("es-CR") : ""}</span>
+                            <span style={{marginLeft:8,color:"#8b8fa4"}}>{inv.last4||""}</span>
+                            <span style={{marginLeft:8,fontWeight:600}}>{supDisplay(inv)}</span>
+                          </div>
+                          <span style={{fontWeight:600}}>{fmt(inv.total,cur==="USD"?"USD":undefined)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              <div style={{display:"flex",gap:12,justifyContent:"flex-end",marginTop:16}}>
+                <button onClick={()=>{setLiqManualMode(false);setLiqManualSelected(new Set());}} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                <button onClick={()=>{
+                  if (!F.name) { alert("Ingrese un nombre"); return; }
+                  if (liqManualSelected.size === 0) { alert("Seleccione al menos una factura"); return; }
+                  const result = { viaticos:[], combustibles:[], reparaciones:[], otros:[] };
+                  eligByCur.filter(inv => liqManualSelected.has(inv.key)).forEach(inv => { result[getLiqCategory(inv.catId)].push(inv); });
+                  saveLiquidation(F.name, result, cur);
+                }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 30px"}}>
+                  Crear ({liqManualSelected.size} fact., {fmt(manualTotal,cur==="USD"?"USD":undefined)})
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // ======= RENDER FUNCTIONS =======
   const renderDash = () => (
     <div>
       <h1 style={{fontSize:26,fontWeight:800,marginBottom:20}}>Dashboard</h1>
       <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:24}}>
-        {[[cars.length,"Vehículos","#6366f1"],[cars.filter(c=>c.s==="disponible").length,"Disponibles","#10b981"],[invoices.length,"Facturas","#8b5cf6"],[invoices.filter(i=>i.payStatus==="pending").length,"Por pagar","#f59e0b"],[clients.length,"Clientes","#f97316"]].map(([v,l,c])=>(
+        {[[cars.length,"Vehículos","#6366f1"],[cars.filter(c=>c.s==="disponible").length,"Disponibles","#10b981"],[invoices.length,"Facturas","#8b5cf6"],[invoices.filter(i=>i.payStatus==="pending").length,"Por pagar","#f59e0b"],[clients.length,"Clientes","#f97316"],[liquidations.length,"Liquidaciones","#e11d48"]].map(([v,l,c])=>(
           <div key={l} style={{flex:"1 1 130px",...S.card,padding:"14px 18px"}}>
             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:3,textTransform:"uppercase",letterSpacing:.4}}>{l}</div>
             <div style={{fontSize:22,fontWeight:800,color:c}}>{v}</div>
@@ -1542,6 +1953,7 @@ export default function App() {
     if (tab==="Costos") return renderCostos();
     if (tab==="Clientes") return renderCli();
     if (tab==="Ventas") return renderSales();
+    if (tab==="Liquidaciones") return renderLiquidaciones();
     return <PH t={tab}/>;
   };
 
@@ -2094,6 +2506,155 @@ export default function App() {
                     <div style={{ marginTop: 40, textAlign: "center", fontSize: 10, color: "#999", borderTop: "1px solid #ddd", paddingTop: 12 }}>
                       Vehículos de Costa Rica S.R.L. · Cédula Jurídica 3-101-124464 · Documento generado el {new Date().toLocaleDateString("es-CR", { day: "numeric", month: "long", year: "numeric" })}
                     </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* LIQUIDATION DETAIL MODAL */}
+          {pickedLiq && (
+            <div style={S.modal} onClick={()=>{setPickedLiq(null);setLiqPayForm(null);}}>
+              <div style={{...S.mbox,maxWidth:700}} onClick={e=>e.stopPropagation()}>
+                {(() => { const lCur = pickedLiq.currency || "CRC"; const lFmt = (n) => fmt(n, lCur==="USD"?"USD":undefined); return (<>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}>
+                  <div>
+                    <h3 style={{fontSize:18,fontWeight:800,margin:0}}>{pickedLiq.name}</h3>
+                    <p style={{fontSize:12,color:"#8b8fa4"}}>{lCur} · {new Date(pickedLiq.created_at).toLocaleDateString("es-CR")}</p>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={S.badge(pickedLiq.status==="paid"?"#10b981":pickedLiq.status==="confirmed"?"#6366f1":"#f59e0b")}>
+                      {pickedLiq.status==="paid"?"Pagada":pickedLiq.status==="confirmed"?"Confirmada":"Borrador"}
+                    </span>
+                    <button onClick={()=>{setPickedLiq(null);setLiqPayForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:14}}>
+                  {[["Meta",pickedLiq.target_amount],["Total",pickedLiq.actual_amount],["Dif.",pickedLiq.actual_amount - pickedLiq.target_amount]].map(([l,v],i)=>(
+                    <div key={l} style={{flex:1,background:"#1e2130",borderRadius:10,padding:"10px 14px"}}>
+                      <div style={{fontSize:10,color:"#8b8fa4"}}>{l}</div>
+                      <div style={{fontSize:16,fontWeight:700,color:i===2?(v>=0?"#10b981":"#e11d48"):(i===1?(lCur==="USD"?"#10b981":"#4f8cff"):"#e8eaf0")}}>{lFmt(v)}</div>
+                    </div>
+                  ))}
+                </div>
+                {LIQ_CATS.map(lc => {
+                  const items = (pickedLiq.items||[]).filter(i => i.liq_category === lc.id);
+                  if (items.length === 0) return null;
+                  const catTotal = items.reduce((s,i) => s + i.amount, 0);
+                  return (
+                    <div key={lc.id} style={{marginBottom:12}}>
+                      <div style={{display:"flex",justifyContent:"space-between",padding:"8px 14px",background:"#1e2130",borderRadius:"8px 8px 0 0",fontWeight:700,fontSize:13}}>
+                        <span>{lc.label}</span><span style={{color:lCur==="USD"?"#10b981":"#4f8cff"}}>{lFmt(catTotal)}</span>
+                      </div>
+                      {items.map((item,j) => (
+                        <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"6px 14px",borderBottom:"1px solid #2a2d3d",fontSize:12}}>
+                          <div>
+                            <span style={{color:"#8b8fa4"}}>{item.emission_date ? new Date(item.emission_date).toLocaleDateString("es-CR") : ""}</span>
+                            <span style={{marginLeft:8,color:"#8b8fa4"}}>{item.last_four||""}</span>
+                            <span style={{marginLeft:8,fontWeight:600}}>{item.supplier_name||""}</span>
+                          </div>
+                          <span style={{fontWeight:600}}>{lFmt(item.amount)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+                {pickedLiq.status === "paid" && (
+                  <div style={{background:"#10b98110",borderRadius:10,padding:"12px 16px",marginBottom:12}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"#10b981",marginBottom:6}}>Pago registrado</div>
+                    <div style={{fontSize:12,display:"flex",gap:16,flexWrap:"wrap"}}>
+                      <span><span style={{color:"#8b8fa4"}}>Banco:</span> {pickedLiq.paid_bank}</span>
+                      <span><span style={{color:"#8b8fa4"}}>Ref:</span> {pickedLiq.paid_reference||"-"}</span>
+                      <span><span style={{color:"#8b8fa4"}}>Fecha:</span> {pickedLiq.paid_date ? new Date(pickedLiq.paid_date+"T12:00:00").toLocaleDateString("es-CR") : "-"}</span>
+                    </div>
+                  </div>
+                )}
+                {liqPayForm && pickedLiq.status === "confirmed" && (
+                  <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"#6366f1",marginBottom:10}}>Registrar Pago</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                      <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Banco *</div><input value={liqPayForm.bank||""} onChange={e=>setLiqPayForm(prev=>({...prev,bank:e.target.value}))} style={{...S.inp,width:"100%"}} /></div>
+                      <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Referencia</div><input value={liqPayForm.reference||""} onChange={e=>setLiqPayForm(prev=>({...prev,reference:e.target.value}))} style={{...S.inp,width:"100%"}} /></div>
+                      <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha</div><input type="date" value={liqPayForm.date||""} onChange={e=>setLiqPayForm(prev=>({...prev,date:e.target.value}))} style={{...S.inp,width:"100%"}} /></div>
+                    </div>
+                    <div style={{display:"flex",gap:8,marginTop:10,justifyContent:"flex-end"}}>
+                      <button onClick={()=>setLiqPayForm(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                      <button onClick={()=>payLiquidation(pickedLiq.id)} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none"}}>Confirmar Pago</button>
+                    </div>
+                  </div>
+                )}
+                <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+                  {pickedLiq.status === "draft" && (<>
+                    <button onClick={()=>deleteLiquidation(pickedLiq.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                    <button onClick={()=>confirmLiquidation(pickedLiq.id)} style={{...S.sel,background:"#6366f1",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Confirmar</button>
+                  </>)}
+                  {pickedLiq.status === "confirmed" && !liqPayForm && (<>
+                    <button onClick={()=>deleteLiquidation(pickedLiq.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                    <button onClick={()=>setLiqPayForm({bank:"",reference:"",date:new Date().toISOString().split('T')[0]})} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Registrar Pago</button>
+                  </>)}
+                  <button onClick={()=>{setPrintLiq(pickedLiq);setPickedLiq(null);}} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600}}>Imprimir</button>
+                </div>
+                </>); })()}
+              </div>
+            </div>
+          )}
+
+          {/* PRINTABLE LIQUIDATION */}
+          {printLiq && (() => {
+            const l = printLiq; const lCur = l.currency || "CRC"; const lFmt = (n) => fmt(n, lCur==="USD"?"USD":undefined);
+            const catGroups = {}; (l.items||[]).forEach(item => { if (!catGroups[item.liq_category]) catGroups[item.liq_category] = []; catGroups[item.liq_category].push(item); });
+            return (
+              <div style={{position:"fixed",inset:0,zIndex:9999,background:"#0f1117ee",overflowY:"auto"}}>
+                <div style={{maxWidth:850,margin:"20px auto",position:"relative"}}>
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginBottom:10,padding:"0 10px"}} className="no-print">
+                    <button onClick={()=>window.print()} style={{...S.sel,background:"#4f8cff",color:"#fff",fontWeight:600,padding:"8px 20px",border:"none"}}>Imprimir / PDF</button>
+                    <button onClick={()=>setPrintLiq(null)} style={{...S.sel,color:"#8b8fa4",padding:"8px 20px"}}>Cerrar</button>
+                  </div>
+                  <div id="print-area" style={{background:"#fff",color:"#1a1a2e",padding:"40px 50px",maxWidth:800,margin:"0 auto",fontFamily:"'DM Sans',system-ui,sans-serif",fontSize:13,lineHeight:1.6}}>
+                    <div style={{textAlign:"center",marginBottom:30}}>
+                      <div style={{fontSize:22,fontWeight:800,color:"#e11d48",letterSpacing:1}}>VEHÍCULOS DE COSTA RICA</div>
+                      <div style={{fontSize:11,color:"#666",marginTop:2}}>Cédula Jurídica 3-101-124464</div>
+                      <div style={{fontSize:16,fontWeight:800,marginTop:16}}>{l.name}</div>
+                      <div style={{fontSize:12,color:"#666"}}>{lCur} · {new Date(l.created_at).toLocaleDateString("es-CR",{day:"numeric",month:"long",year:"numeric"})}</div>
+                      <div style={{marginTop:6}}>
+                        <span style={{display:"inline-block",background:l.status==="paid"?"#10b981":l.status==="confirmed"?"#6366f1":"#f59e0b",color:"#fff",padding:"3px 14px",borderRadius:20,fontSize:11,fontWeight:700,textTransform:"uppercase"}}>
+                          {l.status==="paid"?"Pagada":l.status==="confirmed"?"Confirmada":"Borrador"}
+                        </span>
+                      </div>
+                    </div>
+                    {LIQ_CATS.map(lc => {
+                      const items = catGroups[lc.id]; if (!items || items.length === 0) return null;
+                      const catTotal = items.reduce((s,i) => s + i.amount, 0);
+                      return (
+                        <div key={lc.id} style={{marginBottom:20}}>
+                          <div style={{fontWeight:800,fontSize:14,borderBottom:"2px solid #e11d48",paddingBottom:4,marginBottom:6}}>{lc.label.toUpperCase()}</div>
+                          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                            <thead><tr>
+                              <th style={{textAlign:"left",padding:"6px 10px",borderBottom:"1px solid #ddd",fontSize:10,color:"#666",fontWeight:700}}>FECHA</th>
+                              <th style={{textAlign:"left",padding:"6px 10px",borderBottom:"1px solid #ddd",fontSize:10,color:"#666",fontWeight:700}}>CONSEC.</th>
+                              <th style={{textAlign:"left",padding:"6px 10px",borderBottom:"1px solid #ddd",fontSize:10,color:"#666",fontWeight:700}}>COMERCIO</th>
+                              <th style={{textAlign:"right",padding:"6px 10px",borderBottom:"1px solid #ddd",fontSize:10,color:"#666",fontWeight:700}}>MONTO</th>
+                            </tr></thead>
+                            <tbody>
+                              {items.map((item,j) => (<tr key={j}><td style={{padding:"4px 10px",borderBottom:"1px solid #eee"}}>{item.emission_date ? new Date(item.emission_date).toLocaleDateString("es-CR") : ""}</td><td style={{padding:"4px 10px",borderBottom:"1px solid #eee"}}>{item.last_four||""}</td><td style={{padding:"4px 10px",borderBottom:"1px solid #eee"}}>{item.supplier_name||""}</td><td style={{padding:"4px 10px",borderBottom:"1px solid #eee",textAlign:"right",fontWeight:600}}>{lFmt(item.amount)}</td></tr>))}
+                              <tr style={{background:"#f5f5f5"}}><td colSpan={3} style={{padding:"6px 10px",fontWeight:800}}>Subtotal {lc.label}</td><td style={{padding:"6px 10px",textAlign:"right",fontWeight:800}}>{lFmt(catTotal)}</td></tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })}
+                    <div style={{marginTop:20,padding:"12px 16px",background:"#f8f8f8",borderRadius:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <span style={{fontWeight:800,fontSize:16}}>TOTAL</span>
+                      <span style={{fontWeight:800,fontSize:18,color:"#e11d48"}}>{lFmt(l.actual_amount)}</span>
+                    </div>
+                    {l.target_amount > 0 && (
+                      <div style={{display:"flex",justifyContent:"flex-end",fontSize:12,color:"#666",marginTop:6,gap:20}}>
+                        <span>Meta: {lFmt(l.target_amount)}</span>
+                        <span>Diferencia: {lFmt(l.actual_amount - l.target_amount)}</span>
+                      </div>
+                    )}
+                    {l.status === "paid" && (<div style={{marginTop:20,padding:"10px 16px",border:"1px solid #ddd",borderRadius:6,fontSize:12}}><strong>Pago:</strong> {l.paid_bank} · Ref: {l.paid_reference||"-"} · Fecha: {l.paid_date ? new Date(l.paid_date+"T12:00:00").toLocaleDateString("es-CR") : "-"}</div>)}
+                    <div style={{marginTop:40,textAlign:"center",fontSize:10,color:"#999",borderTop:"1px solid #ddd",paddingTop:12}}>Vehículos de Costa Rica S.R.L. · Cédula Jurídica 3-101-124464 · {new Date().toLocaleDateString("es-CR",{day:"numeric",month:"long",year:"numeric"})}</div>
                   </div>
                 </div>
               </div>
