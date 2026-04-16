@@ -130,7 +130,7 @@ const fmt = (n, c) => {
   return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", {minimumFractionDigits:0, maximumFractionDigits:0});
 };
 const fK = (n) => Number(n).toLocaleString("es-CR") + " km";
-const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Liquidaciones","Pagos","Planillas","Reportes"];
+const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Liquidaciones","Planillas","Pagos","Settings","Reportes"];
 
 const S = {
   card: {background:"#181a23",borderRadius:14,border:"1px solid #2a2d3d",overflow:"hidden"},
@@ -204,8 +204,21 @@ export default function App() {
   const [liqManualSelected, setLiqManualSelected] = useState(new Set());
   const [liqPayForm, setLiqPayForm] = useState(null);
 
+  // ===== PAYROLL STATE =====
+  const [payrolls, setPayrolls] = useState([]);
+  const [payView, setPayView] = useState("list");
+  const [payForm, setPayForm] = useState(null);
+  const [pickedPay, setPickedPay] = useState(null);
+  const [printPay, setPrintPay] = useState(null);
+  const [payPayForm, setPayPayForm] = useState(null);
+
+  // ===== SETTINGS STATE =====
+  const [appSettings, setAppSettings] = useState({ ccss_pct: 10.83, rent_brackets: [{ from: 0, to: 918000, pct: 0 },{ from: 918000, to: 1347000, pct: 10 },{ from: 1347000, to: 2364000, pct: 15 },{ from: 2364000, to: 4727000, pct: 20 },{ from: 4727000, to: 999999999, pct: 25 }] });
+  const [settingsTab, setSettingsTab] = useState("employees");
+  const [editingAgent, setEditingAgent] = useState(null);
+
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); }, []);
 
   const loadVehicles = async () => {
     const { data } = await supabase.from('vehicles').select('*').order('created_at', { ascending: false });
@@ -949,6 +962,138 @@ export default function App() {
     await loadLiquidations(); await loadInvoices(); setPickedLiq(null);
   };
 
+  // ======= PAYROLL & SETTINGS FUNCTIONS =======
+  const loadSettings = async () => {
+    const { data } = await supabase.from('app_settings').select('*');
+    if (data) {
+      const map = {};
+      data.forEach(r => { try { map[r.key] = typeof r.value === 'string' ? JSON.parse(r.value) : r.value; } catch(e) { map[r.key] = r.value; } });
+      setAppSettings(prev => ({ ...prev, ...map }));
+    }
+  };
+
+  const saveSetting = async (key, value) => {
+    const jsonVal = typeof value === 'string' ? value : JSON.stringify(value);
+    await supabase.from('app_settings').upsert({ key, value: jsonVal, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+    setAppSettings(prev => ({ ...prev, [key]: value }));
+  };
+
+  const loadPayrolls = async () => {
+    const { data } = await supabase.from('payrolls').select('*').order('created_at', { ascending: false });
+    if (data) {
+      const ids = data.map(p => p.id);
+      let lnMap = {};
+      if (ids.length > 0) {
+        const { data: lines } = await supabase.from('payroll_lines').select('*').in('payroll_id', ids).order('agent_name');
+        (lines || []).forEach(l => { if (!lnMap[l.payroll_id]) lnMap[l.payroll_id] = []; lnMap[l.payroll_id].push(l); });
+      }
+      setPayrolls(data.map(p => ({ ...p, lines: lnMap[p.id] || [] })));
+    }
+  };
+
+  const calcRent = (monthlyGross, pensionDeduction) => {
+    const base = Math.max(0, monthlyGross - (pensionDeduction || 0));
+    const brackets = appSettings.rent_brackets || [];
+    let tax = 0;
+    for (const b of brackets) {
+      if (base <= b.from) continue;
+      const taxable = Math.min(base, b.to) - b.from;
+      tax += taxable * b.pct / 100;
+    }
+    return Math.round(tax * 100) / 100;
+  };
+
+  const getAgentCommissions = (agentId, month, year) => {
+    return sales.filter(s => {
+      if (s.status !== 'approved') return false;
+      if (!s.sale_date) return false;
+      const d = new Date(s.sale_date + 'T12:00:00');
+      return d.getMonth() === month && d.getFullYear() === year;
+    }).reduce((total, s) => {
+      const sAgents = s.sale_agents || [];
+      const match = sAgents.find(a => a.agent_id === agentId);
+      return total + (match ? (match.commission_amount || 0) : 0);
+    }, 0);
+  };
+
+  const buildPayroll = (type, periodLabel) => {
+    const ccss = parseFloat(appSettings.ccss_pct) || 10.83;
+    const employees = agents.filter(a => a.is_employee !== false);
+    const now = new Date();
+    const month = now.getMonth();
+    const year = now.getFullYear();
+    const isMensual = type === 'mensual';
+
+    const lines = employees.map(emp => {
+      const salary = emp.salary || 0;
+      const comms = isMensual ? getAgentCommissions(emp.id, month, year) : 0;
+      const grossQ = salary + comms;
+      const ccssAmt = Math.round(grossQ * ccss / 100 * 100) / 100;
+
+      let rentAmt = 0;
+      if (isMensual) {
+        // Renta sobre salario mensual bruto (Q1 + Q2 con comisiones)
+        const monthlyGross = salary + salary + comms; // Q1 salary + Q2 salary + comms
+        rentAmt = calcRent(monthlyGross, emp.pension_deduction || 0);
+      }
+
+      const netPay = grossQ - ccssAmt - rentAmt;
+      return {
+        agent_id: emp.id, agent_name: emp.name, salary, commissions: comms,
+        gross_total: grossQ, ccss_pct: ccss, ccss_amount: ccssAmt,
+        rent_base: isMensual ? (salary * 2 + comms) : 0,
+        pension_deduction: emp.pension_deduction || 0,
+        rent_amount: rentAmt, net_pay: Math.round(netPay * 100) / 100,
+      };
+    });
+
+    const totals = lines.reduce((t, l) => ({
+      gross: t.gross + l.gross_total, ccss: t.ccss + l.ccss_amount,
+      rent: t.rent + l.rent_amount, net: t.net + l.net_pay, comms: t.comms + l.commissions,
+    }), { gross: 0, ccss: 0, rent: 0, net: 0, comms: 0 });
+
+    return { type, name: periodLabel, lines, totals };
+  };
+
+  const savePayroll = async (preview) => {
+    const { data: pr, error } = await supabase.from('payrolls').insert({
+      name: preview.name, period_type: preview.type,
+      total_gross: preview.totals.gross, total_ccss: preview.totals.ccss,
+      total_rent: preview.totals.rent, total_net: preview.totals.net,
+      total_commissions: preview.totals.comms, status: 'draft',
+    }).select().single();
+    if (error) { alert("Error: " + error.message); return; }
+    const rows = preview.lines.map(l => ({ payroll_id: pr.id, ...l }));
+    await supabase.from('payroll_lines').insert(rows);
+    await loadPayrolls();
+    setPayView("list"); setPayForm(null);
+  };
+
+  const confirmPayroll = async (id) => {
+    await supabase.from('payrolls').update({ status: 'confirmed', updated_at: new Date().toISOString() }).eq('id', id);
+    await loadPayrolls();
+    setPickedPay(prev => prev ? { ...prev, status: 'confirmed' } : null);
+  };
+
+  const payPayroll = async (id) => {
+    if (!payPayForm || !payPayForm.bank) { alert("Ingrese el banco"); return; }
+    await supabase.from('payrolls').update({
+      status: 'paid', paid_bank: payPayForm.bank, paid_reference: payPayForm.reference,
+      paid_date: payPayForm.date, updated_at: new Date().toISOString(),
+    }).eq('id', id);
+    await loadPayrolls();
+    setPickedPay(prev => prev ? { ...prev, status: 'paid', paid_bank: payPayForm.bank, paid_reference: payPayForm.reference, paid_date: payPayForm.date } : null);
+    setPayPayForm(null);
+  };
+
+  const deletePayroll = async (id) => {
+    const pin = prompt("PIN para eliminar:");
+    if (pin !== "1234") { alert("PIN incorrecto"); return; }
+    await supabase.from('payroll_lines').delete().eq('payroll_id', id);
+    await supabase.from('payrolls').delete().eq('id', id);
+    await loadPayrolls(); setPickedPay(null);
+  };
+
   const filtered = cars.filter(v => { const s = q.toLowerCase(); return (!q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => (x||"").toLowerCase().includes(s))) && (invFilter === "all" || v.s === invFilter); });
 
   const costsByPlate = useMemo(() => {
@@ -1247,6 +1392,258 @@ export default function App() {
       );
     }
     return null;
+  };
+
+  // ======= RENDER: PLANILLAS =======
+  const renderPlanillas = () => {
+    if (payView === "list") {
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <h1 style={{fontSize:24,fontWeight:800}}>Planillas</h1>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={()=>{
+                const rows = [];
+                for (const p of payrolls) { for (const l of (p.lines||[])) { rows.push({"Planilla":p.name,"Tipo":p.period_type,"Estado":p.status==="paid"?"Pagada":p.status==="confirmed"?"Confirmada":"Borrador","Empleado":l.agent_name,"Sueldo":l.salary,"Comisiones":l.commissions,"Total bruto":l.gross_total,"CCSS %":l.ccss_pct,"CCSS":l.ccss_amount,"Base renta":l.rent_base,"Deducción pensión":l.pension_deduction,"Renta":l.rent_amount,"Neto":l.net_pay}); } }
+                if (rows.length > 0) exportXLS(rows,"Planillas_VCR");
+              }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar</button>
+              <button onClick={()=>{
+                const now = new Date();
+                const day = now.getDate();
+                const monthNames = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+                const m = monthNames[now.getMonth()];
+                const y = now.getFullYear();
+                const type = day <= 15 ? "quincenal_1" : "mensual";
+                const label = type === "quincenal_1" ? `Planilla 1-15 ${m} ${y}` : `Planilla 16-${new Date(y, now.getMonth()+1, 0).getDate()} ${m} ${y}`;
+                const preview = buildPayroll(type, label);
+                setPayForm(preview);
+                setPayView("create");
+              }} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,padding:"10px 20px"}}>+ Nueva Planilla</button>
+            </div>
+          </div>
+          {payrolls.length === 0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay planillas. Configure los empleados en Settings y cree una nueva planilla.</div>
+          ) : (
+            <div style={S.card}>
+              {payrolls.map((p,i)=>(
+                <div key={i} onClick={()=>setPickedPay(p)} style={{padding:"14px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                  onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14}}>{p.name}</div>
+                    <div style={{fontSize:11,color:"#8b8fa4"}}>{(p.lines||[]).length} empleados · {new Date(p.created_at).toLocaleDateString("es-CR")}</div>
+                    <div style={{display:"flex",gap:6,marginTop:6}}>
+                      <span style={S.badge(p.status==="paid"?"#10b981":p.status==="confirmed"?"#6366f1":"#f59e0b")}>
+                        {p.status==="paid"?"Pagada":p.status==="confirmed"?"Confirmada":"Borrador"}
+                      </span>
+                      <span style={S.badge(p.period_type==="mensual"?"#8b5cf6":"#0ea5e9")}>
+                        {p.period_type==="mensual"?"Mensual":"Quincenal"}
+                      </span>
+                      {p.total_commissions > 0 && <span style={S.badge("#f97316")}>Com: {fmt(p.total_commissions,"USD")}</span>}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right"}}>
+                    <div style={{fontSize:18,fontWeight:800,color:"#4f8cff"}}>{fmt(p.total_net)}</div>
+                    <div style={{fontSize:11,color:"#8b8fa4"}}>Bruto: {fmt(p.total_gross)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // CREATE / PREVIEW
+    if (payView === "create" && payForm) {
+      const pv = payForm;
+      const isMensual = pv.type === "mensual";
+      return (
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+            <h1 style={{fontSize:24,fontWeight:800}}>{pv.name}</h1>
+            <button onClick={()=>{setPayView("list");setPayForm(null);}} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+          </div>
+          <div style={{display:"flex",gap:8,marginBottom:14}}>
+            <span style={S.badge(isMensual?"#8b5cf6":"#0ea5e9")}>{isMensual?"Mensual (2da quincena + comisiones + renta)":"Quincenal (1ra quincena)"}</span>
+            <span style={S.badge("#64748b")}>CCSS: {appSettings.ccss_pct}%</span>
+          </div>
+          <div style={{...S.card,overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead><tr style={{background:"#1e2130"}}>
+                {["Empleado","Sueldo","Com.","Total bruto","CCSS",isMensual?"Renta":null,"Neto"].filter(Boolean).map(h=>(
+                  <th key={h} style={{padding:"10px 12px",textAlign:h==="Empleado"?"left":"right",fontSize:10,fontWeight:700,color:"#8b8fa4",textTransform:"uppercase",borderBottom:"2px solid #2a2d3d"}}>{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {pv.lines.map((l,i) => (
+                  <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
+                    <td style={{padding:"10px 12px",fontSize:13,fontWeight:600}}>{l.agent_name}{l.pension_deduction > 0 && <div style={{fontSize:10,color:"#8b8fa4"}}>Pensión: -{fmt(l.pension_deduction)}</div>}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13}}>{fmt(l.salary)}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions > 0 ? fmt(l.commissions,"USD") : "-"}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,fontWeight:600}}>{fmt(l.gross_total)}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:"#e11d48"}}>{fmt(l.ccss_amount)}</td>
+                    {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount > 0 ? fmt(l.rent_amount) : "-"}</td>}
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:14,fontWeight:800,color:"#4f8cff"}}>{fmt(l.net_pay)}</td>
+                  </tr>
+                ))}
+                <tr style={{background:"#1e2130"}}>
+                  <td style={{padding:"10px 12px",fontWeight:800}}>TOTALES</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt(pv.lines.reduce((s,l)=>s+l.salary,0))}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#f97316"}}>{pv.totals.comms > 0 ? fmt(pv.totals.comms,"USD") : "-"}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt(pv.totals.gross)}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt(pv.totals.ccss)}</td>
+                  {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt(pv.totals.rent)}</td>}
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:800,fontSize:16,color:"#4f8cff"}}>{fmt(pv.totals.net)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div style={{display:"flex",gap:12,justifyContent:"flex-end",marginTop:16}}>
+            <button onClick={()=>{setPayView("list");setPayForm(null);}} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+            <button onClick={()=>savePayroll(pv)} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 30px"}}>Crear Planilla</button>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // ======= RENDER: SETTINGS =======
+  const renderSettings = () => {
+    const employees = agents.filter(a => a.is_employee !== false);
+    const brackets = appSettings.rent_brackets || [];
+    return (
+      <div>
+        <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Settings</h1>
+        <div style={{display:"flex",gap:8,marginBottom:16}}>
+          {[["employees","Empleados"],["ccss","Cargas Sociales"],["rent","Tramos de Renta"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setSettingsTab(v)} style={{...S.sel,background:settingsTab===v?"#4f8cff20":"#1e2130",color:settingsTab===v?"#4f8cff":"#8b8fa4",fontWeight:settingsTab===v?600:400}}>{l}</button>
+          ))}
+        </div>
+
+        {settingsTab === "employees" && (
+          <div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div style={{fontSize:14,fontWeight:700}}>Empleados ({employees.length})</div>
+              <button onClick={async()=>{
+                const name = prompt("Nombre del empleado:");
+                if (!name) return;
+                await supabase.from('agents').insert({ name, active: true, is_employee: true, salary: 0, pension_deduction: 0 });
+                await loadAgents();
+              }} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,fontSize:12}}>+ Agregar</button>
+            </div>
+            <div style={S.card}>
+              {agents.map((a,i) => (
+                <div key={i} style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:13}}>{a.name}</div>
+                    <div style={{fontSize:11,color:"#8b8fa4"}}>
+                      Sueldo quincenal: {fmt(a.salary || 0)}
+                      {(a.pension_deduction || 0) > 0 && ` · Deducción pensión: ${fmt(a.pension_deduction)}`}
+                    </div>
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <button onClick={()=>setEditingAgent(editingAgent===a.id?null:a.id)} style={{...S.sel,fontSize:11,padding:"5px 10px",color:"#4f8cff"}}>
+                      {editingAgent===a.id?"Cerrar":"Editar"}
+                    </button>
+                    <button onClick={async()=>{
+                      if (!confirm("Desactivar a " + a.name + "?")) return;
+                      await supabase.from('agents').update({ active: false }).eq('id', a.id);
+                      await loadAgents();
+                    }} style={{...S.sel,fontSize:11,padding:"5px 10px",color:"#e11d48"}}>Desactivar</button>
+                  </div>
+                </div>
+              ))}
+              {editingAgent && (() => {
+                const a = agents.find(x => x.id === editingAgent);
+                if (!a) return null;
+                return (
+                  <div style={{padding:"14px 18px",background:"#1e2130",borderBottom:"1px solid #2a2d3d"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                      <div>
+                        <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Nombre</div>
+                        <input defaultValue={a.name} id="edit-agent-name" style={{...S.inp,width:"100%"}} />
+                      </div>
+                      <div>
+                        <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Sueldo quincenal (₡)</div>
+                        <input type="number" defaultValue={a.salary||0} id="edit-agent-salary" style={{...S.inp,width:"100%"}} />
+                      </div>
+                      <div>
+                        <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Deducción pensión (₡)</div>
+                        <input type="number" defaultValue={a.pension_deduction||0} id="edit-agent-pension" style={{...S.inp,width:"100%"}} />
+                      </div>
+                    </div>
+                    <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:10}}>
+                      <button onClick={()=>setEditingAgent(null)} style={{...S.sel,color:"#8b8fa4",fontSize:12}}>Cancelar</button>
+                      <button onClick={async()=>{
+                        const name = document.getElementById('edit-agent-name').value;
+                        const salary = parseFloat(document.getElementById('edit-agent-salary').value) || 0;
+                        const pension = parseFloat(document.getElementById('edit-agent-pension').value) || 0;
+                        await supabase.from('agents').update({ name, salary, pension_deduction: pension }).eq('id', a.id);
+                        await loadAgents(); setEditingAgent(null);
+                      }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none",fontSize:12}}>Guardar</button>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {settingsTab === "ccss" && (
+          <div style={{...S.card,padding:"18px 20px"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>Porcentaje de Cargas Sociales (CCSS)</div>
+            <div style={{display:"flex",gap:10,alignItems:"center"}}>
+              <input type="number" step="0.01" defaultValue={appSettings.ccss_pct} id="ccss-input" style={{...S.inp,width:120,textAlign:"center",fontSize:16}} />
+              <span style={{fontSize:14,color:"#8b8fa4"}}>%</span>
+              <button onClick={()=>{
+                const val = parseFloat(document.getElementById('ccss-input').value);
+                if (isNaN(val) || val < 0 || val > 50) { alert("Valor inválido"); return; }
+                saveSetting('ccss_pct', val);
+                alert("Guardado: " + val + "%");
+              }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none"}}>Guardar</button>
+            </div>
+            <div style={{fontSize:12,color:"#8b8fa4",marginTop:8}}>Se aplica al salario bruto de cada empleado en la planilla.</div>
+          </div>
+        )}
+
+        {settingsTab === "rent" && (
+          <div style={{...S.card,padding:"18px 20px"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>Tramos de Impuesto de Renta (mensuales)</div>
+            <div style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Se aplican al salario bruto mensual (Q1 + Q2 + comisiones) menos la deducción por pensión.</div>
+            {brackets.map((b,i) => (
+              <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 1fr 80px 40px",gap:8,marginBottom:6,alignItems:"center"}}>
+                <input type="number" defaultValue={b.from} id={`bracket-from-${i}`} style={{...S.inp,textAlign:"right"}} />
+                <input type="number" defaultValue={b.to} id={`bracket-to-${i}`} style={{...S.inp,textAlign:"right"}} />
+                <div style={{display:"flex",alignItems:"center",gap:4}}>
+                  <input type="number" defaultValue={b.pct} id={`bracket-pct-${i}`} style={{...S.inp,width:50,textAlign:"center"}} />
+                  <span style={{color:"#8b8fa4"}}>%</span>
+                </div>
+                <button onClick={()=>{
+                  const nb = [...brackets]; nb.splice(i,1);
+                  saveSetting('rent_brackets', nb);
+                }} style={{background:"none",border:"none",color:"#e11d48",cursor:"pointer",fontSize:14}}>✕</button>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:8,marginTop:12}}>
+              <button onClick={()=>{
+                const nb = [...brackets, { from: brackets.length > 0 ? brackets[brackets.length-1].to : 0, to: 999999999, pct: 0 }];
+                saveSetting('rent_brackets', nb);
+              }} style={{...S.sel,color:"#4f8cff",background:"#4f8cff10",fontWeight:600,fontSize:12}}>+ Agregar tramo</button>
+              <button onClick={()=>{
+                const nb = brackets.map((b,i) => ({
+                  from: parseFloat(document.getElementById(`bracket-from-${i}`).value) || 0,
+                  to: parseFloat(document.getElementById(`bracket-to-${i}`).value) || 0,
+                  pct: parseFloat(document.getElementById(`bracket-pct-${i}`).value) || 0,
+                }));
+                saveSetting('rent_brackets', nb);
+                alert("Tramos guardados");
+              }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none",fontSize:12}}>Guardar tramos</button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   // ======= RENDER FUNCTIONS =======
@@ -1954,6 +2351,8 @@ export default function App() {
     if (tab==="Clientes") return renderCli();
     if (tab==="Ventas") return renderSales();
     if (tab==="Liquidaciones") return renderLiquidaciones();
+    if (tab==="Planillas") return renderPlanillas();
+    if (tab==="Settings") return renderSettings();
     return <PH t={tab}/>;
   };
 
@@ -2655,6 +3054,149 @@ export default function App() {
                     )}
                     {l.status === "paid" && (<div style={{marginTop:20,padding:"10px 16px",border:"1px solid #ddd",borderRadius:6,fontSize:12}}><strong>Pago:</strong> {l.paid_bank} · Ref: {l.paid_reference||"-"} · Fecha: {l.paid_date ? new Date(l.paid_date+"T12:00:00").toLocaleDateString("es-CR") : "-"}</div>)}
                     <div style={{marginTop:40,textAlign:"center",fontSize:10,color:"#999",borderTop:"1px solid #ddd",paddingTop:12}}>Vehículos de Costa Rica S.R.L. · Cédula Jurídica 3-101-124464 · {new Date().toLocaleDateString("es-CR",{day:"numeric",month:"long",year:"numeric"})}</div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* PAYROLL DETAIL MODAL */}
+          {pickedPay && (
+            <div style={S.modal} onClick={()=>{setPickedPay(null);setPayPayForm(null);}}>
+              <div style={{...S.mbox,maxWidth:750}} onClick={e=>e.stopPropagation()}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}>
+                  <div>
+                    <h3 style={{fontSize:18,fontWeight:800,margin:0}}>{pickedPay.name}</h3>
+                    <p style={{fontSize:12,color:"#8b8fa4"}}>{new Date(pickedPay.created_at).toLocaleDateString("es-CR")}</p>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={S.badge(pickedPay.period_type==="mensual"?"#8b5cf6":"#0ea5e9")}>{pickedPay.period_type==="mensual"?"Mensual":"Quincenal"}</span>
+                    <span style={S.badge(pickedPay.status==="paid"?"#10b981":pickedPay.status==="confirmed"?"#6366f1":"#f59e0b")}>
+                      {pickedPay.status==="paid"?"Pagada":pickedPay.status==="confirmed"?"Confirmada":"Borrador"}
+                    </span>
+                    <button onClick={()=>{setPickedPay(null);setPayPayForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:14}}>
+                  {[["Bruto",pickedPay.total_gross],["CCSS",pickedPay.total_ccss],["Renta",pickedPay.total_rent],["Neto",pickedPay.total_net]].map(([l,v],i)=>(
+                    <div key={l} style={{flex:1,background:"#1e2130",borderRadius:10,padding:"10px 14px"}}>
+                      <div style={{fontSize:10,color:"#8b8fa4"}}>{l}</div>
+                      <div style={{fontSize:14,fontWeight:700,color:i===3?"#4f8cff":(i>0?"#e11d48":"#e8eaf0")}}>{fmt(v)}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{...S.card,overflowX:"auto",marginBottom:14}}>
+                  <table style={{width:"100%",borderCollapse:"collapse"}}>
+                    <thead><tr style={{background:"#1e2130"}}>
+                      {["Empleado","Sueldo","Com.","Bruto","CCSS",pickedPay.period_type==="mensual"?"Renta":null,"Neto"].filter(Boolean).map(h=>(
+                        <th key={h} style={{padding:"8px 12px",textAlign:h==="Empleado"?"left":"right",fontSize:10,fontWeight:700,color:"#8b8fa4",textTransform:"uppercase",borderBottom:"2px solid #2a2d3d"}}>{h}</th>
+                      ))}
+                    </tr></thead>
+                    <tbody>
+                      {(pickedPay.lines||[]).map((l,i) => (
+                        <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
+                          <td style={{padding:"8px 12px",fontSize:12,fontWeight:600}}>{l.agent_name}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12}}>{fmt(l.salary)}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt(l.commissions,"USD"):"-"}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,fontWeight:600}}>{fmt(l.gross_total)}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:"#e11d48"}}>{fmt(l.ccss_amount)}</td>
+                          {pickedPay.period_type==="mensual"&&<td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount>0?fmt(l.rent_amount):"-"}</td>}
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:13,fontWeight:800,color:"#4f8cff"}}>{fmt(l.net_pay)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {pickedPay.status === "paid" && (
+                  <div style={{background:"#10b98110",borderRadius:10,padding:"12px 16px",marginBottom:12}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"#10b981",marginBottom:6}}>Pago registrado</div>
+                    <div style={{fontSize:12,display:"flex",gap:16,flexWrap:"wrap"}}>
+                      <span><span style={{color:"#8b8fa4"}}>Banco:</span> {pickedPay.paid_bank}</span>
+                      <span><span style={{color:"#8b8fa4"}}>Ref:</span> {pickedPay.paid_reference||"-"}</span>
+                      <span><span style={{color:"#8b8fa4"}}>Fecha:</span> {pickedPay.paid_date ? new Date(pickedPay.paid_date+"T12:00:00").toLocaleDateString("es-CR") : "-"}</span>
+                    </div>
+                  </div>
+                )}
+                {payPayForm && pickedPay.status === "confirmed" && (
+                  <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"14px 16px",marginBottom:12}}>
+                    <div style={{fontWeight:700,fontSize:13,color:"#6366f1",marginBottom:10}}>Registrar Pago</div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                      <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Banco *</div><input value={payPayForm.bank||""} onChange={e=>setPayPayForm(prev=>({...prev,bank:e.target.value}))} style={{...S.inp,width:"100%"}} /></div>
+                      <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Referencia</div><input value={payPayForm.reference||""} onChange={e=>setPayPayForm(prev=>({...prev,reference:e.target.value}))} style={{...S.inp,width:"100%"}} /></div>
+                      <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha</div><input type="date" value={payPayForm.date||""} onChange={e=>setPayPayForm(prev=>({...prev,date:e.target.value}))} style={{...S.inp,width:"100%"}} /></div>
+                    </div>
+                    <div style={{display:"flex",gap:8,marginTop:10,justifyContent:"flex-end"}}>
+                      <button onClick={()=>setPayPayForm(null)} style={{...S.sel,color:"#8b8fa4"}}>Cancelar</button>
+                      <button onClick={()=>payPayroll(pickedPay.id)} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none"}}>Confirmar Pago</button>
+                    </div>
+                  </div>
+                )}
+                <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
+                  {pickedPay.status === "draft" && (<>
+                    <button onClick={()=>deletePayroll(pickedPay.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                    <button onClick={()=>confirmPayroll(pickedPay.id)} style={{...S.sel,background:"#6366f1",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Confirmar</button>
+                  </>)}
+                  {pickedPay.status === "confirmed" && !payPayForm && (<>
+                    <button onClick={()=>deletePayroll(pickedPay.id)} style={{...S.sel,color:"#e11d48",background:"#e11d4810",fontWeight:600}}>Eliminar</button>
+                    <button onClick={()=>setPayPayForm({bank:"",reference:"",date:new Date().toISOString().split('T')[0]})} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Registrar Pago</button>
+                  </>)}
+                  <button onClick={()=>{setPrintPay(pickedPay);setPickedPay(null);}} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600}}>Imprimir</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* PRINTABLE PAYROLL */}
+          {printPay && (() => {
+            const p = printPay; const isMensual = p.period_type === "mensual";
+            return (
+              <div style={{position:"fixed",inset:0,zIndex:9999,background:"#0f1117ee",overflowY:"auto"}}>
+                <div style={{maxWidth:850,margin:"20px auto",position:"relative"}}>
+                  <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginBottom:10,padding:"0 10px"}} className="no-print">
+                    <button onClick={()=>window.print()} style={{...S.sel,background:"#4f8cff",color:"#fff",fontWeight:600,padding:"8px 20px",border:"none"}}>Imprimir / PDF</button>
+                    <button onClick={()=>setPrintPay(null)} style={{...S.sel,color:"#8b8fa4",padding:"8px 20px"}}>Cerrar</button>
+                  </div>
+                  <div id="print-area" style={{background:"#fff",color:"#1a1a2e",padding:"40px 50px",maxWidth:800,margin:"0 auto",fontFamily:"'DM Sans',system-ui,sans-serif",fontSize:13,lineHeight:1.6}}>
+                    <div style={{marginBottom:24}}>
+                      <div style={{fontSize:14,fontWeight:800,letterSpacing:.5}}>PLANILLA</div>
+                      <div style={{fontSize:13,fontWeight:600}}>{p.name}</div>
+                      <div style={{fontSize:11,color:"#666",marginTop:2}}>{new Date(p.created_at).toLocaleDateString("es-CR",{day:"numeric",month:"long",year:"numeric"})}</div>
+                    </div>
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead><tr>
+                        {["NOMBRE","SUELDO ORDINARIO","COM.","TOTAL","DEDUC "+((appSettings.ccss_pct||10.83)+"%"),isMensual?"SUELDO DEVENGADO":null,isMensual?"HACIENDA":null,"NETO POR PAGAR"].filter(Boolean).map(h=>(
+                          <th key={h} style={{padding:"8px 10px",textAlign:h==="NOMBRE"?"left":"right",borderBottom:"2px solid #333",fontWeight:700,fontSize:10}}>{h}</th>
+                        ))}
+                      </tr></thead>
+                      <tbody>
+                        {(p.lines||[]).map((l,i) => {
+                          const devengado = l.gross_total - l.ccss_amount;
+                          return (
+                          <tr key={i} style={{borderBottom:"1px solid #ddd"}}>
+                            <td style={{padding:"6px 10px",fontWeight:600}}>{l.agent_name}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right"}}>{Number(l.salary).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right"}}>{l.commissions > 0 ? Number(l.commissions).toLocaleString("es-CR",{minimumFractionDigits:2}) : "-"}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right",fontWeight:600}}>{Number(l.gross_total).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right"}}>{Number(l.ccss_amount).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                            {isMensual&&<td style={{padding:"6px 10px",textAlign:"right"}}>{Number(devengado).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>}
+                            {isMensual&&<td style={{padding:"6px 10px",textAlign:"right"}}>{l.rent_amount > 0 ? Number(l.rent_amount).toLocaleString("es-CR",{minimumFractionDigits:2}) : "-"}</td>}
+                            <td style={{padding:"6px 10px",textAlign:"right",fontWeight:700}}>{Number(l.net_pay).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                          </tr>
+                        );})}
+                        <tr style={{borderTop:"2px solid #333",fontWeight:800}}>
+                          <td style={{padding:"8px 10px"}}></td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number((p.lines||[]).reduce((s,l)=>s+l.salary,0)).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{p.total_commissions > 0 ? Number(p.total_commissions).toLocaleString("es-CR",{minimumFractionDigits:2}) : "-"}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_gross).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_ccss).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                          {isMensual&&<td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_gross - p.total_ccss).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>}
+                          {isMensual&&<td style={{padding:"8px 10px",textAlign:"right"}}>{p.total_rent > 0 ? "-" : "-"}</td>}
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_net).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    {p.status === "paid" && (<div style={{marginTop:20,padding:"10px 16px",border:"1px solid #ddd",borderRadius:6,fontSize:12}}><strong>Pago:</strong> {p.paid_bank} · Ref: {p.paid_reference||"-"} · Fecha: {p.paid_date ? new Date(p.paid_date+"T12:00:00").toLocaleDateString("es-CR") : "-"}</div>)}
+                    <div style={{marginTop:30,textAlign:"center",fontSize:10,color:"#999",borderTop:"1px solid #ddd",paddingTop:12}}>Vehículos de Costa Rica S.R.L. · Cédula Jurídica 3-101-124464</div>
                   </div>
                 </div>
               </div>
