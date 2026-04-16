@@ -1176,7 +1176,10 @@ export default function App() {
       total_commissions: preview.totals.comms, status: 'draft',
     }).select().single();
     if (error) { alert("Error: " + error.message); return; }
-    const rows = preview.lines.map(l => ({ payroll_id: pr.id, ...l }));
+    const rows = preview.lines.map(l => {
+      const { missing_tc_count, ...lineData } = l;
+      return { payroll_id: pr.id, ...lineData };
+    });
     await supabase.from('payroll_lines').insert(rows);
     await loadPayrolls();
     setPayView("list"); setPayForm(null);
@@ -1597,7 +1600,11 @@ export default function App() {
             </div>
             <div style={{padding:"12px 18px",display:"flex",gap:8,justifyContent:"flex-end",borderTop:"1px solid #2a2d3d",background:"#0f1117",position:"relative",zIndex:11}}>
               {isExisting ? (
-                <button onClick={()=>setPickedPay(existing)} style={{...S.sel,background:typeColor+"18",color:typeColor,fontWeight:600}}>
+                <button onClick={()=>{
+                  // Always get fresh data from payrolls array
+                  const fresh = payrolls.find(pp => pp.id === existing.id);
+                  setPickedPay(fresh || existing);
+                }} style={{...S.sel,background:typeColor+"18",color:typeColor,fontWeight:600}}>
                   {isPaid ? "Ver detalle" : "Gestionar"}
                 </button>
               ) : (
