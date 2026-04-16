@@ -153,7 +153,14 @@ const catLabel = (id) => CATS.find(c => c.id === id)?.l || "Otro";
 const catGroupId = (id) => CATS.find(c => c.id === id)?.g || "otros_gastos";
 const catGroupLabel = (id) => { const gid = CATS.find(c => c.id === id)?.g; return GROUPS.find(g => g.id === gid)?.l || "Otros"; };
 const catType = (id) => { const gid = CATS.find(c => c.id === id)?.g; return GROUPS.find(g => g.id === gid)?.t || "gasto"; };
-const supDisplay = (inv) => inv.supComm && inv.supComm !== "NoAplica" ? inv.supComm : inv.supName;
+const supDisplay = (inv) => {
+  // Para contabilidad: prioridad al nombre legal (razón social)
+  // Si no hay nombre legal, usar comercial
+  // Si no hay ninguno, usar la cédula/ID
+  if (inv.supName && inv.supName !== "NoAplica" && inv.supName.trim() !== "") return inv.supName;
+  if (inv.supComm && inv.supComm !== "NoAplica" && inv.supComm.trim() !== "") return inv.supComm;
+  return inv.supId || "Sin nombre";
+};
 
 export default function App() {
   const [tab, setTab] = useState("Dashboard");
