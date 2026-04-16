@@ -177,6 +177,10 @@ export default function App() {
   const [printSale, setPrintSale] = useState(null);
   const [expandedClient, setExpandedClient] = useState(null);
   const [pickedCli, setPickedCli] = useState(null);
+  const [editingSaleId, setEditingSaleId] = useState(null);
+  const [confirmApprove, setConfirmApprove] = useState(null);
+  const [selectedCars, setSelectedCars] = useState(new Set());
+  const [selectedClis, setSelectedClis] = useState(new Set());
 
   // Load data on mount
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); }, []);
@@ -690,12 +694,121 @@ export default function App() {
     await supabase.from('sales').update({ status: "approved", approved_by: "admin", approved_at: new Date().toISOString() }).eq('id', id);
     await loadSales();
     setPickedSale(prev => prev ? { ...prev, status: "approved" } : null);
+    setConfirmApprove(null);
   };
 
   const rejectSale = async (id, reason) => {
     await supabase.from('sales').update({ status: "rejected", rejected_reason: reason || "Rechazada" }).eq('id', id);
     await loadSales();
     setPickedSale(prev => prev ? { ...prev, status: "rejected" } : null);
+  };
+
+  const editSale = (sale) => {
+    setEditingSaleId(sale.id);
+    setSaleForm({
+      sale_date: sale.sale_date || "", client_name: sale.client_name || "", client_cedula: sale.client_cedula || "",
+      client_phone1: sale.client_phone1 || "", client_phone2: sale.client_phone2 || "", client_email: sale.client_email || "",
+      client_address: sale.client_address || "", client_workplace: sale.client_workplace || "", client_occupation: sale.client_occupation || "",
+      client_civil_status: sale.client_civil_status || "",
+      vehicle_plate: sale.vehicle_plate || "", vehicle_brand: sale.vehicle_brand || "", vehicle_model: sale.vehicle_model || "",
+      vehicle_year: sale.vehicle_year || "", vehicle_color: sale.vehicle_color || "", vehicle_km: sale.vehicle_km || "",
+      vehicle_engine: sale.vehicle_engine || "", vehicle_drive: sale.vehicle_drive || "", vehicle_fuel: sale.vehicle_fuel || "",
+      vehicle_cabys: sale.vehicle_cabys || "",
+      has_tradein: sale.has_tradein || false,
+      tradein_plate: sale.tradein_plate || "", tradein_brand: sale.tradein_brand || "", tradein_model: sale.tradein_model || "",
+      tradein_year: sale.tradein_year || "", tradein_color: sale.tradein_color || "", tradein_km: sale.tradein_km || "",
+      tradein_engine: sale.tradein_engine || "", tradein_drive: sale.tradein_drive || "", tradein_fuel: sale.tradein_fuel || "",
+      tradein_value: sale.tradein_value || 0,
+      sale_type: sale.sale_type || "propio", sale_price: sale.sale_price || "",
+      tradein_amount: sale.tradein_amount || 0, down_payment: sale.down_payment || 0, deposit_signal: sale.deposit_signal || 0,
+      payment_method: sale.payment_method || "", financing_term_months: sale.financing_term_months || "",
+      financing_interest_pct: sale.financing_interest_pct || "", financing_amount: sale.financing_amount || "",
+      deposits: (sale.deposits && sale.deposits.length > 0) ? sale.deposits.map(d => ({ bank: d.bank || "", reference: d.reference || "", date: d.deposit_date || "", amount: d.amount || "" })) : [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
+      transfer_included: sale.transfer_included || false, transfer_in_price: sale.transfer_in_price || false,
+      transfer_in_financing: sale.transfer_in_financing || false,
+      has_insurance: sale.has_insurance || false, insurance_months: sale.insurance_months || "",
+      observations: sale.observations || "",
+      agent1_id: (sale.sale_agents && sale.sale_agents[0]) ? sale.sale_agents[0].agent_id : "",
+      agent2_id: (sale.sale_agents && sale.sale_agents[1]) ? sale.sale_agents[1].agent_id : "",
+    });
+    setPickedSale(null);
+    setSalesView("form");
+  };
+
+  const updateSale = async () => {
+    if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
+    const balance = calcBalance(saleForm);
+    const saleType = saleForm.sale_type;
+    const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
+    const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
+    const row = {
+      sale_date: saleForm.sale_date, client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
+      client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
+      client_email: saleForm.client_email, client_address: saleForm.client_address,
+      client_workplace: saleForm.client_workplace, client_occupation: saleForm.client_occupation,
+      client_civil_status: saleForm.client_civil_status,
+      vehicle_plate: saleForm.vehicle_plate, vehicle_brand: saleForm.vehicle_brand,
+      vehicle_model: saleForm.vehicle_model, vehicle_year: parseInt(saleForm.vehicle_year) || null,
+      vehicle_color: saleForm.vehicle_color, vehicle_km: parseFloat(saleForm.vehicle_km) || null,
+      vehicle_drive: saleForm.vehicle_drive, vehicle_fuel: saleForm.vehicle_fuel,
+      vehicle_cabys: saleForm.vehicle_cabys || null,
+      has_tradein: saleForm.has_tradein,
+      tradein_plate: saleForm.has_tradein ? saleForm.tradein_plate : null,
+      tradein_brand: saleForm.has_tradein ? saleForm.tradein_brand : null,
+      tradein_model: saleForm.has_tradein ? saleForm.tradein_model : null,
+      tradein_year: saleForm.has_tradein ? (parseInt(saleForm.tradein_year) || null) : null,
+      tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
+      sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
+      sale_price: parseFloat(saleForm.sale_price) || 0,
+      tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
+      down_payment: parseFloat(saleForm.down_payment) || 0,
+      deposit_signal: parseFloat(saleForm.deposit_signal) || 0,
+      deposits_total: depositsTotal(saleForm), total_balance: balance,
+      payment_method: saleForm.payment_method,
+      financing_term_months: parseInt(saleForm.financing_term_months) || null,
+      financing_interest_pct: parseFloat(saleForm.financing_interest_pct) || null,
+      financing_amount: parseFloat(saleForm.financing_amount) || null,
+      transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
+      transfer_in_financing: saleForm.transfer_in_financing,
+      has_insurance: saleForm.has_insurance, insurance_months: parseInt(saleForm.insurance_months) || null,
+      observations: saleForm.observations || generateObservations(saleForm),
+    };
+    const { error } = await supabase.from('sales').update(row).eq('id', editingSaleId);
+    if (error) { alert("Error: " + error.message); return; }
+    // Replace deposits
+    await supabase.from('sale_deposits').delete().eq('sale_id', editingSaleId);
+    const depRows = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0).map(d => ({
+      sale_id: editingSaleId, bank: d.bank || null, reference: d.reference || null, deposit_date: d.date || null, amount: parseFloat(d.amount) || 0,
+    }));
+    if (depRows.length > 0) await supabase.from('sale_deposits').insert(depRows);
+    // Replace agents
+    await supabase.from('sale_agents').delete().eq('sale_id', editingSaleId);
+    const salePrice = parseFloat(saleForm.sale_price) || 0;
+    const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id;
+    const splitPct = hasAgent2 ? 0.5 : 1;
+    const splitAmt = salePrice * 0.01 * (hasAgent2 ? 0.5 : 1);
+    const agentRows = [];
+    if (saleForm.agent1_id) { const ag = agents.find(a => a.id === saleForm.agent1_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt }); }
+    if (hasAgent2) { const ag = agents.find(a => a.id === saleForm.agent2_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt }); }
+    if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
+    await loadSales();
+    setSalesView("list");
+    setSaleForm(null);
+    setEditingSaleId(null);
+  };
+
+  const deleteVehicles = async () => {
+    const pin = prompt("PIN para eliminar " + selectedCars.size + " vehículo(s):");
+    if (pin !== "1234") { alert("PIN incorrecto"); return; }
+    for (const id of selectedCars) { await supabase.from('vehicles').delete().eq('id', id); }
+    await loadVehicles();
+    setSelectedCars(new Set());
+  };
+
+  const deleteClients = async () => {
+    // Clients are derived from sales, so we can't delete them directly.
+    // Instead we'd need to delete their sales. For now, alert.
+    alert("Los clientes se generan de las ventas. Para eliminar un cliente, elimine sus ventas asociadas.");
   };
 
   const filtered = cars.filter(v => { const s = q.toLowerCase(); return (!q || [v.p,v.b,v.m,v.co,String(v.y)].some(x => (x||"").toLowerCase().includes(s))) && (invFilter === "all" || v.s === invFilter); });
@@ -752,7 +865,7 @@ export default function App() {
 
   const updateVehicleField = async (id, field, value) => {
     await supabase.from('vehicles').update({ [field]: value }).eq('id', id);
-    setCars(prev => prev.map(c => c.id === id ? { ...c, ...(field === 'price_usd' ? { usd: value } : {}) } : c));
+    setCars(prev => prev.map(c => c.id === id ? { ...c, ...(field === 'price_crc' ? { crc: value } : field === 'price_usd' ? { usd: value } : {}) } : c));
   };
 
   const renderInv = () => {
@@ -761,7 +874,7 @@ export default function App() {
       const matchFilter = invFilter === "all" || v.s === invFilter;
       return matchSearch && matchFilter;
     });
-    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",purchase_cost:"",exchange_rate:"",price_usd:"",cabys_code:"",status:"disponible",entry_date:new Date().toISOString().split('T')[0] });
+    const emptyVeh = () => ({ plate:"",brand:"",model:"",year:"",color:"",km:"",drive:"",fuel:"",style:"",purchase_cost:"",exchange_rate:"",price_crc:"",cabys_code:"",status:"disponible",entry_date:new Date().toISOString().split('T')[0] });
     const saveNewVehicle = async () => {
       if (!newVehicleForm || !newVehicleForm.plate) { alert("La placa es requerida"); return; }
       if (!newVehicleForm.cabys_code) { alert("El código CABYS es requerido"); return; }
@@ -771,7 +884,8 @@ export default function App() {
         year: parseInt(newVehicleForm.year) || null, color: newVehicleForm.color || null,
         km: parseFloat(newVehicleForm.km) || null, drivetrain: newVehicleForm.drive || null,
         fuel: newVehicleForm.fuel || null, style: newVehicleForm.style || null,
-        price_usd: parseFloat(newVehicleForm.price_usd) || null,
+        price_usd: (parseFloat(newVehicleForm.price_crc) && parseFloat(newVehicleForm.exchange_rate)) ? Math.round(parseFloat(newVehicleForm.price_crc) / parseFloat(newVehicleForm.exchange_rate)) : null,
+        price_crc: parseFloat(newVehicleForm.price_crc) || null,
         purchase_cost: parseFloat(newVehicleForm.purchase_cost) || null,
         exchange_rate: parseFloat(newVehicleForm.exchange_rate) || null,
         entry_date: newVehicleForm.entry_date || null,
@@ -789,7 +903,7 @@ export default function App() {
       const rows = filteredCars.map(v => {
         const costs = costsByPlate[v.p]; const costoCRC = v.purchase_price || 0; const costosAsoc = costs ? costs.total : 0;
         const tc = costoCRC && v.usd ? Math.round(costoCRC / v.usd) : 0; const costoUSD = tc > 0 ? costoCRC / tc : 0;
-        const row = { "Marca": v.b, "Modelo": v.m, "Año": v.y, "Placa": v.p, "Color": v.co, "Km": v.km || "", "Fecha Compra": v.purchase_date || "", "Proveedor": v.purchase_supplier || "", "Costo CRC": costoCRC, "Tipo Cambio": tc || "", "CABYS": v.cabys || "", "Precio Venta USD": v.usd || "", "Costos Asociados CRC": costosAsoc, "Utilidad USD": v.usd && costoUSD ? Math.round(v.usd - costoUSD - costosAsoc) : "", "Estado": v.s };
+        const row = { "Marca": v.b, "Modelo": v.m, "Año": v.y, "Placa": v.p, "Color": v.co, "Km": v.km || "", "Fecha Compra": v.purchase_date || "", "Proveedor": v.purchase_supplier || "", "Costo CRC": costoCRC, "TC Compra": tc || "", "CABYS": v.cabys || "", "Precio Venta CRC": v.crc || "", "Costos Asociados CRC": costosAsoc, "Utilidad CRC": v.crc && costoCRC ? Math.round((v.crc||0) - costoCRC - costosAsoc) : "", "Estado": v.s };
         if (v.s === "vendido") { row["Fecha Venta"] = v.sale_date || ""; row["Consecutivo"] = v.sale_invoice_number || ""; row["Cliente"] = v.sale_client ? v.sale_client.name : ""; }
         return row;
       });
@@ -810,13 +924,22 @@ export default function App() {
           <button key={v} onClick={()=>setInvFilter(v)} style={{...S.sel,background:invFilter===v?"#4f8cff20":"#1e2130",color:invFilter===v?"#4f8cff":"#8b8fa4",fontWeight:invFilter===v?600:400}}>{l} ({cars.filter(c=>v==="all"||c.s===v).length})</button>
         ))}
       </div>
+      {selectedCars.size > 0 && (
+        <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center"}}>
+          <span style={{fontSize:12,fontWeight:600,color:"#4f8cff"}}>{selectedCars.size} seleccionado{selectedCars.size!==1?"s":""}</span>
+          <button onClick={deleteVehicles} style={{...S.sel,fontSize:11,padding:"6px 12px",background:"#e11d4810",color:"#e11d48",fontWeight:600}}>Eliminar</button>
+          <button onClick={()=>setSelectedCars(new Set())} style={{...S.sel,fontSize:11,padding:"6px 12px",color:"#8b8fa4"}}>Deseleccionar</button>
+        </div>
+      )}
       {filteredCars.length===0?(<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>{cars.length===0?"No hay vehículos en inventario.":"No hay vehículos con este filtro."}</div>):(
       <div style={{...S.card,overflowX:"auto"}}><table style={{width:"100%",borderCollapse:"collapse"}}><thead><tr style={{background:"#1e2130"}}>
-        <th style={thS}>Vehículo</th><th style={thS}>Placa</th><th style={thS}>Color</th><th style={thS}>Km</th><th style={thS}>Fecha compra</th><th style={thS}>Proveedor</th><th style={thS}>Costo (₡)</th><th style={thS}>T/C</th><th style={thS}>CABYS</th><th style={thS}>Precio venta</th><th style={thS}>Costos asoc.</th><th style={thS}>Utilidad</th>
+        <th style={{...thS,width:30}}><input type="checkbox" checked={filteredCars.length>0&&selectedCars.size===filteredCars.length} onChange={()=>{if(selectedCars.size===filteredCars.length){setSelectedCars(new Set())}else{setSelectedCars(new Set(filteredCars.map(v=>v.id)))}}} style={{cursor:"pointer"}} /></th>
+        <th style={thS}>Vehículo</th><th style={thS}>Placa</th><th style={thS}>Color</th><th style={thS}>Km</th><th style={thS}>Fecha compra</th><th style={thS}>Proveedor</th><th style={thS}>Costo (₡)</th><th style={thS}>T/C compra</th><th style={thS}>CABYS</th><th style={thS}>Precio venta (₡)</th><th style={thS}>Costos asoc.</th><th style={thS}>Utilidad (₡)</th>
         {showHist&&<><th style={thS}>Fecha venta</th><th style={thS}>Consecutivo</th><th style={thS}>Cliente</th></>}
       </tr></thead><tbody>
-        {filteredCars.map(v=>{const costs=costsByPlate[v.p];const costoCRC=v.purchase_price||0;const costosAsoc=costs?costs.total:0;const precioVenta=v.usd||0;const tc=v.exchange_rate||(costoCRC&&precioVenta?Math.round(costoCRC/precioVenta):0);const costoUSD=tc>0?costoCRC/tc:0;const utilidad=precioVenta>0&&costoUSD>0?precioVenta-costoUSD-costosAsoc:0;const cabysItem=CABYS_VEHICLES.find(c=>c.code===v.cabys);
-        return(<React.Fragment key={v.id}><tr style={{cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+        {filteredCars.map(v=>{const costs=costsByPlate[v.p];const costoCRC=v.purchase_price||0;const costosAsoc=costs?costs.total:0;const precioVentaCRC=v.crc||0;const tc=v.exchange_rate||0;const utilidad=precioVentaCRC>0&&costoCRC>0?precioVentaCRC-costoCRC-costosAsoc:0;const cabysItem=CABYS_VEHICLES.find(c=>c.code===v.cabys);
+        return(<React.Fragment key={v.id}><tr style={{cursor:"pointer",background:selectedCars.has(v.id)?"#4f8cff08":"transparent"}} onMouseEnter={e=>e.currentTarget.style.background=selectedCars.has(v.id)?"#4f8cff12":"#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=selectedCars.has(v.id)?"#4f8cff08":""}>
+          <td style={tdS}><input type="checkbox" checked={selectedCars.has(v.id)} onChange={()=>{setSelectedCars(prev=>{const n=new Set(prev);if(n.has(v.id))n.delete(v.id);else n.add(v.id);return n;});}} onClick={e=>e.stopPropagation()} style={{cursor:"pointer"}} /></td>
           <td style={tdS} onClick={()=>setPicked(v)}><div style={{fontWeight:700,fontSize:13}}>{v.b} {v.m}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{v.y}</div></td>
           <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:600}}>{v.p}</span></td>
           <td style={tdS} onClick={()=>setPicked(v)}>{v.co||"-"}</td>
@@ -826,14 +949,14 @@ export default function App() {
           <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:600}}>{costoCRC?fmt(costoCRC):"-"}</span></td>
           <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontSize:11,color:"#8b8fa4"}}>{tc>0?tc:"-"}</span></td>
           <td style={tdS} onClick={()=>setPicked(v)}><div style={{fontSize:10,color:"#8b8fa4"}} title={cabysItem?cabysItem.label:v.cabys}>{v.cabys?"..."+v.cabys.slice(-6):"-"}</div></td>
-          <td style={tdS}><input type="number" value={v.usd||""} onChange={e=>{const val=parseFloat(e.target.value)||null;setCars(prev=>prev.map(c=>c.id===v.id?{...c,usd:val}:c));}} onBlur={e=>updateVehicleField(v.id,'price_usd',parseFloat(e.target.value)||null)} style={{...S.inp,width:90,padding:"4px 8px",fontSize:12,textAlign:"right"}} /></td>
+          <td style={tdS}><input type="number" value={v.crc||""} onChange={e=>{const val=parseFloat(e.target.value)||null;setCars(prev=>prev.map(c=>c.id===v.id?{...c,crc:val}:c));}} onBlur={e=>updateVehicleField(v.id,'price_crc',parseFloat(e.target.value)||null)} style={{...S.inp,width:110,padding:"4px 8px",fontSize:12,textAlign:"right"}} /></td>
           <td style={tdS} onClick={()=>setPicked(v)}><span style={{color:"#f59e0b",fontWeight:600}}>{costosAsoc>0?fmt(costosAsoc):"-"}</span>{costs&&<div style={{fontSize:10,color:"#8b8fa4"}}>{costs.items.length} fact.</div>}</td>
-          <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:700,color:utilidad>0?"#10b981":utilidad<0?"#e11d48":"#8b8fa4"}}>{precioVenta>0&&costoUSD>0?fmt(utilidad,"USD"):"-"}</span></td>
+          <td style={tdS} onClick={()=>setPicked(v)}><span style={{fontWeight:700,color:utilidad>0?"#10b981":utilidad<0?"#e11d48":"#8b8fa4"}}>{precioVentaCRC>0&&costoCRC>0?fmt(utilidad):"-"}</span></td>
           {showHist&&<td style={tdS}><div style={{fontSize:11}}>{v.sale_date?new Date(v.sale_date+"T12:00:00").toLocaleDateString("es-CR"):"-"}</div></td>}
           {showHist&&<td style={tdS}><div style={{fontSize:11,color:"#4f8cff"}}>{v.sale_invoice_number||"-"}</div></td>}
           {showHist&&<td style={tdS}>{v.sale_client?<button onClick={()=>setExpandedClient(expandedClient===v.id?null:v.id)} style={{...S.sel,fontSize:11,padding:"4px 10px",background:"#4f8cff18",color:"#4f8cff"}}>{v.sale_client.name}</button>:"-"}</td>}
         </tr>
-        {showHist&&expandedClient===v.id&&v.sale_client&&(<tr><td colSpan={15} style={{padding:"12px 20px",background:"#1e2130",borderBottom:"2px solid #4f8cff30"}}>
+        {showHist&&expandedClient===v.id&&v.sale_client&&(<tr><td colSpan={16} style={{padding:"12px 20px",background:"#1e2130",borderBottom:"2px solid #4f8cff30"}}>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,fontSize:12}}>
             <div><span style={{color:"#8b8fa4",fontSize:10,textTransform:"uppercase"}}>Nombre</span><div style={{fontWeight:600}}>{v.sale_client.name}</div></div>
             <div><span style={{color:"#8b8fa4",fontSize:10,textTransform:"uppercase"}}>Cédula</span><div style={{fontWeight:600}}>{v.sale_client.cedula||"-"}</div></div>
@@ -847,7 +970,7 @@ export default function App() {
 
       {picked&&<div style={S.modal} onClick={()=>setPicked(null)}><div style={{...S.mbox,maxWidth:550}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{picked.b} {picked.m}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{picked.y} · {picked.p}</p></div><button onClick={()=>setPicked(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:20}}>✕</button></div>
-        <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO VENTA</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{fmt(picked.usd,"USD")}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COSTO COMPRA</div><div style={{fontSize:16,fontWeight:700,color:"#f59e0b"}}>{fmt(picked.purchase_price)}</div></div></div>
+        <div style={{background:"#1e2130",borderRadius:12,padding:"14px 18px",marginBottom:16,display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:10,color:"#8b8fa4"}}>PRECIO VENTA</div><div style={{fontSize:24,fontWeight:800,color:"#4f8cff"}}>{fmt(picked.crc)}</div></div><div style={{textAlign:"right"}}><div style={{fontSize:10,color:"#8b8fa4"}}>COSTO COMPRA</div><div style={{fontSize:16,fontWeight:700,color:"#f59e0b"}}>{fmt(picked.purchase_price)}</div></div></div>
         <div style={S.g2}>{[["Color",picked.co],["Km",picked.km?fK(picked.km):"-"],["Combustible",picked.f],["Tracción",picked.dr],["Estilo",picked.st],["Estado",picked.s],["CABYS",picked.cabys||"-"]].map(([l,v],i)=><div key={i} style={S.gc}><div style={S.gl}>{l}</div><div style={S.gv}>{v||"-"}</div></div>)}</div>
         {picked.purchase_supplier&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Proveedor: {picked.purchase_supplier}</div>}
         {picked.purchase_date&&<div style={{fontSize:12,color:"#8b8fa4",marginBottom:12}}>Fecha compra: {new Date(picked.purchase_date+"T12:00:00").toLocaleDateString("es-CR")}</div>}
@@ -862,7 +985,7 @@ export default function App() {
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div><input type="date" value={newVehicleForm.entry_date||""} onChange={e=>setNewVehicleForm(prev=>({...prev,entry_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Costo compra (₡)</div><input type="number" value={newVehicleForm.purchase_cost||""} onChange={e=>setNewVehicleForm(prev=>({...prev,purchase_cost:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tipo cambio (ref.)</div><input type="number" value={newVehicleForm.exchange_rate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,exchange_rate:e.target.value}))} placeholder="Ej: 530" style={{...S.inp,width:"100%",fontSize:12}} /></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta (USD)</div><input type="number" value={newVehicleForm.price_usd||""} onChange={e=>setNewVehicleForm(prev=>({...prev,price_usd:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta (₡)</div><input type="number" value={newVehicleForm.price_crc||""} onChange={e=>setNewVehicleForm(prev=>({...prev,price_crc:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estado</div><select value={newVehicleForm.status||"disponible"} onChange={e=>setNewVehicleForm(prev=>({...prev,status:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="disponible">Disponible</option><option value="reservado">Reservado</option></select></div>
           <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div><select value={newVehicleForm.cabys_code||""} onChange={e=>setNewVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar CABYS</option>{CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}</select></div>
@@ -1063,13 +1186,28 @@ export default function App() {
           exportXLS(rows,"Clientes_VCR");
         }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
       </div>
+      {selectedClis.size > 0 && (
+        <div style={{display:"flex",gap:8,marginBottom:12,alignItems:"center"}}>
+          <span style={{fontSize:12,fontWeight:600,color:"#4f8cff"}}>{selectedClis.size} seleccionado{selectedClis.size!==1?"s":""}</span>
+          <button onClick={()=>{
+            const rows = clients.filter((_,i)=>selectedClis.has(i)).map(c=>({Nombre:c.n,Cédula:c.ce||"",Teléfono:c.ph||"","Teléfono 2":c.ph2||"",Email:c.em||"",Dirección:c.ad||"",Trabajo:c.wk||"",Oficio:c.jo||"","Estado Civil":c.ci||"",Compras:c.bu.length}));
+            exportXLS(rows,"Clientes_Seleccionados_VCR");
+          }} style={{...S.sel,fontSize:11,padding:"6px 12px",background:"#10b98118",color:"#10b981",fontWeight:600}}>Exportar selección</button>
+          <button onClick={()=>setSelectedClis(new Set())} style={{...S.sel,fontSize:11,padding:"6px 12px",color:"#8b8fa4"}}>Deseleccionar</button>
+        </div>
+      )}
       {clients.length===0?(<div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay clientes. Los clientes se generan automáticamente al crear planes de venta.</div>):(
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(300px,1fr))",gap:12}}>
-        {clients.map((c,i)=><div key={i} onClick={()=>setPickedCli(c)} style={{...S.card,padding:"16px 20px",cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background="#181a23"}>
-          <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>{c.n}</div>
-          <div style={{fontSize:12,color:"#8b8fa4"}}>{c.ce} · {c.ph}</div>
-          {c.em&&<div style={{fontSize:11,color:"#8b8fa4"}}>{c.em}</div>}
-          {c.bu.length>0&&<div style={{marginTop:8,display:"flex",gap:6}}>
+        {clients.map((c,i)=><div key={i} style={{...S.card,padding:"16px 20px",cursor:"pointer",border:selectedClis.has(i)?"1px solid #4f8cff":"1px solid #2a2d3d"}} onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background="#181a23"}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+            <div onClick={()=>setPickedCli(c)} style={{flex:1}}>
+              <div style={{fontSize:16,fontWeight:700,marginBottom:4}}>{c.n}</div>
+              <div style={{fontSize:12,color:"#8b8fa4"}}>{c.ce} · {c.ph}</div>
+              {c.em&&<div style={{fontSize:11,color:"#8b8fa4"}}>{c.em}</div>}
+            </div>
+            <input type="checkbox" checked={selectedClis.has(i)} onChange={()=>{setSelectedClis(prev=>{const n=new Set(prev);if(n.has(i))n.delete(i);else n.add(i);return n;});}} onClick={e=>e.stopPropagation()} style={{cursor:"pointer",marginTop:4}} />
+          </div>
+          {c.bu.length>0&&<div style={{marginTop:8,display:"flex",gap:6}} onClick={()=>setPickedCli(c)}>
             <span style={S.badge("#10b981")}>{c.bu.length} compra{c.bu.length>1?"s":""}</span>
             <span style={S.badge("#4f8cff")}>{fmt(c.bu.reduce((s,b)=>s+(b.pr||0),0),"USD")}</span>
           </div>}
@@ -1178,7 +1316,7 @@ export default function App() {
       return (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <h1 style={{ fontSize: 24, fontWeight: 800 }}>Nuevo Plan de Ventas</h1>
+            <h1 style={{ fontSize: 24, fontWeight: 800 }}>{editingSaleId ? "Corregir Plan de Ventas" : "Nuevo Plan de Ventas"}</h1>
             <button onClick={() => { setSalesView("list"); setSaleForm(null); }} style={{ ...S.sel, color: "#8b8fa4" }}>Cancelar</button>
           </div>
 
@@ -1385,9 +1523,9 @@ export default function App() {
 
           {/* SUBMIT */}
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
-            <button onClick={() => { setSalesView("list"); setSaleForm(null); }} style={{ ...S.sel, color: "#8b8fa4", padding: "12px 24px" }}>Cancelar</button>
-            <button onClick={saveSale} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
-              Enviar para Aprobación
+            <button onClick={() => { setSalesView("list"); setSaleForm(null); setEditingSaleId(null); }} style={{ ...S.sel, color: "#8b8fa4", padding: "12px 24px" }}>Cancelar</button>
+            <button onClick={editingSaleId ? updateSale : saveSale} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
+              {editingSaleId ? "Guardar Correcciones" : "Enviar para Aprobación"}
             </button>
           </div>
         </div>
@@ -1747,26 +1885,46 @@ export default function App() {
                 {/* Approval buttons */}
                 {pickedSale.status === "pending" && (
                   <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
-                    <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); rejectSale(pickedSale.id, r); }}
+                    <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
                       style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
                       Rechazar
                     </button>
-                    <button onClick={() => approveSale(pickedSale.id)}
+                    <button onClick={() => editSale(pickedSale)}
+                      style={{ ...S.sel, color: "#f59e0b", background: "#f59e0b10", fontWeight: 600, padding: "12px 24px" }}>
+                      Corregir
+                    </button>
+                    <button onClick={() => setConfirmApprove(pickedSale.id)}
                       style={{ ...S.sel, background: "#10b981", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
-                      Aprobar Venta
+                      Aprobar
                     </button>
                   </div>
                 )}
                 {pickedSale.status === "approved" && (
                   <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
-                    <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
-                      style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
-                      Rechazar
+                    <button onClick={() => editSale(pickedSale)}
+                      style={{ ...S.sel, color: "#f59e0b", background: "#f59e0b10", fontWeight: 600, padding: "12px 24px" }}>
+                      Corregir
                     </button>
                     <button onClick={() => { setPrintSale(pickedSale); setPickedSale(null); }}
                       style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
                       Ver Plan de Ventas
                     </button>
+                  </div>
+                )}
+
+                {/* Confirm approval dialog */}
+                {confirmApprove && (
+                  <div style={{ marginTop: 16, padding: "16px 20px", background: "#10b98110", border: "1px solid #10b98130", borderRadius: 12 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: "#10b981", marginBottom: 8 }}>Confirmar aprobación</div>
+                    <p style={{ fontSize: 12, color: "#8b8fa4", marginBottom: 12 }}>Al confirmar se emitirá la factura de venta en Alegra. Desea continuar?</p>
+                    <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+                      <button onClick={() => setConfirmApprove(null)}
+                        style={{ ...S.sel, color: "#8b8fa4", padding: "10px 20px" }}>Cancelar</button>
+                      <button onClick={() => approveSale(confirmApprove)}
+                        style={{ ...S.sel, background: "#10b981", color: "#fff", fontWeight: 700, padding: "10px 24px", border: "none" }}>
+                        Confirmar y Emitir
+                      </button>
+                    </div>
                   </div>
                 )}
                 {pickedSale.status === "rejected" && pickedSale.rejected_reason && (
