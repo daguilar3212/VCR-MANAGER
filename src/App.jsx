@@ -173,6 +173,9 @@ export default function App() {
   const [fAssign, setFAssign] = useState("all");
   const [fType, setFType] = useState("all");
   const [fMethod, setFMethod] = useState("all");
+  const [fCurrency, setFCurrency] = useState("all");
+  const [fDateFrom, setFDateFrom] = useState("");
+  const [fDateTo, setFDateTo] = useState("");
   const [selectedInvs, setSelectedInvs] = useState(new Set());
   const [costView, setCostView] = useState("vehicles");
   const [syncing, setSyncing] = useState(false);
@@ -1979,7 +1982,17 @@ export default function App() {
   };
 
   const renderFac = () => {
-    const fList = invoices.filter(x => (fType==="all"||catType(x.catId)===fType)&&(fCat==="all"||x.catId===fCat)&&(fPay==="all"||x.payStatus===fPay)&&(fAssign==="all"||x.assignStatus===fAssign)&&(fMethod==="all"||x.payCode===fMethod));
+    const fList = invoices.filter(x => {
+      if (fType!=="all" && catType(x.catId)!==fType) return false;
+      if (fCat!=="all" && x.catId!==fCat) return false;
+      if (fPay!=="all" && x.payStatus!==fPay) return false;
+      if (fAssign!=="all" && x.assignStatus!==fAssign) return false;
+      if (fMethod!=="all" && x.payCode!==fMethod) return false;
+      if (fCurrency!=="all" && x.currency!==fCurrency) return false;
+      if (fDateFrom && x.date && x.date.split('T')[0] < fDateFrom) return false;
+      if (fDateTo && x.date && x.date.split('T')[0] > fDateTo) return false;
+      return true;
+    });
     return (
       <div>
         <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Facturas</h1>
@@ -2070,6 +2083,13 @@ export default function App() {
             <select value={fPay} onChange={e=>setFPay(e.target.value)} style={S.sel}><option value="all">Pago</option><option value="pending">Pendiente</option><option value="paid">Pagada</option></select>
             <select value={fAssign} onChange={e=>setFAssign(e.target.value)} style={S.sel}><option value="all">Asignación</option><option value="assigned">Asignada</option><option value="unassigned">Sin asignar</option><option value="operational">Operativo</option></select>
             <select value={fMethod} onChange={e=>setFMethod(e.target.value)} style={S.sel}><option value="all">Medio pago</option><option value="01">Efectivo</option><option value="02">Tarjeta</option><option value="04">Transferencia</option><option value="03">Cheque</option><option value="99">Otros</option></select>
+            <select value={fCurrency} onChange={e=>setFCurrency(e.target.value)} style={S.sel}><option value="all">Moneda</option><option value="CRC">₡ Colones</option><option value="USD">$ Dólares</option></select>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <input type="date" value={fDateFrom} onChange={e=>setFDateFrom(e.target.value)} style={{...S.sel,fontSize:11,padding:"6px 8px",color:fDateFrom?"#e8eaf0":"#8b8fa4"}} />
+              <span style={{color:"#8b8fa4",fontSize:11}}>a</span>
+              <input type="date" value={fDateTo} onChange={e=>setFDateTo(e.target.value)} style={{...S.sel,fontSize:11,padding:"6px 8px",color:fDateTo?"#e8eaf0":"#8b8fa4"}} />
+              {(fDateFrom||fDateTo)&&<button onClick={()=>{setFDateFrom("");setFDateTo("");}} style={{background:"none",border:"none",color:"#e11d48",cursor:"pointer",fontSize:13,padding:"2px 6px"}}>✕</button>}
+            </div>
           </div>
           {/* Payment method summary */}
           <div style={{display:"flex",gap:8,marginBottom:12,flexWrap:"wrap",fontSize:11}}>
