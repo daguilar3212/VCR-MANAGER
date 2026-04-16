@@ -129,6 +129,10 @@ const fmt = (n, c) => {
   if (n == null || isNaN(n)) return "-";
   return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", {minimumFractionDigits:0, maximumFractionDigits:0});
 };
+const fmt2 = (n, c) => {
+  if (n == null || isNaN(n)) return "-";
+  return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", {minimumFractionDigits:2, maximumFractionDigits:2});
+};
 const fK = (n) => Number(n).toLocaleString("es-CR") + " km";
 const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Liquidaciones","Planillas","Pagos","Settings","Reportes"];
 
@@ -1000,7 +1004,7 @@ export default function App() {
       const taxable = Math.min(base, b.to) - b.from;
       tax += taxable * b.pct / 100;
     }
-    return Math.round(tax * 100) / 100;
+    return Math.round((tax + Number.EPSILON) * 100) / 100;
   };
 
   const getAgentCommissions = (agentId, month, year) => {
@@ -1016,6 +1020,8 @@ export default function App() {
     }, 0);
   };
 
+  const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
+
   const buildPayroll = (type, periodLabel) => {
     const ccss = parseFloat(appSettings.ccss_pct) || 10.83;
     const employees = agents.filter(a => a.is_employee !== false);
@@ -1025,31 +1031,31 @@ export default function App() {
     const isMensual = type === 'mensual';
 
     const lines = employees.map(emp => {
-      const salary = emp.salary || 0;
-      const comms = isMensual ? getAgentCommissions(emp.id, month, year) : 0;
-      const grossQ = salary + comms;
-      const ccssAmt = Math.round(grossQ * ccss / 100 * 100) / 100;
+      const salary = r2(emp.salary || 0);
+      const comms = r2(isMensual ? getAgentCommissions(emp.id, month, year) : 0);
+      const grossQ = r2(salary + comms);
+      const ccssAmt = r2(grossQ * ccss / 100);
 
       let rentAmt = 0;
       if (isMensual) {
         // Renta sobre salario mensual bruto (Q1 + Q2 con comisiones)
-        const monthlyGross = salary + salary + comms; // Q1 salary + Q2 salary + comms
+        const monthlyGross = salary + salary + comms;
         rentAmt = calcRent(monthlyGross, emp.pension_deduction || 0);
       }
 
-      const netPay = grossQ - ccssAmt - rentAmt;
+      const netPay = r2(grossQ - ccssAmt - rentAmt);
       return {
         agent_id: emp.id, agent_name: emp.name, salary, commissions: comms,
         gross_total: grossQ, ccss_pct: ccss, ccss_amount: ccssAmt,
-        rent_base: isMensual ? (salary * 2 + comms) : 0,
-        pension_deduction: emp.pension_deduction || 0,
-        rent_amount: rentAmt, net_pay: Math.round(netPay * 100) / 100,
+        rent_base: isMensual ? r2(salary * 2 + comms) : 0,
+        pension_deduction: r2(emp.pension_deduction || 0),
+        rent_amount: rentAmt, net_pay: netPay,
       };
     });
 
     const totals = lines.reduce((t, l) => ({
-      gross: t.gross + l.gross_total, ccss: t.ccss + l.ccss_amount,
-      rent: t.rent + l.rent_amount, net: t.net + l.net_pay, comms: t.comms + l.commissions,
+      gross: r2(t.gross + l.gross_total), ccss: r2(t.ccss + l.ccss_amount),
+      rent: r2(t.rent + l.rent_amount), net: r2(t.net + l.net_pay), comms: r2(t.comms + l.commissions),
     }), { gross: 0, ccss: 0, rent: 0, net: 0, comms: 0 });
 
     return { type, name: periodLabel, lines, totals };
@@ -1397,57 +1403,163 @@ export default function App() {
   // ======= RENDER: PLANILLAS =======
   const renderPlanillas = () => {
     if (payView === "list") {
+      const now = new Date();
+      const month = now.getMonth();
+      const year = now.getFullYear();
+      const monthNames = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+      const mName = monthNames[month];
+      const lastDay = new Date(year, month+1, 0).getDate();
+      const q1Label = `Planilla 1-15 ${mName} ${year}`;
+      const mensualLabel = `Planilla 16-${lastDay} ${mName} ${year}`;
+
+      // Check if already exist for this month
+      const existingQ1 = payrolls.find(p => p.name === q1Label);
+      const existingMensual = payrolls.find(p => p.name === mensualLabel);
+
+      // Build preview for non-existing ones
+      const previewQ1 = existingQ1 ? null : buildPayroll("quincenal_1", q1Label);
+      const previewMensual = existingMensual ? null : buildPayroll("mensual", mensualLabel);
+
+      const renderPayrollCard = (existing, preview, title, typeColor) => {
+        const p = existing || preview;
+        if (!p) return null;
+        const isExisting = !!existing;
+        const isPaid = isExisting && existing.status === "paid";
+        const isConfirmed = isExisting && existing.status === "confirmed";
+        const lines = isExisting ? (existing.lines || []) : preview.lines;
+        const totals = isExisting ? {
+          gross: existing.total_gross, ccss: existing.total_ccss,
+          rent: existing.total_rent, net: existing.total_net, comms: existing.total_commissions,
+        } : preview.totals;
+        const isMensual = (isExisting ? existing.period_type : preview.type) === "mensual";
+
+        return (
+          <div style={{...S.card,position:"relative",overflow:"hidden"}}>
+            {/* WATERMARK for PAID */}
+            {isPaid && (
+              <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",pointerEvents:"none",zIndex:10}}>
+                <div style={{fontSize:60,fontWeight:900,color:"#10b981",opacity:0.15,transform:"rotate(-20deg)",letterSpacing:6,whiteSpace:"nowrap"}}>PAGADA</div>
+              </div>
+            )}
+            <div style={{padding:"14px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between",alignItems:"center",background:typeColor+"10"}}>
+              <div>
+                <div style={{fontSize:11,color:typeColor,fontWeight:700,textTransform:"uppercase",letterSpacing:.5}}>{title}</div>
+                <div style={{fontWeight:700,fontSize:14}}>{p.name || (isExisting ? existing.name : preview.name)}</div>
+              </div>
+              <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                {isExisting ? (
+                  <span style={S.badge(isPaid?"#10b981":isConfirmed?"#6366f1":"#f59e0b")}>
+                    {isPaid?"Pagada":isConfirmed?"Confirmada":"Borrador"}
+                  </span>
+                ) : (
+                  <span style={S.badge("#64748b")}>Preview en vivo</span>
+                )}
+              </div>
+            </div>
+            <div style={{padding:"12px 18px",display:"flex",gap:8,fontSize:12,borderBottom:"1px solid #2a2d3d"}}>
+              <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Bruto</div><div style={{fontWeight:700}}>{fmt2(totals.gross)}</div></div>
+              <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>CCSS</div><div style={{fontWeight:700,color:"#e11d48"}}>{fmt2(totals.ccss)}</div></div>
+              {isMensual && <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Renta</div><div style={{fontWeight:700,color:"#e11d48"}}>{fmt2(totals.rent)}</div></div>}
+              {isMensual && <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Comisiones</div><div style={{fontWeight:700,color:"#f97316"}}>{totals.comms>0?fmt2(totals.comms,"USD"):"-"}</div></div>}
+              <div style={{flex:1}}><div style={{color:"#8b8fa4",fontSize:10}}>Neto</div><div style={{fontWeight:800,color:"#4f8cff",fontSize:14}}>{fmt2(totals.net)}</div></div>
+            </div>
+            <div style={{padding:"0"}}>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                <thead><tr style={{background:"#1e2130"}}>
+                  {["Empleado","Sueldo","Com.","Bruto","CCSS",isMensual?"Renta":null,"Neto"].filter(Boolean).map(h=>(
+                    <th key={h} style={{padding:"6px 10px",textAlign:h==="Empleado"?"left":"right",fontSize:9,fontWeight:700,color:"#8b8fa4",textTransform:"uppercase",borderBottom:"1px solid #2a2d3d"}}>{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {lines.map((l,i) => (
+                    <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
+                      <td style={{padding:"6px 10px",fontSize:12,fontWeight:600}}>{l.agent_name}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:12}}>{fmt2(l.salary)}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt2(l.commissions,"USD"):"-"}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,fontWeight:600}}>{fmt2(l.gross_total)}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
+                      {isMensual && <td style={{padding:"6px 10px",textAlign:"right",fontSize:12,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount>0?fmt2(l.rent_amount):"-"}</td>}
+                      <td style={{padding:"6px 10px",textAlign:"right",fontSize:13,fontWeight:700,color:"#4f8cff"}}>{fmt2(l.net_pay)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{padding:"12px 18px",display:"flex",gap:8,justifyContent:"flex-end",borderTop:"1px solid #2a2d3d",background:"#0f1117",position:"relative",zIndex:11}}>
+              {isExisting ? (
+                <button onClick={()=>setPickedPay(existing)} style={{...S.sel,background:typeColor+"18",color:typeColor,fontWeight:600}}>
+                  {isPaid ? "Ver detalle" : "Gestionar"}
+                </button>
+              ) : (
+                <button onClick={()=>{ setPayForm(preview); setPayView("create"); }} style={{...S.sel,background:typeColor,color:"#fff",fontWeight:700,border:"none",padding:"8px 20px"}}>
+                  Crear esta planilla
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      // History: all payrolls that are NOT the current Q1 or Mensual of current month
+      const historial = payrolls.filter(p => p.name !== q1Label && p.name !== mensualLabel);
+
       return (
         <div>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
             <h1 style={{fontSize:24,fontWeight:800}}>Planillas</h1>
-            <div style={{display:"flex",gap:8}}>
-              <button onClick={()=>{
-                const rows = [];
-                for (const p of payrolls) { for (const l of (p.lines||[])) { rows.push({"Planilla":p.name,"Tipo":p.period_type,"Estado":p.status==="paid"?"Pagada":p.status==="confirmed"?"Confirmada":"Borrador","Empleado":l.agent_name,"Sueldo":l.salary,"Comisiones":l.commissions,"Total bruto":l.gross_total,"CCSS %":l.ccss_pct,"CCSS":l.ccss_amount,"Base renta":l.rent_base,"Deducción pensión":l.pension_deduction,"Renta":l.rent_amount,"Neto":l.net_pay}); } }
-                if (rows.length > 0) exportXLS(rows,"Planillas_VCR");
-              }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar</button>
-              <button onClick={()=>{
-                const now = new Date();
-                const day = now.getDate();
-                const monthNames = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
-                const m = monthNames[now.getMonth()];
-                const y = now.getFullYear();
-                const type = day <= 15 ? "quincenal_1" : "mensual";
-                const label = type === "quincenal_1" ? `Planilla 1-15 ${m} ${y}` : `Planilla 16-${new Date(y, now.getMonth()+1, 0).getDate()} ${m} ${y}`;
-                const preview = buildPayroll(type, label);
-                setPayForm(preview);
-                setPayView("create");
-              }} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,padding:"10px 20px"}}>+ Nueva Planilla</button>
-            </div>
+            <button onClick={()=>{
+              const rows = [];
+              for (const p of payrolls) { for (const l of (p.lines||[])) { rows.push({"Planilla":p.name,"Tipo":p.period_type,"Estado":p.status==="paid"?"Pagada":p.status==="confirmed"?"Confirmada":"Borrador","Empleado":l.agent_name,"Sueldo":l.salary,"Comisiones":l.commissions,"Total bruto":l.gross_total,"CCSS %":l.ccss_pct,"CCSS":l.ccss_amount,"Base renta":l.rent_base,"Deducción pensión":l.pension_deduction,"Renta":l.rent_amount,"Neto":l.net_pay}); } }
+              if (rows.length > 0) exportXLS(rows,"Planillas_VCR");
+            }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar</button>
           </div>
-          {payrolls.length === 0 ? (
-            <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay planillas. Configure los empleados en Settings y cree una nueva planilla.</div>
-          ) : (
-            <div style={S.card}>
-              {payrolls.map((p,i)=>(
-                <div key={i} onClick={()=>setPickedPay(p)} style={{padding:"14px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}
-                  onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
-                  <div>
-                    <div style={{fontWeight:700,fontSize:14}}>{p.name}</div>
-                    <div style={{fontSize:11,color:"#8b8fa4"}}>{(p.lines||[]).length} empleados · {new Date(p.created_at).toLocaleDateString("es-CR")}</div>
-                    <div style={{display:"flex",gap:6,marginTop:6}}>
-                      <span style={S.badge(p.status==="paid"?"#10b981":p.status==="confirmed"?"#6366f1":"#f59e0b")}>
-                        {p.status==="paid"?"Pagada":p.status==="confirmed"?"Confirmada":"Borrador"}
-                      </span>
-                      <span style={S.badge(p.period_type==="mensual"?"#8b5cf6":"#0ea5e9")}>
-                        {p.period_type==="mensual"?"Mensual":"Quincenal"}
-                      </span>
-                      {p.total_commissions > 0 && <span style={S.badge("#f97316")}>Com: {fmt(p.total_commissions,"USD")}</span>}
-                    </div>
-                  </div>
-                  <div style={{textAlign:"right"}}>
-                    <div style={{fontSize:18,fontWeight:800,color:"#4f8cff"}}>{fmt(p.total_net)}</div>
-                    <div style={{fontSize:11,color:"#8b8fa4"}}>Bruto: {fmt(p.total_gross)}</div>
-                  </div>
-                </div>
-              ))}
+
+          {agents.filter(a=>a.is_employee!==false).length === 0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>
+              No hay empleados configurados. Vaya a <strong>Settings</strong> para agregarlos.
             </div>
+          ) : (
+            <>
+              <div style={{fontSize:13,fontWeight:700,color:"#8b8fa4",marginBottom:10,textTransform:"uppercase",letterSpacing:.5}}>
+                Planillas de {mName} {year}
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr",gap:14,marginBottom:24}}>
+                {renderPayrollCard(existingQ1, previewQ1, "Primera Quincena (1-15)", "#0ea5e9")}
+                {renderPayrollCard(existingMensual, previewMensual, `Mensual (16-${lastDay})`, "#8b5cf6")}
+              </div>
+
+              {historial.length > 0 && (
+                <>
+                  <div style={{fontSize:13,fontWeight:700,color:"#8b8fa4",marginBottom:10,marginTop:10,textTransform:"uppercase",letterSpacing:.5}}>
+                    Historial ({historial.length})
+                  </div>
+                  <div style={S.card}>
+                    {historial.map((p,i)=>(
+                      <div key={i} onClick={()=>setPickedPay(p)} style={{padding:"14px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                        onMouseEnter={e=>e.currentTarget.style.background="#1e2130"} onMouseLeave={e=>e.currentTarget.style.background=""}>
+                        <div>
+                          <div style={{fontWeight:700,fontSize:14}}>{p.name}</div>
+                          <div style={{fontSize:11,color:"#8b8fa4"}}>{(p.lines||[]).length} empleados · {new Date(p.created_at).toLocaleDateString("es-CR")}</div>
+                          <div style={{display:"flex",gap:6,marginTop:6}}>
+                            <span style={S.badge(p.status==="paid"?"#10b981":p.status==="confirmed"?"#6366f1":"#f59e0b")}>
+                              {p.status==="paid"?"Pagada":p.status==="confirmed"?"Confirmada":"Borrador"}
+                            </span>
+                            <span style={S.badge(p.period_type==="mensual"?"#8b5cf6":"#0ea5e9")}>
+                              {p.period_type==="mensual"?"Mensual":"Quincenal"}
+                            </span>
+                            {p.total_commissions > 0 && <span style={S.badge("#f97316")}>Com: {fmt2(p.total_commissions,"USD")}</span>}
+                          </div>
+                        </div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:18,fontWeight:800,color:"#4f8cff"}}>{fmt2(p.total_net)}</div>
+                          <div style={{fontSize:11,color:"#8b8fa4"}}>Bruto: {fmt2(p.total_gross)}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
           )}
         </div>
       );
@@ -1477,23 +1589,23 @@ export default function App() {
               <tbody>
                 {pv.lines.map((l,i) => (
                   <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
-                    <td style={{padding:"10px 12px",fontSize:13,fontWeight:600}}>{l.agent_name}{l.pension_deduction > 0 && <div style={{fontSize:10,color:"#8b8fa4"}}>Pensión: -{fmt(l.pension_deduction)}</div>}</td>
-                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13}}>{fmt(l.salary)}</td>
-                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions > 0 ? fmt(l.commissions,"USD") : "-"}</td>
-                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,fontWeight:600}}>{fmt(l.gross_total)}</td>
-                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:"#e11d48"}}>{fmt(l.ccss_amount)}</td>
-                    {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount > 0 ? fmt(l.rent_amount) : "-"}</td>}
-                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:14,fontWeight:800,color:"#4f8cff"}}>{fmt(l.net_pay)}</td>
+                    <td style={{padding:"10px 12px",fontSize:13,fontWeight:600}}>{l.agent_name}{l.pension_deduction > 0 && <div style={{fontSize:10,color:"#8b8fa4"}}>Pensión: -{fmt2(l.pension_deduction)}</div>}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13}}>{fmt2(l.salary)}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions > 0 ? fmt2(l.commissions,"USD") : "-"}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,fontWeight:600}}>{fmt2(l.gross_total)}</td>
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
+                    {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontSize:13,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount > 0 ? fmt2(l.rent_amount) : "-"}</td>}
+                    <td style={{padding:"10px 12px",textAlign:"right",fontSize:14,fontWeight:800,color:"#4f8cff"}}>{fmt2(l.net_pay)}</td>
                   </tr>
                 ))}
                 <tr style={{background:"#1e2130"}}>
                   <td style={{padding:"10px 12px",fontWeight:800}}>TOTALES</td>
-                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt(pv.lines.reduce((s,l)=>s+l.salary,0))}</td>
-                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#f97316"}}>{pv.totals.comms > 0 ? fmt(pv.totals.comms,"USD") : "-"}</td>
-                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt(pv.totals.gross)}</td>
-                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt(pv.totals.ccss)}</td>
-                  {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt(pv.totals.rent)}</td>}
-                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:800,fontSize:16,color:"#4f8cff"}}>{fmt(pv.totals.net)}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt2(pv.lines.reduce((s,l)=>s+l.salary,0))}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#f97316"}}>{pv.totals.comms > 0 ? fmt2(pv.totals.comms,"USD") : "-"}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700}}>{fmt2(pv.totals.gross)}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt2(pv.totals.ccss)}</td>
+                  {isMensual && <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#e11d48"}}>{fmt2(pv.totals.rent)}</td>}
+                  <td style={{padding:"10px 12px",textAlign:"right",fontWeight:800,fontSize:16,color:"#4f8cff"}}>{fmt2(pv.totals.net)}</td>
                 </tr>
               </tbody>
             </table>
@@ -1538,8 +1650,8 @@ export default function App() {
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:13}}>{a.name}</div>
                     <div style={{fontSize:11,color:"#8b8fa4"}}>
-                      Sueldo quincenal: {fmt(a.salary || 0)}
-                      {(a.pension_deduction || 0) > 0 && ` · Deducción pensión: ${fmt(a.pension_deduction)}`}
+                      Sueldo quincenal: {fmt2(a.salary || 0)}
+                      {(a.pension_deduction || 0) > 0 && ` · Deducción pensión: ${fmt2(a.pension_deduction)}`}
                     </div>
                   </div>
                   <div style={{display:"flex",gap:6}}>
@@ -3081,7 +3193,7 @@ export default function App() {
                   {[["Bruto",pickedPay.total_gross],["CCSS",pickedPay.total_ccss],["Renta",pickedPay.total_rent],["Neto",pickedPay.total_net]].map(([l,v],i)=>(
                     <div key={l} style={{flex:1,background:"#1e2130",borderRadius:10,padding:"10px 14px"}}>
                       <div style={{fontSize:10,color:"#8b8fa4"}}>{l}</div>
-                      <div style={{fontSize:14,fontWeight:700,color:i===3?"#4f8cff":(i>0?"#e11d48":"#e8eaf0")}}>{fmt(v)}</div>
+                      <div style={{fontSize:14,fontWeight:700,color:i===3?"#4f8cff":(i>0?"#e11d48":"#e8eaf0")}}>{fmt2(v)}</div>
                     </div>
                   ))}
                 </div>
@@ -3096,12 +3208,12 @@ export default function App() {
                       {(pickedPay.lines||[]).map((l,i) => (
                         <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
                           <td style={{padding:"8px 12px",fontSize:12,fontWeight:600}}>{l.agent_name}</td>
-                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12}}>{fmt(l.salary)}</td>
-                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt(l.commissions,"USD"):"-"}</td>
-                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,fontWeight:600}}>{fmt(l.gross_total)}</td>
-                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:"#e11d48"}}>{fmt(l.ccss_amount)}</td>
-                          {pickedPay.period_type==="mensual"&&<td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount>0?fmt(l.rent_amount):"-"}</td>}
-                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:13,fontWeight:800,color:"#4f8cff"}}>{fmt(l.net_pay)}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12}}>{fmt2(l.salary)}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.commissions>0?"#f97316":"#8b8fa4"}}>{l.commissions>0?fmt2(l.commissions,"USD"):"-"}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,fontWeight:600}}>{fmt2(l.gross_total)}</td>
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
+                          {pickedPay.period_type==="mensual"&&<td style={{padding:"8px 12px",textAlign:"right",fontSize:12,color:l.rent_amount>0?"#e11d48":"#8b8fa4"}}>{l.rent_amount>0?fmt2(l.rent_amount):"-"}</td>}
+                          <td style={{padding:"8px 12px",textAlign:"right",fontSize:13,fontWeight:800,color:"#4f8cff"}}>{fmt2(l.net_pay)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -3174,24 +3286,24 @@ export default function App() {
                           return (
                           <tr key={i} style={{borderBottom:"1px solid #ddd"}}>
                             <td style={{padding:"6px 10px",fontWeight:600}}>{l.agent_name}</td>
-                            <td style={{padding:"6px 10px",textAlign:"right"}}>{Number(l.salary).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
-                            <td style={{padding:"6px 10px",textAlign:"right"}}>{l.commissions > 0 ? Number(l.commissions).toLocaleString("es-CR",{minimumFractionDigits:2}) : "-"}</td>
-                            <td style={{padding:"6px 10px",textAlign:"right",fontWeight:600}}>{Number(l.gross_total).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
-                            <td style={{padding:"6px 10px",textAlign:"right"}}>{Number(l.ccss_amount).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
-                            {isMensual&&<td style={{padding:"6px 10px",textAlign:"right"}}>{Number(devengado).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>}
-                            {isMensual&&<td style={{padding:"6px 10px",textAlign:"right"}}>{l.rent_amount > 0 ? Number(l.rent_amount).toLocaleString("es-CR",{minimumFractionDigits:2}) : "-"}</td>}
-                            <td style={{padding:"6px 10px",textAlign:"right",fontWeight:700}}>{Number(l.net_pay).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right"}}>{Number(l.salary).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right"}}>{l.commissions > 0 ? Number(l.commissions).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "-"}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right",fontWeight:600}}>{Number(l.gross_total).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                            <td style={{padding:"6px 10px",textAlign:"right"}}>{Number(l.ccss_amount).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                            {isMensual&&<td style={{padding:"6px 10px",textAlign:"right"}}>{Number(devengado).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
+                            {isMensual&&<td style={{padding:"6px 10px",textAlign:"right"}}>{l.rent_amount > 0 ? Number(l.rent_amount).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "-"}</td>}
+                            <td style={{padding:"6px 10px",textAlign:"right",fontWeight:700}}>{Number(l.net_pay).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                           </tr>
                         );})}
                         <tr style={{borderTop:"2px solid #333",fontWeight:800}}>
                           <td style={{padding:"8px 10px"}}></td>
-                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number((p.lines||[]).reduce((s,l)=>s+l.salary,0)).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
-                          <td style={{padding:"8px 10px",textAlign:"right"}}>{p.total_commissions > 0 ? Number(p.total_commissions).toLocaleString("es-CR",{minimumFractionDigits:2}) : "-"}</td>
-                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_gross).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
-                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_ccss).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
-                          {isMensual&&<td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_gross - p.total_ccss).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>}
-                          {isMensual&&<td style={{padding:"8px 10px",textAlign:"right"}}>{p.total_rent > 0 ? "-" : "-"}</td>}
-                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_net).toLocaleString("es-CR",{minimumFractionDigits:2})}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number((p.lines||[]).reduce((s,l)=>s+l.salary,0)).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{p.total_commissions > 0 ? Number(p.total_commissions).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "-"}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_gross).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_ccss).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
+                          {isMensual&&<td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_gross - p.total_ccss).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>}
+                          {isMensual&&<td style={{padding:"8px 10px",textAlign:"right"}}>{p.total_rent > 0 ? Number(p.total_rent).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2}) : "-"}</td>}
+                          <td style={{padding:"8px 10px",textAlign:"right"}}>{Number(p.total_net).toLocaleString("es-CR",{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
                         </tr>
                       </tbody>
                     </table>
