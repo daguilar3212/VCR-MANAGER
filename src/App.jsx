@@ -134,7 +134,7 @@ const fmt2 = (n, c) => {
   return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", {minimumFractionDigits:2, maximumFractionDigits:2});
 };
 const fK = (n) => Number(n).toLocaleString("es-CR") + " km";
-const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Liquidaciones","Planillas","Pagos","Settings","Reportes"];
+const tabs = ["Dashboard","Inventario","Facturas","Costos","Clientes","Ventas","Liquidaciones","Planillas","Egresos","Settings","Reportes"];
 
 const S = {
   card: {background:"#181a23",borderRadius:14,border:"1px solid #2a2d3d",overflow:"hidden"},
@@ -199,6 +199,10 @@ export default function App() {
   const [expandedClient, setExpandedClient] = useState(null);
   const [pickedCli, setPickedCli] = useState(null);
   const [editingClient, setEditingClient] = useState(null);
+
+  // ===== EGRESOS STATE =====
+  const [egresosFilter, setEgresosFilter] = useState("all"); // all, factura, liquidacion, planilla
+  const [expandedEgreso, setExpandedEgreso] = useState(null);
   const [editingSaleId, setEditingSaleId] = useState(null);
   const [confirmApprove, setConfirmApprove] = useState(null);
   const [selectedCars, setSelectedCars] = useState(new Set());
@@ -2541,6 +2545,184 @@ export default function App() {
     return null;
   };
 
+  // ======= RENDER: EGRESOS =======
+  const renderEgresos = () => {
+    // Build unified list of all paid expenses
+    const egresos = [];
+
+    // Paid invoices NOT in a liquidation (standalone invoice payments)
+    invoices.filter(i => i.payStatus === 'paid' && !i.liquidationId).forEach(inv => {
+      egresos.push({
+        id: 'inv-' + inv.key,
+        type: 'factura',
+        date: inv.paidDate || inv.date,
+        title: supDisplay(inv),
+        subtitle: `Factura · ${catLabel(inv.catId)}`,
+        amount: inv.total,
+        currency: inv.currency || 'CRC',
+        bank: inv.paidBank,
+        reference: inv.paidRef,
+        data: inv,
+      });
+    });
+
+    // Paid liquidations
+    liquidations.filter(l => l.status === 'paid').forEach(liq => {
+      egresos.push({
+        id: 'liq-' + liq.id,
+        type: 'liquidacion',
+        date: liq.paid_date || liq.created_at,
+        title: liq.name,
+        subtitle: `Liquidación · ${(liq.items||[]).length} facturas`,
+        amount: liq.actual_amount,
+        currency: liq.currency || 'CRC',
+        bank: liq.paid_bank,
+        reference: liq.paid_reference,
+        data: liq,
+      });
+    });
+
+    // Paid payrolls
+    payrolls.filter(p => p.status === 'paid').forEach(p => {
+      egresos.push({
+        id: 'pay-' + p.id,
+        type: 'planilla',
+        date: p.paid_date || p.created_at,
+        title: p.name,
+        subtitle: `Planilla · ${(p.lines||[]).length} empleados`,
+        amount: p.total_net,
+        currency: 'CRC',
+        bank: p.paid_bank,
+        reference: p.paid_reference,
+        data: p,
+      });
+    });
+
+    // Filter
+    const filtered = egresos.filter(e => egresosFilter === 'all' || e.type === egresosFilter);
+    // Sort by date desc
+    filtered.sort((a,b) => (b.date || '').localeCompare(a.date || ''));
+
+    // Totals by currency
+    const totalCRC = filtered.filter(e => e.currency === 'CRC').reduce((s,e) => s + (e.amount||0), 0);
+    const totalUSD = filtered.filter(e => e.currency === 'USD').reduce((s,e) => s + (e.amount||0), 0);
+
+    const typeColors = { factura: "#f97316", liquidacion: "#8b5cf6", planilla: "#6366f1" };
+    const typeLabels = { factura: "Factura", liquidacion: "Liquidación", planilla: "Planilla" };
+
+    return (
+      <div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+          <h1 style={{fontSize:24,fontWeight:800}}>Egresos</h1>
+          <button onClick={()=>{
+            const rows = filtered.map(e => ({
+              "Tipo": typeLabels[e.type], "Fecha": e.date, "Descripción": e.title,
+              "Detalle": e.subtitle, "Monto": e.amount, "Moneda": e.currency,
+              "Banco": e.bank || "", "Referencia": e.reference || "",
+            }));
+            if (rows.length > 0) exportXLS(rows, "Egresos_VCR");
+          }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
+        </div>
+
+        {/* Totals summary */}
+        <div style={{display:"flex",gap:12,marginBottom:16}}>
+          <div style={{flex:1,...S.card,padding:"14px 18px"}}>
+            <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Total Colones</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#4f8cff"}}>{fmt(totalCRC)}</div>
+          </div>
+          <div style={{flex:1,...S.card,padding:"14px 18px"}}>
+            <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Total Dólares</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#10b981"}}>{fmt(totalUSD,"USD")}</div>
+          </div>
+          <div style={{flex:1,...S.card,padding:"14px 18px"}}>
+            <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Total Egresos</div>
+            <div style={{fontSize:22,fontWeight:800,color:"#e11d48"}}>{filtered.length}</div>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div style={{display:"flex",gap:8,marginBottom:14,flexWrap:"wrap"}}>
+          {[["all","Todos",egresos.length],["factura","Facturas",egresos.filter(e=>e.type==="factura").length],["liquidacion","Liquidaciones",egresos.filter(e=>e.type==="liquidacion").length],["planilla","Planillas",egresos.filter(e=>e.type==="planilla").length]].map(([v,l,n])=>(
+            <button key={v} onClick={()=>setEgresosFilter(v)} style={{...S.sel,background:egresosFilter===v?"#4f8cff20":"#1e2130",color:egresosFilter===v?"#4f8cff":"#8b8fa4",fontWeight:egresosFilter===v?600:400}}>
+              {l} ({n})
+            </button>
+          ))}
+        </div>
+
+        {filtered.length === 0 ? (
+          <div style={{padding:40,textAlign:"center",color:"#8b8fa4",fontSize:13}}>No hay egresos pagados{egresosFilter!=="all"?" en este filtro":""}.</div>
+        ) : (
+          <div style={S.card}>
+            {filtered.map(e => (
+              <React.Fragment key={e.id}>
+                <div onClick={()=>{
+                  if (e.type === 'factura') openInvoice(e.data);
+                  else if (e.type === 'planilla') setPickedPay(e.data);
+                  else setExpandedEgreso(expandedEgreso===e.id?null:e.id);
+                }} style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}
+                  onMouseEnter={ev=>ev.currentTarget.style.background="#1e2130"} onMouseLeave={ev=>ev.currentTarget.style.background=""}>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                      <span style={S.badge(typeColors[e.type])}>{typeLabels[e.type]}</span>
+                      <span style={{fontWeight:600,fontSize:13}}>{e.title}</span>
+                    </div>
+                    <div style={{fontSize:11,color:"#8b8fa4"}}>
+                      {e.subtitle}
+                      {e.date && ` · ${new Date(e.date + (e.date.length === 10 ? "T12:00:00" : "")).toLocaleDateString("es-CR")}`}
+                      {e.bank && ` · ${e.bank}`}
+                      {e.reference && ` · #${e.reference}`}
+                    </div>
+                  </div>
+                  <div style={{textAlign:"right",display:"flex",alignItems:"center",gap:10}}>
+                    <div>
+                      <div style={{fontWeight:800,fontSize:16,color:e.currency==="USD"?"#10b981":"#4f8cff"}}>{fmt(e.amount,e.currency==="USD"?"USD":undefined)}</div>
+                    </div>
+                    {e.type === 'liquidacion' && (
+                      <span style={{color:"#8b8fa4",fontSize:14}}>{expandedEgreso===e.id?"▲":"▼"}</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Expanded liquidation details */}
+                {e.type === 'liquidacion' && expandedEgreso === e.id && (
+                  <div style={{padding:"12px 18px",background:"#1e2130",borderBottom:"1px solid #2a2d3d"}}>
+                    {LIQ_CATS.map(lc => {
+                      const items = (e.data.items||[]).filter(i => i.liq_category === lc.id);
+                      if (items.length === 0) return null;
+                      const catTotal = items.reduce((s,i) => s + i.amount, 0);
+                      const lCur = e.currency;
+                      const lFmt = (n) => fmt(n, lCur==="USD"?"USD":undefined);
+                      return (
+                        <div key={lc.id} style={{marginBottom:10}}>
+                          <div style={{display:"flex",justifyContent:"space-between",padding:"6px 10px",background:"#0f1117",borderRadius:"6px 6px 0 0",fontWeight:700,fontSize:12}}>
+                            <span>{lc.label}</span><span style={{color:lCur==="USD"?"#10b981":"#4f8cff"}}>{lFmt(catTotal)}</span>
+                          </div>
+                          {items.map((item,j) => (
+                            <div key={j} style={{display:"flex",justifyContent:"space-between",padding:"5px 10px",borderBottom:"1px solid #2a2d3d",fontSize:11}}>
+                              <div>
+                                <span style={{color:"#8b8fa4"}}>{item.emission_date ? new Date(item.emission_date).toLocaleDateString("es-CR") : ""}</span>
+                                <span style={{marginLeft:8,color:"#8b8fa4"}}>{item.last_four||""}</span>
+                                <span style={{marginLeft:8,fontWeight:600}}>{item.supplier_name||""}</span>
+                              </div>
+                              <span style={{fontWeight:600}}>{lFmt(item.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    <div style={{display:"flex",justifyContent:"flex-end",marginTop:8}}>
+                      <button onClick={(ev)=>{ev.stopPropagation();setPrintLiq(e.data);}} style={{...S.sel,fontSize:11,background:"#4f8cff18",color:"#4f8cff",fontWeight:600,padding:"5px 12px"}}>Imprimir</button>
+                    </div>
+                  </div>
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderPage = () => {
     if (tab==="Dashboard") return renderDash();
     if (tab==="Inventario") return renderInv();
@@ -2550,6 +2732,7 @@ export default function App() {
     if (tab==="Ventas") return renderSales();
     if (tab==="Liquidaciones") return renderLiquidaciones();
     if (tab==="Planillas") return renderPlanillas();
+    if (tab==="Egresos") return renderEgresos();
     if (tab==="Settings") return renderSettings();
     return <PH t={tab}/>;
   };
@@ -2557,7 +2740,7 @@ export default function App() {
   // ======= MAIN RENDER =======
   return (
     <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:"#0f1117",color:"#e8eaf0",minHeight:"100vh"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}@media print{body{background:#fff!important}body>*{display:none!important}#plan-de-ventas-print{display:block!important;position:fixed;inset:0;z-index:99999;background:#fff;padding:30px 40px;overflow:visible}.no-print{display:none!important}}`}</style>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}@media print{body{background:#fff!important}body>*{display:none!important}#plan-de-ventas-print,#print-area{display:block!important;position:fixed;inset:0;z-index:99999;background:#fff;padding:30px 40px;overflow:visible;color:#1a1a2e!important}#print-area *,#plan-de-ventas-print *{color:inherit}.no-print{display:none!important}}`}</style>
       <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
         <div style={{width:200,background:"#181a23",borderRight:"1px solid #2a2d3d",padding:"20px 8px",flexShrink:0,overflowY:"auto"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 10px 20px",borderBottom:"1px solid #2a2d3d",marginBottom:12}}>
