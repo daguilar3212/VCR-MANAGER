@@ -687,6 +687,7 @@ export default function App() {
     payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
     deposits: [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
     transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
+    transfer_amount: "",
     has_insurance: false, insurance_months: "",
     observations: "",
     agent1_id: "", agent2_id: "",
@@ -704,13 +705,23 @@ export default function App() {
     }));
   };
 
-  const calcBalance = (form) => {
-    const price = parseFloat(form.sale_price) || 0;
+  // Cálculo completo del desglose de una venta
+  // Fórmula: precio + traspaso (solo si aparte) - trade-in - prima - señal - depósitos = saldo
+  const computeBreakdown = (form) => {
+    const salePrice = parseFloat(form.sale_price) || 0;
     const tradein = parseFloat(form.tradein_amount) || 0;
     const down = parseFloat(form.down_payment) || 0;
     const signal = parseFloat(form.deposit_signal) || 0;
-    const depositsTotal = (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
-    return Math.max(0, price - tradein - down - signal - depositsTotal);
+    const depsTotal = (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+    const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
+    const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
+    const balance = salePrice + transferExtra - tradein - down - signal - depsTotal;
+    return { salePrice, transferExtra, transferApart, tradein, down, signal, depsTotal, balance };
+  };
+
+  const calcBalance = (form) => {
+    // Compatibilidad: devuelve el saldo (sin forzar positivo, permite negativos/cero)
+    return computeBreakdown(form).balance;
   };
 
   const depositsTotal = (form) => (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
@@ -770,7 +781,26 @@ export default function App() {
   const saveSale = async () => {
     if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
     if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) { alert("Tipo de cambio es requerido"); return; }
-    const balance = calcBalance(saleForm);
+
+    // VALIDACIÓN DE SALDO
+    const bd = computeBreakdown(saleForm);
+    const isCash = (saleForm.payment_method || "contado") === "contado";
+    const tolerance = 0.01;
+
+    if (isCash && Math.abs(bd.balance) > tolerance) {
+      alert(
+        `El saldo debe ser 0 para ventas de contado.\n\n` +
+        `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
+        `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+      );
+      return;
+    }
+    if (!isCash && bd.balance < -tolerance) {
+      alert(`El saldo no puede ser negativo. Saldo actual: ${bd.balance.toFixed(2)}`);
+      return;
+    }
+
+    const balance = bd.balance;
     const saleType = saleForm.sale_type;
     const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
     const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
@@ -813,6 +843,7 @@ export default function App() {
       financing_amount: parseFloat(saleForm.financing_amount) || null,
       transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
       transfer_in_financing: saleForm.transfer_in_financing,
+      transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
       has_insurance: saleForm.has_insurance,
       insurance_months: parseInt(saleForm.insurance_months) || null,
       observations: saleForm.observations || generateObservations(saleForm),
@@ -892,6 +923,7 @@ export default function App() {
       deposits: (sale.deposits && sale.deposits.length > 0) ? sale.deposits.map(d => ({ bank: d.bank || "", reference: d.reference || "", date: d.deposit_date || "", amount: d.amount || "" })) : [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
       transfer_included: sale.transfer_included || false, transfer_in_price: sale.transfer_in_price || false,
       transfer_in_financing: sale.transfer_in_financing || false,
+      transfer_amount: sale.transfer_amount || "",
       has_insurance: sale.has_insurance || false, insurance_months: sale.insurance_months || "",
       observations: sale.observations || "",
       agent1_id: (sale.sale_agents && sale.sale_agents[0]) ? sale.sale_agents[0].agent_id : "",
@@ -904,7 +936,26 @@ export default function App() {
   const updateSale = async () => {
     if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
     if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) { alert("Tipo de cambio es requerido"); return; }
-    const balance = calcBalance(saleForm);
+
+    // VALIDACIÓN DE SALDO
+    const bd = computeBreakdown(saleForm);
+    const isCash = (saleForm.payment_method || "contado") === "contado";
+    const tolerance = 0.01;
+
+    if (isCash && Math.abs(bd.balance) > tolerance) {
+      alert(
+        `El saldo debe ser 0 para ventas de contado.\n\n` +
+        `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
+        `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+      );
+      return;
+    }
+    if (!isCash && bd.balance < -tolerance) {
+      alert(`El saldo no puede ser negativo. Saldo actual: ${bd.balance.toFixed(2)}`);
+      return;
+    }
+
+    const balance = bd.balance;
     const saleType = saleForm.sale_type;
     const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
     const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
@@ -938,6 +989,7 @@ export default function App() {
       financing_amount: parseFloat(saleForm.financing_amount) || null,
       transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
       transfer_in_financing: saleForm.transfer_in_financing,
+      transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
       has_insurance: saleForm.has_insurance, insurance_months: parseInt(saleForm.insurance_months) || null,
       observations: saleForm.observations || generateObservations(saleForm),
     };
@@ -2866,6 +2918,14 @@ export default function App() {
                 <input type="checkbox" checked={F.transfer_in_financing} onChange={e => uf("transfer_in_financing", e.target.checked)} /> En financiamiento
               </label>
             </div>
+            {F.transfer_included && !F.transfer_in_price && !F.transfer_in_financing && (
+              <div style={{ marginBottom: 10, padding: "10px 12px", background: "#f59e0b20", border: "1px solid #f59e0b60", borderRadius: 6 }}>
+                <div style={{ fontSize: 12, color: "#f59e0b", fontWeight: 600, marginBottom: 6 }}>
+                  Traspaso cobrado aparte - suma al total
+                </div>
+                <div style={{ width: 180 }}>{fld("Monto traspaso", "transfer_amount", { inputType: "number" })}</div>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
                 <input type="checkbox" checked={F.has_insurance} onChange={e => uf("has_insurance", e.target.checked)} /> Incluye seguro
@@ -2875,6 +2935,84 @@ export default function App() {
               )}
             </div>
           </div>
+
+          {/* DESGLOSE EN VIVO */}
+          {(() => {
+            const bd = computeBreakdown(F);
+            const isCash = (F.payment_method || "contado") === "contado";
+            const tolerance = 0.01;
+            const isZero = Math.abs(bd.balance) <= tolerance;
+            const isNegative = bd.balance < -tolerance;
+            const currSym = "USD"; // admin ve todo en USD por ahora
+            let bColor, bLabel, bBg, statusMsg;
+            if (isNegative) {
+              bColor = "#e11d48"; bBg = "#e11d4820"; bLabel = "Saldo negativo";
+              statusMsg = "El cliente estaría pagando más de lo que cuesta.";
+            } else if (isZero) {
+              bColor = "#10b981"; bBg = "#10b98120"; bLabel = "Saldo cubierto";
+              statusMsg = "La venta cuadra. Listo para aprobar.";
+            } else if (isCash) {
+              bColor = "#e11d48"; bBg = "#e11d4820"; bLabel = "Saldo pendiente";
+              statusMsg = "Venta de contado: el saldo debe ser 0.";
+            } else {
+              bColor = "#4f8cff"; bBg = "#4f8cff20"; bLabel = "Saldo a financiar";
+              statusMsg = "Venta financiada: este saldo lo cubre el banco.";
+            }
+            const line = { display: "flex", justifyContent: "space-between", padding: "8px 0", fontSize: 13, borderBottom: "1px solid #2a2d3d", color: "#e8eaf0" };
+            return (
+              <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14, border: `2px solid ${bColor}60` }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>
+                  Desglose del plan de venta
+                </div>
+                <div style={line}>
+                  <span>Precio de venta</span>
+                  <strong>{fmt(bd.salePrice, currSym)}</strong>
+                </div>
+                {bd.transferApart && (
+                  <div style={line}>
+                    <span>+ Gastos de traspaso (aparte)</span>
+                    <strong style={{ color: "#f59e0b" }}>+ {fmt(bd.transferExtra, currSym)}</strong>
+                  </div>
+                )}
+                {bd.tradein > 0 && (
+                  <div style={line}>
+                    <span>− Trade-in</span>
+                    <strong style={{ color: "#10b981" }}>− {fmt(bd.tradein, currSym)}</strong>
+                  </div>
+                )}
+                {bd.down > 0 && (
+                  <div style={line}>
+                    <span>− Prima</span>
+                    <strong style={{ color: "#10b981" }}>− {fmt(bd.down, currSym)}</strong>
+                  </div>
+                )}
+                {bd.signal > 0 && (
+                  <div style={line}>
+                    <span>− Señal</span>
+                    <strong style={{ color: "#10b981" }}>− {fmt(bd.signal, currSym)}</strong>
+                  </div>
+                )}
+                {bd.depsTotal > 0 && (
+                  <div style={line}>
+                    <span>− Depósitos ({(F.deposits || []).filter(d => parseFloat(d.amount) > 0).length})</span>
+                    <strong style={{ color: "#10b981" }}>− {fmt(bd.depsTotal, currSym)}</strong>
+                  </div>
+                )}
+                <div style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  marginTop: 12, padding: "12px 14px", background: bBg, borderRadius: 8,
+                }}>
+                  <div>
+                    <strong style={{ color: bColor, fontSize: 14 }}>{bLabel}</strong>
+                    <div style={{ fontSize: 11, color: "#8b8fa4", marginTop: 2 }}>{statusMsg}</div>
+                  </div>
+                  <strong style={{ color: bColor, fontSize: 18 }}>
+                    {fmt(bd.balance, currSym)}
+                  </strong>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* AGENTS */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
