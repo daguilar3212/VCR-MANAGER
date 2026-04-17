@@ -243,8 +243,53 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState("employees");
   const [editingAgent, setEditingAgent] = useState(null);
 
+  // ===== NOTIFICACIONES REALTIME =====
+  const [notif, setNotif] = useState(null);
+
   // Load data on mount
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); }, []);
+
+  // Realtime: escuchar planes de venta nuevos (pendientes) de agentes
+  useEffect(() => {
+    const salesChannel = supabase
+      .channel('admin-sales-changes')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sales' }, (payload) => {
+        loadSales();
+        if (payload.new && payload.new.status === 'pendiente') {
+          playAdminSound();
+          showAdminNotif(`Nuevo plan de venta pendiente de ${payload.new.client_name || 'cliente'}`);
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'sales' }, () => {
+        loadSales();
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'sales' }, () => {
+        loadSales();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(salesChannel); };
+  }, []);
+
+  function playAdminSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 660;
+      gain.gain.value = 0.1;
+      osc.start();
+      setTimeout(() => { osc.frequency.value = 990; }, 100);
+      setTimeout(() => { osc.stop(); ctx.close(); }, 250);
+    } catch (e) { console.log('sound fail', e); }
+  }
+
+  function showAdminNotif(message) {
+    setNotif(message);
+    setTimeout(() => setNotif(null), 6000);
+  }
 
   const loadVehicles = async () => {
     const { data } = await supabase.from('vehicles').select('*').order('created_at', { ascending: false });
@@ -3079,6 +3124,33 @@ export default function App() {
   // ======= MAIN RENDER =======
   return (
     <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:"#0f1117",color:"#e8eaf0",minHeight:"100vh"}}>
+      {/* TOAST NOTIFICACIÓN REALTIME */}
+      {notif && (
+        <div
+          onClick={() => setNotif(null)}
+          style={{
+            position: "fixed",
+            top: 16,
+            right: 16,
+            zIndex: 99999,
+            padding: "14px 22px",
+            borderRadius: 10,
+            background: "linear-gradient(135deg,#4f8cff,#6366f1)",
+            color: "#fff",
+            fontWeight: 600,
+            fontSize: 14,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+            cursor: "pointer",
+            maxWidth: 380,
+            border: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          🔔 {notif}
+          <div style={{fontSize:11,fontWeight:400,marginTop:4,opacity:0.85}}>
+            Click para cerrar
+          </div>
+        </div>
+      )}
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}@media print{body{background:#fff!important}body *{visibility:hidden!important}#plan-de-ventas-print,#plan-de-ventas-print *,#print-area,#print-area *{visibility:visible!important}#plan-de-ventas-print,#print-area{position:fixed!important;inset:0!important;z-index:99999!important;background:#fff!important;padding:30px 40px!important;overflow:visible!important;color:#1a1a2e!important}#print-area table,#plan-de-ventas-print table{border-collapse:collapse!important}#print-area td,#print-area th,#plan-de-ventas-print td,#plan-de-ventas-print th{color:#1a1a2e!important;border-color:#ddd!important}.no-print,.no-print *{display:none!important;visibility:hidden!important}}`}</style>
       <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
         <div style={{width:200,background:"#181a23",borderRight:"1px solid #2a2d3d",padding:"20px 8px",flexShrink:0,overflowY:"auto"}}>
