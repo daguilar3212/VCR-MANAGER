@@ -54,6 +54,23 @@ const fmt = (n, currency) => {
 
 const todayStr = () => new Date().toISOString().split("T")[0];
 
+// Calcula el desglose financiero de una venta
+// Fórmula: precio + traspaso (solo si aparte) - trade-in - prima - depósitos = saldo
+function computeBreakdown(form) {
+  const salePrice = parseFloat(form.sale_price) || 0;
+  const tradein = parseFloat(form.tradein_amount) || 0;
+  const down = parseFloat(form.down_payment) || 0;
+  const depsTotal = (form.deposits || []).reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
+
+  // Traspaso: solo suma si está incluido pero NO en precio ni en financiamiento (es aparte)
+  const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
+  const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
+
+  const balance = salePrice + transferExtra - tradein - down - depsTotal;
+
+  return { salePrice, transferExtra, transferApart, tradein, down, depsTotal, balance };
+}
+
 const emptyForm = () => ({
   sale_date: todayStr(),
   currency: "USD", // moneda global de la venta
@@ -72,6 +89,7 @@ const emptyForm = () => ({
   payment_method: "contado",
   financing_term_months: "", financing_interest_pct: "", financing_amount: "",
   transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
+  transfer_amount: "",
   has_insurance: false, insurance_months: "",
   observations: "",
   agent2_id: "", // agent1 siempre es el usuario logueado
@@ -305,11 +323,33 @@ export default function AgentPanel() {
       return;
     }
 
-    const salePrice = parseFloat(saleForm.sale_price) || 0;
-    const tradein = parseFloat(saleForm.tradein_amount) || 0;
-    const down = parseFloat(saleForm.down_payment) || 0;
-    const depsTotal = (saleForm.deposits || []).reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
-    const balance = salePrice - tradein - down - depsTotal;
+    // Calcular desglose completo
+    const breakdown = computeBreakdown(saleForm);
+    const { salePrice, transferExtra, tradein, down, depsTotal, balance } = breakdown;
+
+    // VALIDACIÓN DE SALDO
+    // Contado: debe llegar a 0 (permitimos pequeña tolerancia por redondeo)
+    // Financiamiento o mixto: puede quedar saldo (lo que financia el banco)
+    const isCash = (saleForm.payment_method || "contado") === "contado";
+    const tolerance = 0.01; // centavo de tolerancia por redondeo
+
+    if (isCash && Math.abs(balance) > tolerance) {
+      alert(
+        `El saldo debe ser 0 para ventas de contado.\n\n` +
+        `Saldo actual: ${balance.toFixed(2)}\n\n` +
+        `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+      );
+      return;
+    }
+
+    // En financiamiento, el balance no puede ser NEGATIVO (el cliente estaría pagando de más)
+    if (!isCash && balance < -tolerance) {
+      alert(
+        `El saldo no puede ser negativo. El cliente está pagando más de la venta.\n\n` +
+        `Saldo actual: ${balance.toFixed(2)}`
+      );
+      return;
+    }
 
     const row = {
       sale_date: saleForm.sale_date,
@@ -360,6 +400,7 @@ export default function AgentPanel() {
       transfer_included: !!saleForm.transfer_included,
       transfer_in_price: !!saleForm.transfer_in_price,
       transfer_in_financing: !!saleForm.transfer_in_financing,
+      transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
       has_insurance: !!saleForm.has_insurance,
       insurance_months: parseInt(saleForm.insurance_months) || null,
       observations: saleForm.observations || null,
@@ -959,6 +1000,21 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                 <input type="checkbox" checked={!!form.transfer_in_financing} onChange={e => upd("transfer_in_financing", e.target.checked)} />
                 Traspaso incluido en financiamiento
               </label>
+              {!form.transfer_in_price && !form.transfer_in_financing && (
+                <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6 }}>
+                  <label style={S.label}>Monto del traspaso ({form.currency || "USD"}) *</label>
+                  <input
+                    style={S.input}
+                    type="number"
+                    value={form.transfer_amount}
+                    onChange={e => upd("transfer_amount", e.target.value)}
+                    placeholder="0.00"
+                  />
+                  <div style={{ fontSize: "0.75rem", color: "#92400e", marginTop: "0.25rem" }}>
+                    Como el traspaso es aparte, suma al total a cobrar.
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -973,6 +1029,9 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           )}
         </div>
       </div>
+
+      {/* DESGLOSE EN VIVO */}
+      <BreakdownCard form={form} />
 
       {/* AGENTES Y COMISION */}
       <div style={S.card}>
@@ -1111,6 +1170,125 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
         <div style={S.card}>
           <div style={S.cardTitle}>Observaciones</div>
           <div style={{ whiteSpace: "pre-wrap" }}>{sale.observations}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// SUBCOMPONENTE: DESGLOSE EN VIVO
+// ============================================================
+function BreakdownCard({ form }) {
+  const currency = form.currency || "USD";
+  const isCash = (form.payment_method || "contado") === "contado";
+  const { salePrice, transferExtra, transferApart, tradein, down, depsTotal, balance } = computeBreakdown(form);
+
+  const tolerance = 0.01;
+  const isZero = Math.abs(balance) <= tolerance;
+  const isNegative = balance < -tolerance;
+
+  // Estado visual del saldo
+  let balanceColor, balanceLabel, balanceBg, statusMsg;
+  if (isNegative) {
+    balanceColor = "#991b1b";
+    balanceBg = "#fef2f2";
+    balanceLabel = "Saldo negativo";
+    statusMsg = "El cliente está pagando más de lo que cuesta. Revisá los montos.";
+  } else if (isZero) {
+    balanceColor = "#065f46";
+    balanceBg = "#d1fae5";
+    balanceLabel = "Saldo cubierto";
+    statusMsg = "La venta cuadra perfecto. Listo para enviar a revisión.";
+  } else if (isCash) {
+    balanceColor = "#991b1b";
+    balanceBg = "#fef2f2";
+    balanceLabel = "Saldo pendiente";
+    statusMsg = "Venta de contado: el saldo debe ser 0. Agregá más depósitos o ajustá los montos.";
+  } else {
+    balanceColor = "#1e40af";
+    balanceBg = "#dbeafe";
+    balanceLabel = "Saldo a financiar";
+    statusMsg = "Venta financiada: este saldo es lo que va a cubrir el banco.";
+  }
+
+  const lineStyle = { display: "flex", justifyContent: "space-between", padding: "0.5rem 0", fontSize: "0.95rem" };
+  const lineBorder = { ...lineStyle, borderBottom: "1px solid #e4e4e7" };
+
+  return (
+    <div style={{
+      background: "#fff",
+      borderRadius: 12,
+      padding: "1.5rem",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
+      marginBottom: "1.5rem",
+      border: "2px solid " + balanceColor + "40",
+    }}>
+      <div style={{ fontSize: "1.1rem", fontWeight: 700, marginBottom: "1rem", color: "#18181b" }}>
+        Desglose del plan de venta
+      </div>
+
+      <div style={lineBorder}>
+        <span>Precio de venta</span>
+        <strong>{fmt(salePrice, currency)}</strong>
+      </div>
+
+      {transferApart && (
+        <div style={lineBorder}>
+          <span>+ Gastos de traspaso (aparte)</span>
+          <strong style={{ color: "#92400e" }}>+ {fmt(transferExtra, currency)}</strong>
+        </div>
+      )}
+
+      {tradein > 0 && (
+        <div style={lineBorder}>
+          <span>− Trade-in</span>
+          <strong style={{ color: "#10b981" }}>− {fmt(tradein, currency)}</strong>
+        </div>
+      )}
+
+      {down > 0 && (
+        <div style={lineBorder}>
+          <span>− Prima / Down payment</span>
+          <strong style={{ color: "#10b981" }}>− {fmt(down, currency)}</strong>
+        </div>
+      )}
+
+      {depsTotal > 0 && (
+        <div style={lineBorder}>
+          <span>− Depósitos ({(form.deposits || []).filter(d => parseFloat(d.amount) > 0).length})</span>
+          <strong style={{ color: "#10b981" }}>− {fmt(depsTotal, currency)}</strong>
+        </div>
+      )}
+
+      {/* TOTAL */}
+      <div style={{
+        ...lineStyle,
+        marginTop: "0.75rem",
+        padding: "1rem",
+        background: balanceBg,
+        borderRadius: 8,
+        fontSize: "1.1rem",
+      }}>
+        <div>
+          <strong style={{ color: balanceColor }}>{balanceLabel}</strong>
+          <div style={{ fontSize: "0.8rem", fontWeight: 400, color: "#52525b", marginTop: "0.25rem" }}>
+            {statusMsg}
+          </div>
+        </div>
+        <strong style={{ color: balanceColor, fontSize: "1.3rem" }}>
+          {fmt(balance, currency)}
+        </strong>
+      </div>
+
+      {/* Info extra para venta financiada */}
+      {!isCash && balance > tolerance && (
+        <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#52525b" }}>
+          Este saldo debería coincidir con el monto que vas a financiar. Actualmente pusiste{" "}
+          <strong>{fmt(parseFloat(form.financing_amount) || 0, currency)}</strong> en "Monto financiado".
+          {Math.abs(balance - (parseFloat(form.financing_amount) || 0)) > tolerance && (
+            <span style={{ color: "#991b1b", fontWeight: 600 }}> (no coincide)</span>
+          )}
         </div>
       )}
     </div>
