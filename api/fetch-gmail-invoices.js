@@ -392,6 +392,14 @@ export default async function handler(req, res) {
             parsed.is_credit_card = false;
           }
 
+          // Restaurants/comida: ALWAYS paid by card, regardless of what the XML says
+          // (In Costa Rica, restaurants are never paid by transfer)
+          if (catId === "viaticos_emp") {
+            parsed.payment_method_code = "02";
+            parsed.payment_method_label = "Tarjeta";
+            parsed.is_credit_card = true;
+          }
+
           // === PLATE DETECTION (all lines) ===
           let plate = parsed.detected_plate;
           let assignStatus = 'unassigned';
