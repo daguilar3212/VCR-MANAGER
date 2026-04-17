@@ -36,7 +36,7 @@ const S = {
   grid4: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "1rem" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { padding: "0.75rem", textAlign: "left", fontSize: "0.85rem", fontWeight: 700, color: "#52525b", borderBottom: "2px solid #e4e4e7", background: "#fafafa" },
-  td: { padding: "0.75rem", borderBottom: "1px solid #f4f4f5", fontSize: "0.9rem" },
+  td: { padding: "0.75rem", borderBottom: "1px solid #f4f4f5", fontSize: "0.9rem", color: "#18181b" },
   badge: (color) => ({ display: "inline-block", background: color, color: "#fff", padding: "3px 10px", borderRadius: 12, fontSize: "0.75rem", fontWeight: 700, textTransform: "uppercase" }),
   empty: { textAlign: "center", padding: "3rem", color: "#a1a1aa", fontSize: "0.95rem" },
 };
@@ -56,6 +56,7 @@ const todayStr = () => new Date().toISOString().split("T")[0];
 
 const emptyForm = () => ({
   sale_date: todayStr(),
+  currency: "USD", // moneda global de la venta
   client_name: "", client_cedula: "", client_phone1: "", client_phone2: "", client_email: "",
   client_address: "", client_workplace: "", client_occupation: "", client_civil_status: "",
   vehicle_id: "", vehicle_plate: "", vehicle_brand: "", vehicle_model: "", vehicle_year: "",
@@ -92,6 +93,7 @@ export default function AgentPanel() {
   const [loading, setLoading] = useState(true);
   const [vehicleFilter, setVehicleFilter] = useState("disponible");
   const [saleStatusFilter, setSaleStatusFilter] = useState("all");
+  const [notif, setNotif] = useState(null); // { type, message } para toast
 
   // ============================================================
   // CARGAR DATOS
@@ -99,6 +101,84 @@ export default function AgentPanel() {
   useEffect(() => {
     loadAll();
   }, []);
+
+  // ============================================================
+  // REALTIME: suscripciones a cambios en Supabase
+  // ============================================================
+  useEffect(() => {
+    if (!profile?.agent_id) return;
+
+    // Canal 1: inventario (silencioso, solo refresca lista)
+    const vehiclesChannel = supabase
+      .channel('agent-vehicles-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vehicles' }, () => {
+        loadVehicles();
+      })
+      .subscribe();
+
+    // Canal 2: mis ventas (con sonido y notificación cuando cambia mi status)
+    const salesChannel = supabase
+      .channel('agent-sales-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, async (payload) => {
+        // Recargar ventas siempre
+        await loadSales();
+
+        // Solo notificar si es MI venta (RLS ya filtra pero verificamos)
+        // El evento UPDATE con cambio de status es lo que más nos interesa
+        if (payload.eventType === 'UPDATE' && payload.new && payload.old) {
+          const statusChanged = payload.old.status !== payload.new.status;
+          if (statusChanged) {
+            const newStatus = payload.new.status;
+            if (newStatus === 'aprobada') {
+              playSound('success');
+              showNotif('success', `¡Tu plan de venta #${payload.new.sale_number} fue aprobado!`);
+            } else if (newStatus === 'rechazada') {
+              playSound('alert');
+              showNotif('alert', `Tu plan de venta #${payload.new.sale_number} fue rechazado.`);
+            }
+          }
+        }
+      })
+      .subscribe();
+
+    // Cleanup al desmontar
+    return () => {
+      supabase.removeChannel(vehiclesChannel);
+      supabase.removeChannel(salesChannel);
+    };
+  }, [profile?.agent_id]);
+
+  // Reproducir sonido corto
+  function playSound(type) {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      if (type === 'success') {
+        osc.frequency.value = 880; // La alto
+        gain.gain.value = 0.1;
+        osc.start();
+        setTimeout(() => { osc.frequency.value = 1320; }, 100);
+        setTimeout(() => { osc.stop(); audioCtx.close(); }, 250);
+      } else {
+        osc.frequency.value = 440;
+        gain.gain.value = 0.1;
+        osc.start();
+        setTimeout(() => { osc.frequency.value = 330; }, 120);
+        setTimeout(() => { osc.stop(); audioCtx.close(); }, 300);
+      }
+    } catch (e) {
+      console.log('No se pudo reproducir sonido:', e);
+    }
+  }
+
+  // Mostrar toast que se cierra solo a los 6 segundos
+  function showNotif(type, message) {
+    setNotif({ type, message });
+    setTimeout(() => setNotif(null), 6000);
+  }
 
   async function loadAll() {
     setLoading(true);
@@ -221,7 +301,7 @@ export default function AgentPanel() {
       return;
     }
     if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) {
-      alert("Tipo de cambio obligatorio.");
+      alert("El tipo de cambio es obligatorio. Sirve como referencia para ver los montos en la otra moneda.");
       return;
     }
 
@@ -234,6 +314,7 @@ export default function AgentPanel() {
     const row = {
       sale_date: saleForm.sale_date,
       status: "pendiente",
+      currency: saleForm.currency || "USD",
       client_name: saleForm.client_name,
       client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1 || null,
@@ -403,6 +484,30 @@ export default function AgentPanel() {
         </div>
       </div>
 
+      {/* TOAST DE NOTIFICACIÓN */}
+      {notif && (
+        <div style={{
+          position: "fixed",
+          top: "1rem",
+          right: "1rem",
+          zIndex: 9999,
+          padding: "1rem 1.5rem",
+          borderRadius: 8,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+          fontWeight: 600,
+          color: "#fff",
+          background: notif.type === "success" ? "#10b981" : "#e11d48",
+          maxWidth: 400,
+          cursor: "pointer",
+          animation: "slideIn 0.3s ease-out",
+        }} onClick={() => setNotif(null)}>
+          {notif.message}
+          <div style={{ fontSize: "0.75rem", fontWeight: 400, marginTop: "0.25rem", opacity: 0.85 }}>
+            Click para cerrar
+          </div>
+        </div>
+      )}
+
       {/* TABS */}
       <div style={S.tabBar}>
         <button onClick={() => { setTab("inventario"); setView("list"); }} style={S.tab(tab === "inventario")}>
@@ -493,27 +598,33 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
             </tr>
           </thead>
           <tbody>
-            {vehicles.map(v => (
-              <tr key={v.id}>
-                <td style={S.td}><strong>{v.plate || "-"}</strong></td>
-                <td style={S.td}>{v.brand} {v.model}</td>
-                <td style={S.td}>{v.year || "-"}</td>
-                <td style={S.td}>{v.color || "-"}</td>
-                <td style={S.td}>{v.km ? v.km.toLocaleString() : "-"}</td>
-                <td style={S.td}>{v.fuel || "-"}</td>
-                <td style={S.td}>
-                  {v.price_currency === "USD" ? fmt(v.price_usd, "USD") : fmt(v.price_crc, "CRC")}
-                </td>
-                <td style={S.td}>
-                  <span style={S.badge(statusColor(v.status))}>{v.status || "-"}</span>
-                </td>
-                <td style={S.td}>
-                  {v.status === "disponible" && (
-                    <button onClick={() => onSellVehicle(v)} style={S.btn}>Vender</button>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {vehicles.map(v => {
+              const isAvailable = v.status === "disponible";
+              const rowBg = isAvailable ? "#fff" : "#fafafa";
+              return (
+                <tr key={v.id} style={{ background: rowBg }}>
+                  <td style={S.td}><strong>{v.plate || "-"}</strong></td>
+                  <td style={S.td}>{v.brand} {v.model}</td>
+                  <td style={S.td}>{v.year || "-"}</td>
+                  <td style={S.td}>{v.color || "-"}</td>
+                  <td style={S.td}>{v.km ? v.km.toLocaleString() : "-"}</td>
+                  <td style={S.td}>{v.fuel || "-"}</td>
+                  <td style={S.td}>
+                    {v.price_currency === "USD" ? fmt(v.price_usd, "USD") : fmt(v.price_crc, "CRC")}
+                  </td>
+                  <td style={S.td}>
+                    <span style={S.badge(statusColor(v.status))}>{v.status || "-"}</span>
+                  </td>
+                  <td style={S.td}>
+                    {isAvailable ? (
+                      <button onClick={() => onSellVehicle(v)} style={S.btn}>Vender</button>
+                    ) : (
+                      <span style={{ color: "#a1a1aa", fontSize: "0.8rem", fontStyle: "italic" }}>No disponible</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       )}
@@ -730,7 +841,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Motor</label><input style={S.input} value={form.tradein_engine} onChange={e => upd("tradein_engine", e.target.value)} /></div>
             <div><label style={S.label}>Tracción</label><input style={S.input} value={form.tradein_drive} onChange={e => upd("tradein_drive", e.target.value)} /></div>
             <div><label style={S.label}>Combustible</label><input style={S.input} value={form.tradein_fuel} onChange={e => upd("tradein_fuel", e.target.value)} /></div>
-            <div><label style={S.label}>Valor acordado (USD)</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => upd("tradein_value", e.target.value)} /></div>
+            <div><label style={S.label}>Valor acordado ({form.currency || "USD"})</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => upd("tradein_value", e.target.value)} /></div>
           </div>
         )}
       </div>
@@ -738,6 +849,27 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
       {/* PRECIOS */}
       <div style={S.card}>
         <div style={S.cardTitle}>Precios y condiciones</div>
+
+        {/* Dropdown de moneda global */}
+        <div style={{ marginBottom: "1rem", padding: "0.75rem 1rem", background: "#eff6ff", borderRadius: 6, border: "1px solid #bfdbfe" }}>
+          <label style={{ ...S.label, marginBottom: "0.5rem", color: "#1e40af" }}>
+            Moneda de la venta *
+          </label>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <select
+              style={{ ...S.sel, maxWidth: 200 }}
+              value={form.currency || "USD"}
+              onChange={e => upd("currency", e.target.value)}
+            >
+              <option value="USD">USD (dólares)</option>
+              <option value="CRC">CRC (colones)</option>
+            </select>
+            <span style={{ fontSize: "0.85rem", color: "#52525b" }}>
+              Todos los montos de esta venta se expresan en {form.currency === "CRC" ? "colones" : "dólares"}.
+            </span>
+          </div>
+        </div>
+
         <div style={S.grid3}>
           <div>
             <label style={S.label}>Tipo de venta</label>
@@ -748,19 +880,22 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             </select>
           </div>
           <div>
-            <label style={S.label}>Precio de venta (USD) *</label>
+            <label style={S.label}>Precio de venta ({form.currency || "USD"}) *</label>
             <input style={S.input} type="number" value={form.sale_price} onChange={e => upd("sale_price", e.target.value)} />
           </div>
           <div>
             <label style={S.label}>Tipo de cambio *</label>
-            <input style={S.input} type="number" step="0.01" value={form.sale_exchange_rate} onChange={e => upd("sale_exchange_rate", e.target.value)} />
+            <input style={S.input} type="number" step="0.01" value={form.sale_exchange_rate} onChange={e => upd("sale_exchange_rate", e.target.value)} placeholder="ej: 510.50" />
+            <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.25rem" }}>
+              Siempre requerido. Se guarda como referencia para ver los montos en la otra moneda después.
+            </div>
           </div>
           <div>
-            <label style={S.label}>Trade-in (USD)</label>
+            <label style={S.label}>Trade-in ({form.currency || "USD"})</label>
             <input style={S.input} type="number" value={form.tradein_amount} onChange={e => upd("tradein_amount", e.target.value)} />
           </div>
           <div>
-            <label style={S.label}>Prima / Down payment (USD)</label>
+            <label style={S.label}>Prima / Down payment ({form.currency || "USD"})</label>
             <input style={S.input} type="number" value={form.down_payment} onChange={e => upd("down_payment", e.target.value)} />
           </div>
           <div>
@@ -777,7 +912,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           <div style={{ ...S.grid3, marginTop: "1rem" }}>
             <div><label style={S.label}>Plazo (meses)</label><input style={S.input} type="number" value={form.financing_term_months} onChange={e => upd("financing_term_months", e.target.value)} /></div>
             <div><label style={S.label}>Interés %</label><input style={S.input} type="number" step="0.01" value={form.financing_interest_pct} onChange={e => upd("financing_interest_pct", e.target.value)} /></div>
-            <div><label style={S.label}>Monto financiado (USD)</label><input style={S.input} type="number" value={form.financing_amount} onChange={e => upd("financing_amount", e.target.value)} /></div>
+            <div><label style={S.label}>Monto financiado ({form.currency || "USD"})</label><input style={S.input} type="number" value={form.financing_amount} onChange={e => upd("financing_amount", e.target.value)} /></div>
           </div>
         )}
       </div>
@@ -795,7 +930,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Fecha</label><input style={S.input} type="date" value={d.date} onChange={e => updDeposit(idx, "date", e.target.value)} /></div>
             <div style={{ display: "flex", gap: "0.25rem" }}>
               <div style={{ flex: 1 }}>
-                <label style={S.label}>Monto (USD)</label>
+                <label style={S.label}>Monto ({form.currency || "USD"})</label>
                 <input style={S.input} type="number" value={d.amount} onChange={e => updDeposit(idx, "amount", e.target.value)} />
               </div>
               {(form.deposits || []).length > 1 && (
