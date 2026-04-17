@@ -350,7 +350,7 @@ export default function App() {
   const syncGmail = async () => {
     setSyncing(true); setSyncMsg(null); setRejectedInvs([]);
     try {
-      const res = await fetch('/api/fetch-gmail-invoices', { headers: { 'Authorization': 'Bearer vcr2026cron' } });
+      const res = await fetch('/api/fetch-gmail-invoices', { headers: { 'Authorization': 'Bearer 1197877f004f6b2937905d056c5bab5a6d8c0e914a570c02cc5dbf39cb5c207d' } });
       const data = await res.json();
       let msg = "Procesadas: " + (data.processed || 0) + ", Omitidas: " + (data.skipped || 0);
       if (data.rejected > 0) msg += ", Rechazadas: " + data.rejected;
