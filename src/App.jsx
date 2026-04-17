@@ -253,7 +253,7 @@ export default function App() {
       const soldPlates = data.filter(v => v.status === 'vendido').map(v => v.plate);
       let saleMap = {};
       if (soldPlates.length > 0) {
-        const { data: saleData } = await supabase.from('sales').select('vehicle_plate,client_name,client_cedula,client_phone1,client_email,client_address,sale_date,status').in('vehicle_plate', soldPlates).eq('status','approved');
+        const { data: saleData } = await supabase.from('sales').select('vehicle_plate,client_name,client_cedula,client_phone1,client_email,client_address,sale_date,status').in('vehicle_plate', soldPlates).eq('status','aprobada');
         (saleData || []).forEach(s => { saleMap[s.vehicle_plate] = s; });
       }
       setCars(data.map(v => {
@@ -731,7 +731,7 @@ export default function App() {
     const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
 
     const row = {
-      sale_date: saleForm.sale_date, status: "pending",
+      sale_date: saleForm.sale_date, status: "pendiente",
       client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
       client_email: saleForm.client_email, client_address: saleForm.client_address,
@@ -812,16 +812,16 @@ export default function App() {
   };
 
   const approveSale = async (id) => {
-    await supabase.from('sales').update({ status: "approved", approved_by: "admin", approved_at: new Date().toISOString() }).eq('id', id);
+    await supabase.from('sales').update({ status: "aprobada", approved_by: "admin", approved_at: new Date().toISOString() }).eq('id', id);
     await loadSales();
-    setPickedSale(prev => prev ? { ...prev, status: "approved" } : null);
+    setPickedSale(prev => prev ? { ...prev, status: "aprobada" } : null);
     setConfirmApprove(null);
   };
 
   const rejectSale = async (id, reason) => {
-    await supabase.from('sales').update({ status: "rejected", rejected_reason: reason || "Rechazada" }).eq('id', id);
+    await supabase.from('sales').update({ status: "rechazada", rejected_reason: reason || "Rechazada" }).eq('id', id);
     await loadSales();
-    setPickedSale(prev => prev ? { ...prev, status: "rejected" } : null);
+    setPickedSale(prev => prev ? { ...prev, status: "rechazada" } : null);
   };
 
   const editSale = (sale) => {
@@ -1114,7 +1114,7 @@ export default function App() {
   const getAgentCommissions = (agentId, month, year) => {
     // Returns { total_crc, missing_tc_count } - sum in colones, and count of sales without TC
     return sales.filter(s => {
-      if (s.status !== 'approved') return false;
+      if (s.status !== 'aprobada') return false;
       if (!s.sale_date) return false;
       const d = new Date(s.sale_date + 'T12:00:00');
       return d.getMonth() === month && d.getFullYear() === year;
@@ -2564,7 +2564,7 @@ export default function App() {
               <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Historial de compras</div>
               {pickedCli.bu.map((b,i)=><div key={i} style={{padding:"10px 14px",background:"#1e2130",borderRadius:8,marginBottom:6,display:"flex",justifyContent:"space-between",fontSize:12}}>
                 <div><div style={{fontWeight:600}}>{b.v}</div><div style={{color:"#8b8fa4",fontSize:11}}>{b.pl} · {b.d?new Date(b.d+"T12:00:00").toLocaleDateString("es-CR"):""}</div></div>
-                <div style={{textAlign:"right"}}><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(b.pr,"USD")}</span><div><span style={S.badge(b.st==="approved"?"#10b981":b.st==="rejected"?"#e11d48":"#f59e0b")}>{b.st==="approved"?"Aprobada":b.st==="rejected"?"Rechazada":"Pendiente"}</span></div></div>
+                <div style={{textAlign:"right"}}><span style={{fontWeight:700,color:"#4f8cff"}}>{fmt(b.pr,"USD")}</span><div><span style={S.badge(b.st==="aprobada"?"#10b981":b.st==="rechazada"?"#e11d48":"#f59e0b")}>{b.st==="aprobada"?"Aprobada":b.st==="rechazada"?"Rechazada":"Pendiente"}</span></div></div>
               </div>)}
             </div>}
           </>
@@ -2602,7 +2602,7 @@ export default function App() {
             <h1 style={{ fontSize: 24, fontWeight: 800 }}>Ventas</h1>
             <div style={{display:"flex",gap:8}}>
               <button onClick={()=>{
-                const rows = filteredSales.map(s=>({"#":s.sale_number,"Fecha":s.sale_date,"Estado":s.status==="approved"?"Aprobada":s.status==="rejected"?"Rechazada":"Pendiente","Cliente":s.client_name,"Cédula":s.client_cedula,"Teléfono":s.client_phone1,"Vehículo":`${s.vehicle_brand} ${s.vehicle_model} ${s.vehicle_year}`,"Placa":s.vehicle_plate,"Tipo":s.sale_type==="propio"?"Propio":s.sale_type==="consignacion_grupo"?"Consig. Grupo 1%":"Consig. Externa 5%","Precio USD":s.sale_price,"Trade-in":s.tradein_amount||0,"Prima":s.down_payment||0,"Depósitos":s.deposits_total||0,"Saldo":s.total_balance,"Método Pago":s.payment_method||"","Observaciones":s.observations||""}));
+                const rows = filteredSales.map(s=>({"#":s.sale_number,"Fecha":s.sale_date,"Estado":s.status==="aprobada"?"Aprobada":s.status==="rechazada"?"Rechazada":"Pendiente","Cliente":s.client_name,"Cédula":s.client_cedula,"Teléfono":s.client_phone1,"Vehículo":`${s.vehicle_brand} ${s.vehicle_model} ${s.vehicle_year}`,"Placa":s.vehicle_plate,"Tipo":s.sale_type==="propio"?"Propio":s.sale_type==="consignacion_grupo"?"Consig. Grupo 1%":"Consig. Externa 5%","Precio USD":s.sale_price,"Trade-in":s.tradein_amount||0,"Prima":s.down_payment||0,"Depósitos":s.deposits_total||0,"Saldo":s.total_balance,"Método Pago":s.payment_method||"","Observaciones":s.observations||""}));
                 exportXLS(rows,"Ventas_VCR");
               }} style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:600,padding:"10px 16px"}}>Exportar Excel</button>
               <button onClick={() => { setSaleForm(emptySaleForm()); setSalesView("form"); }} style={{ ...S.sel, background: "#4f8cff18", color: "#4f8cff", fontWeight: 600, padding: "10px 20px" }}>
@@ -2611,7 +2611,7 @@ export default function App() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-            {[["all", "Todas"], ["pending", "Pendientes"], ["approved", "Aprobadas"], ["rejected", "Rechazadas"]].map(([v, l]) => (
+            {[["all", "Todas"], ["pendiente", "Pendientes"], ["aprobada", "Aprobadas"], ["rechazada", "Rechazadas"]].map(([v, l]) => (
               <button key={v} onClick={() => setSaleFilter(v)} style={{ ...S.sel, background: saleFilter === v ? "#4f8cff20" : "#1e2130", color: saleFilter === v ? "#4f8cff" : "#8b8fa4", fontWeight: saleFilter === v ? 600 : 400 }}>
                 {l} ({sales.filter(s => v === "all" || s.status === v).length})
               </button>
@@ -2631,8 +2631,8 @@ export default function App() {
                       {" · "}{new Date(s.sale_date).toLocaleDateString("es-CR")}
                     </div>
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                      <span style={S.badge(s.status === "approved" ? "#10b981" : s.status === "rejected" ? "#e11d48" : "#f59e0b")}>
-                        {s.status === "approved" ? "Aprobada" : s.status === "rejected" ? "Rechazada" : "Pendiente"}
+                      <span style={S.badge(s.status === "aprobada" ? "#10b981" : s.status === "rechazada" ? "#e11d48" : "#f59e0b")}>
+                        {s.status === "aprobada" ? "Aprobada" : s.status === "rechazada" ? "Rechazada" : "Pendiente"}
                       </span>
                       <span style={S.badge(s.sale_type === "propio" ? "#6366f1" : s.sale_type === "consignacion_grupo" ? "#8b5cf6" : "#f97316")}>
                         {s.sale_type === "propio" ? "Propio" : s.sale_type === "consignacion_grupo" ? "Consig. Grupo 1%" : "Consig. Externa 5%"}
@@ -3344,8 +3344,8 @@ export default function App() {
                     <p style={{ fontSize: 12, color: "#8b8fa4" }}>{new Date(pickedSale.sale_date).toLocaleDateString("es-CR")}</p>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={S.badge(pickedSale.status === "approved" ? "#10b981" : pickedSale.status === "rejected" ? "#e11d48" : "#f59e0b")}>
-                      {pickedSale.status === "approved" ? "Aprobada" : pickedSale.status === "rejected" ? "Rechazada" : "Pendiente"}
+                    <span style={S.badge(pickedSale.status === "aprobada" ? "#10b981" : pickedSale.status === "rechazada" ? "#e11d48" : "#f59e0b")}>
+                      {pickedSale.status === "aprobada" ? "Aprobada" : pickedSale.status === "rechazada" ? "Rechazada" : "Pendiente"}
                     </span>
                     <button onClick={() => setPickedSale(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: 18 }}>✕</button>
                   </div>
@@ -3472,7 +3472,7 @@ export default function App() {
                 )}
 
                 {/* Approval buttons */}
-                {pickedSale.status === "pending" && (
+                {pickedSale.status === "pendiente" && (
                   <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
                     <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
                       style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
@@ -3488,7 +3488,7 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {pickedSale.status === "approved" && (
+                {pickedSale.status === "aprobada" && (
                   <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
                     <button onClick={() => editSale(pickedSale)}
                       style={{ ...S.sel, color: "#f59e0b", background: "#f59e0b10", fontWeight: 600, padding: "12px 24px" }}>
@@ -3516,7 +3516,7 @@ export default function App() {
                     </div>
                   </div>
                 )}
-                {pickedSale.status === "rejected" && pickedSale.rejected_reason && (
+                {pickedSale.status === "rechazada" && pickedSale.rejected_reason && (
                   <div style={{ marginTop: 12, padding: "10px 14px", background: "#e11d4810", borderRadius: 8, fontSize: 12, color: "#e11d48" }}>
                     Rechazada: {pickedSale.rejected_reason}
                   </div>
@@ -3549,8 +3549,8 @@ export default function App() {
                       <div style={{ fontSize: 16, fontWeight: 700, marginTop: 16, color: "#1a1a2e" }}>PLAN DE VENTAS #{s.sale_number}</div>
                       <div style={{ fontSize: 12, color: "#666" }}>Fecha: {new Date(s.sale_date).toLocaleDateString("es-CR", { day: "numeric", month: "long", year: "numeric" })}</div>
                       <div style={{ marginTop: 6 }}>
-                        <span style={{ display: "inline-block", background: s.status === "approved" ? "#10b981" : "#f59e0b", color: "#fff", padding: "3px 14px", borderRadius: 20, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>
-                          {s.status === "approved" ? "Aprobada" : s.status === "rejected" ? "Rechazada" : "Pendiente"}
+                        <span style={{ display: "inline-block", background: s.status === "aprobada" ? "#10b981" : "#f59e0b", color: "#fff", padding: "3px 14px", borderRadius: 20, fontSize: 11, fontWeight: 700, textTransform: "uppercase" }}>
+                          {s.status === "aprobada" ? "Aprobada" : s.status === "rechazada" ? "Rechazada" : "Pendiente"}
                         </span>
                       </div>
                     </div>
