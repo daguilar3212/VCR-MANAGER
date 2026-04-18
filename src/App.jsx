@@ -75,6 +75,28 @@ const suggestCabys = (style, cc) => {
 const DRIVETRAIN_OPTIONS = ["4x2", "4x4", "AWD"];
 const FUEL_OPTIONS = ["Gasolina", "Diesel", "Eléctrico", "Híbrido"];
 
+// Marcas comunes precargadas (se combinan con las aprendidas del inventario)
+const COMMON_BRANDS = [
+  "TOYOTA", "HYUNDAI", "KIA", "NISSAN", "HONDA", "MITSUBISHI", "SUZUKI",
+  "MAZDA", "FORD", "CHEVROLET", "VOLKSWAGEN", "BMW", "MERCEDES-BENZ",
+  "AUDI", "SUBARU", "JEEP", "ISUZU", "LAND ROVER", "LEXUS", "DAIHATSU"
+];
+
+// Formatea placa: MAYUSCULAS + guion entre letras y numeros
+// "dgh123" -> "DGH-123", "cl 5136416" -> "CL-5136416"
+// Si ya tiene el formato correcto o no lo reconoce, devuelve en mayuscula
+const formatPlate = (val) => {
+  if (!val) return "";
+  // Quitar espacios, guiones existentes, y poner en mayuscula
+  const clean = String(val).toUpperCase().replace(/[\s-]/g, "");
+  if (!clean) return "";
+  // Detectar patron letras + numeros
+  const match = clean.match(/^([A-Z]+)(\d+)$/);
+  if (match) return `${match[1]}-${match[2]}`;
+  // Patron mixto raro (ej: ABC123XYZ): no tocar, devolver en mayuscula sin guiones
+  return clean;
+};
+
 // Helper: valores unicos de un campo del inventario, ordenados alfabeticamente
 // Se usa para alimentar los datalist "learning" de marca/modelo/color/año
 const uniqueFromInventory = (cars, field) => {
@@ -83,7 +105,7 @@ const uniqueFromInventory = (cars, field) => {
   cars.forEach(c => {
     const val = c[field];
     if (val != null && String(val).trim() !== "") {
-      set.add(String(val).trim());
+      set.add(String(val).trim().toUpperCase());
     }
   });
   return Array.from(set).sort((a, b) => {
@@ -91,6 +113,13 @@ const uniqueFromInventory = (cars, field) => {
     if (field === "y" || field === "year") return Number(b) - Number(a);
     return a.localeCompare(b);
   });
+};
+
+// Combina COMMON_BRANDS con las marcas aprendidas del inventario, sin duplicados
+const brandOptions = (cars) => {
+  const learned = uniqueFromInventory(cars, "b");
+  const combined = new Set([...COMMON_BRANDS, ...learned]);
+  return Array.from(combined).sort();
 };
 
 const GROUPS = [
@@ -211,6 +240,74 @@ const supDisplay = (inv) => {
   if (inv.supName && inv.supName !== "NoAplica" && inv.supName.trim() !== "") return inv.supName;
   if (inv.supComm && inv.supComm !== "NoAplica" && inv.supComm.trim() !== "") return inv.supComm;
   return inv.supId || "Sin nombre";
+};
+
+// Componente reutilizable: dropdown con opciones aprendidas + "Otro" para escribir nueva
+// Props:
+// - value: valor actual (string)
+// - onChange: (newValue) => void
+// - options: array de strings con las opciones conocidas
+// - placeholder: texto del option vacio (default "Seleccionar")
+// - upperCase: si true, fuerza MAYUSCULAS al escribir en el input "Otro"
+// - style: estilos adicionales
+// - styleInp: estilos del input "Otro" (por si es distinto del select)
+const SmartDropdown = ({ value, onChange, options = [], placeholder = "Seleccionar", upperCase = false, style = {}, styleInp = null }) => {
+  const v = value || "";
+  // Si el valor actual NO esta en las opciones conocidas, significa que es "Otro"
+  const isOther = v !== "" && !options.includes(v);
+  const [customMode, setCustomMode] = useState(isOther);
+
+  // Si el value cambia externamente y ahora esta en options, salir de custom mode
+  useEffect(() => {
+    if (v && options.includes(v)) setCustomMode(false);
+    else if (v && !options.includes(v)) setCustomMode(true);
+  }, [v, options]);
+
+  const handleSelectChange = (e) => {
+    const val = e.target.value;
+    if (val === "__OTRO__") {
+      setCustomMode(true);
+      onChange("");
+    } else {
+      setCustomMode(false);
+      onChange(val);
+    }
+  };
+
+  const handleCustomChange = (e) => {
+    const val = upperCase ? e.target.value.toUpperCase() : e.target.value;
+    onChange(val);
+  };
+
+  if (customMode) {
+    return (
+      <div style={{display:"flex",gap:4,alignItems:"center"}}>
+        <input
+          value={v}
+          onChange={handleCustomChange}
+          placeholder="Escribir nueva..."
+          style={{...(styleInp || style), flex:1}}
+          autoFocus
+        />
+        <button
+          type="button"
+          onClick={() => { setCustomMode(false); onChange(""); }}
+          style={{background:"#1e2130",border:"1px solid #2a2d3d",borderRadius:6,padding:"4px 8px",color:"#8b8fa4",cursor:"pointer",fontSize:11}}
+          title="Volver al dropdown"
+        >
+          ↩
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <select value={v} onChange={handleSelectChange} style={style}>
+      <option value="">{placeholder}</option>
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
+      <option value="__OTRO__">➕ Otro (escribir nuevo)</option>
+    </select>
+  );
 };
 
 export default function App() {
@@ -2402,15 +2499,31 @@ export default function App() {
 
         {editingVehicle ? (
           <div>
-            <datalist id="dl-brands">{uniqueFromInventory(cars, "b").map(v => <option key={v} value={v} />)}</datalist>
-            <datalist id="dl-models">{uniqueFromInventory(cars, "m").map(v => <option key={v} value={v} />)}</datalist>
             <datalist id="dl-colors">{uniqueFromInventory(cars, "co").map(v => <option key={v} value={v} />)}</datalist>
             <datalist id="dl-years">{uniqueFromInventory(cars, "y").map(v => <option key={v} value={v} />)}</datalist>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px",marginBottom:14}}>
-              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div><input list="dl-brands" value={editingVehicle.brand||""} onChange={e=>setEditingVehicle(prev=>({...prev,brand:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div><input list="dl-models" value={editingVehicle.model||""} onChange={e=>setEditingVehicle(prev=>({...prev,model:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div>
+                <SmartDropdown
+                  value={editingVehicle.brand||""}
+                  onChange={val => setEditingVehicle(prev => ({...prev, brand: val}))}
+                  options={brandOptions(cars)}
+                  upperCase={true}
+                  style={{...S.sel,width:"100%",fontSize:12}}
+                  styleInp={{...S.inp,width:"100%",fontSize:12}}
+                />
+              </div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div>
+                <SmartDropdown
+                  value={editingVehicle.model||""}
+                  onChange={val => setEditingVehicle(prev => ({...prev, model: val}))}
+                  options={uniqueFromInventory(cars, "m")}
+                  upperCase={true}
+                  style={{...S.sel,width:"100%",fontSize:12}}
+                  styleInp={{...S.inp,width:"100%",fontSize:12}}
+                />
+              </div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Año</div><input list="dl-years" type="number" value={editingVehicle.year||""} onChange={e=>setEditingVehicle(prev=>({...prev,year:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={editingVehicle.color||""} onChange={e=>setEditingVehicle(prev=>({...prev,color:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={editingVehicle.color||""} onChange={e=>setEditingVehicle(prev=>({...prev,color:e.target.value.toUpperCase()}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div><input type="number" value={editingVehicle.km||""} onChange={e=>setEditingVehicle(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div><select value={editingVehicle.drive||editingVehicle.drivetrain||""} onChange={e=>setEditingVehicle(prev=>({...prev,drive:e.target.value,drivetrain:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={editingVehicle.fuel||""} onChange={e=>setEditingVehicle(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
@@ -2465,16 +2578,32 @@ export default function App() {
 
       {showAddVehicle&&newVehicleForm&&(<div style={S.modal} onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}}><div style={{...S.mbox,maxWidth:600}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h3 style={{fontSize:18,fontWeight:800,margin:0}}>Agregar Vehículo</h3><button onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button></div>
-        <datalist id="dl-brands">{uniqueFromInventory(cars, "b").map(v => <option key={v} value={v} />)}</datalist>
-        <datalist id="dl-models">{uniqueFromInventory(cars, "m").map(v => <option key={v} value={v} />)}</datalist>
         <datalist id="dl-colors">{uniqueFromInventory(cars, "co").map(v => <option key={v} value={v} />)}</datalist>
         <datalist id="dl-years">{uniqueFromInventory(cars, "y").map(v => <option key={v} value={v} />)}</datalist>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Placa *</div><input value={newVehicleForm.plate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,plate:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div><input list="dl-brands" value={newVehicleForm.brand||""} onChange={e=>setNewVehicleForm(prev=>({...prev,brand:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div><input list="dl-models" value={newVehicleForm.model||""} onChange={e=>setNewVehicleForm(prev=>({...prev,model:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Placa *</div><input value={newVehicleForm.plate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,plate:e.target.value.toUpperCase()}))} onBlur={e=>setNewVehicleForm(prev=>({...prev,plate:formatPlate(e.target.value)}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div>
+            <SmartDropdown
+              value={newVehicleForm.brand||""}
+              onChange={val => setNewVehicleForm(prev => ({...prev, brand: val}))}
+              options={brandOptions(cars)}
+              upperCase={true}
+              style={{...S.sel,width:"100%",fontSize:12}}
+              styleInp={{...S.inp,width:"100%",fontSize:12}}
+            />
+          </div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div>
+            <SmartDropdown
+              value={newVehicleForm.model||""}
+              onChange={val => setNewVehicleForm(prev => ({...prev, model: val}))}
+              options={uniqueFromInventory(cars, "m")}
+              upperCase={true}
+              style={{...S.sel,width:"100%",fontSize:12}}
+              styleInp={{...S.inp,width:"100%",fontSize:12}}
+            />
+          </div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Año</div><input list="dl-years" type="number" value={newVehicleForm.year||""} onChange={e=>setNewVehicleForm(prev=>({...prev,year:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={newVehicleForm.color||""} onChange={e=>setNewVehicleForm(prev=>({...prev,color:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={newVehicleForm.color||""} onChange={e=>setNewVehicleForm(prev=>({...prev,color:e.target.value.toUpperCase()}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div><input type="number" value={newVehicleForm.km||""} onChange={e=>setNewVehicleForm(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div><select value={newVehicleForm.drive||""} onChange={e=>setNewVehicleForm(prev=>({...prev,drive:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={newVehicleForm.fuel||""} onChange={e=>setNewVehicleForm(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
@@ -2922,7 +3051,22 @@ export default function App() {
             {(opts.options || []).map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
           </select>
         ) : (
-          <input list={opts.list || undefined} value={F[key] || ""} onChange={e => { uf(key, e.target.value); if (opts.onChange) opts.onChange(e.target.value); }} placeholder={opts.ph || ""} type={opts.inputType || "text"} style={{ ...S.inp, width: "100%" }} />
+          <input
+            list={opts.list || undefined}
+            value={F[key] || ""}
+            onChange={e => {
+              const val = opts.upperCase ? e.target.value.toUpperCase() : e.target.value;
+              uf(key, val);
+              if (opts.onChange) opts.onChange(val);
+            }}
+            onBlur={opts.onBlur ? e => {
+              const val = opts.onBlur(e.target.value);
+              if (val !== undefined) uf(key, val);
+            } : undefined}
+            placeholder={opts.ph || ""}
+            type={opts.inputType || "text"}
+            style={{ ...S.inp, width: "100%" }}
+          />
         )}
       </div>
     );
@@ -3015,8 +3159,6 @@ export default function App() {
           {/* VEHICLE BEING SOLD */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Vehículo que Compra</div>
-            <datalist id="dl-sale-brands">{uniqueFromInventory(cars, "b").map(v => <option key={v} value={v} />)}</datalist>
-            <datalist id="dl-sale-models">{uniqueFromInventory(cars, "m").map(v => <option key={v} value={v} />)}</datalist>
             <datalist id="dl-sale-colors">{uniqueFromInventory(cars, "co").map(v => <option key={v} value={v} />)}</datalist>
             <datalist id="dl-sale-years">{uniqueFromInventory(cars, "y").map(v => <option key={v} value={v} />)}</datalist>
             <div style={{ marginBottom: 10 }}>
@@ -3028,12 +3170,32 @@ export default function App() {
               </select>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
-              {fld("Placa", "vehicle_plate")}
-              {fld("Marca", "vehicle_brand", { list: "dl-sale-brands" })}
-              {fld("Modelo", "vehicle_model", { list: "dl-sale-models" })}
+              {fld("Placa", "vehicle_plate", { upperCase: true, onBlur: formatPlate })}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Marca</div>
+                <SmartDropdown
+                  value={F.vehicle_brand||""}
+                  onChange={val => uf("vehicle_brand", val)}
+                  options={brandOptions(cars)}
+                  upperCase={true}
+                  style={{...S.sel, width: "100%"}}
+                  styleInp={{...S.inp, width: "100%"}}
+                />
+              </div>
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Modelo</div>
+                <SmartDropdown
+                  value={F.vehicle_model||""}
+                  onChange={val => uf("vehicle_model", val)}
+                  options={uniqueFromInventory(cars, "m")}
+                  upperCase={true}
+                  style={{...S.sel, width: "100%"}}
+                  styleInp={{...S.inp, width: "100%"}}
+                />
+              </div>
               {fld("Estilo", "vehicle_style", { type: "select", options: [{v:"SUV",l:"SUV"},{v:"SEDAN",l:"SEDAN"},{v:"PICK UP",l:"PICK UP"},{v:"HATCHBACK",l:"HATCHBACK"},{v:"COUPE",l:"COUPE"},{v:"FAMILIAR",l:"FAMILIAR"},{v:"TODOTERRENO",l:"TODOTERRENO"},{v:"MICROBUS",l:"MICROBUS"}] })}
               {fld("Año", "vehicle_year", { inputType: "number", list: "dl-sale-years" })}
-              {fld("Color", "vehicle_color", { list: "dl-sale-colors" })}
+              {fld("Color", "vehicle_color", { list: "dl-sale-colors", upperCase: true })}
               {fld("Kilometraje", "vehicle_km", { inputType: "number" })}
               {fld("Tracción", "vehicle_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
               {fld("Combustible", "vehicle_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
@@ -3071,14 +3233,34 @@ export default function App() {
             </div>
             {F.has_tradein && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
-                {fld("Placa", "tradein_plate")}
-                {fld("Marca", "tradein_brand")}
-                {fld("Estilo / Modelo", "tradein_model")}
+                {fld("Placa", "tradein_plate", { upperCase: true, onBlur: formatPlate })}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Marca</div>
+                  <SmartDropdown
+                    value={F.tradein_brand||""}
+                    onChange={val => uf("tradein_brand", val)}
+                    options={brandOptions(cars)}
+                    upperCase={true}
+                    style={{...S.sel, width: "100%"}}
+                    styleInp={{...S.inp, width: "100%"}}
+                  />
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Modelo</div>
+                  <SmartDropdown
+                    value={F.tradein_model||""}
+                    onChange={val => uf("tradein_model", val)}
+                    options={uniqueFromInventory(cars, "m")}
+                    upperCase={true}
+                    style={{...S.sel, width: "100%"}}
+                    styleInp={{...S.inp, width: "100%"}}
+                  />
+                </div>
                 {fld("Año", "tradein_year", { inputType: "number" })}
-                {fld("Color", "tradein_color")}
+                {fld("Color", "tradein_color", { upperCase: true })}
                 {fld("Kilometraje", "tradein_km", { inputType: "number" })}
-                {fld("Tracción", "tradein_drive")}
-                {fld("Combustible", "tradein_fuel")}
+                {fld("Tracción", "tradein_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
+                {fld("Combustible", "tradein_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
                 {fld("Valor del trade-in ($)", "tradein_value", { inputType: "number" })}
               </div>
             )}
@@ -3789,19 +3971,85 @@ export default function App() {
                           </div>
                         )}
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
-                          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Cilindrada (CC)","engine_cc"],["# Pasajeros","passengers"],["Serie/Chasis","chassis"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
-                            <div key={k}>
-                              <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
-                              <input value={vehicleForm[k]||""} onChange={e=>{
-                                const val = e.target.value;
-                                setVehicleForm(prev => {
-                                  const next = {...prev, [k]: val};
-                                  if (k === "style") next.cabys_code = suggestCabys(val) || prev.cabys_code;
-                                  return next;
-                                });
-                              }} style={{...S.inp,width:"100%",fontSize:12}} />
-                            </div>
-                          ))}
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Placa *</div>
+                            <input value={vehicleForm.plate||""}
+                              onChange={e=>setVehicleForm(prev=>({...prev,plate:e.target.value.toUpperCase()}))}
+                              onBlur={e=>setVehicleForm(prev=>({...prev,plate:formatPlate(e.target.value)}))}
+                              style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div>
+                            <SmartDropdown
+                              value={vehicleForm.brand||""}
+                              onChange={val => setVehicleForm(prev => ({...prev, brand: val}))}
+                              options={brandOptions(cars)}
+                              upperCase={true}
+                              style={{...S.sel,width:"100%",fontSize:12}}
+                              styleInp={{...S.inp,width:"100%",fontSize:12}}
+                            />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div>
+                            <SmartDropdown
+                              value={vehicleForm.model||""}
+                              onChange={val => setVehicleForm(prev => ({...prev, model: val}))}
+                              options={uniqueFromInventory(cars, "m")}
+                              upperCase={true}
+                              style={{...S.sel,width:"100%",fontSize:12}}
+                              styleInp={{...S.inp,width:"100%",fontSize:12}}
+                            />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Año</div>
+                            <input type="number" value={vehicleForm.year||""} onChange={e=>setVehicleForm(prev=>({...prev,year:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div>
+                            <input value={vehicleForm.color||""} onChange={e=>setVehicleForm(prev=>({...prev,color:e.target.value.toUpperCase()}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div>
+                            <input type="number" value={vehicleForm.km||""} onChange={e=>setVehicleForm(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div>
+                            <select value={vehicleForm.style||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
+                              <option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div>
+                            <select value={vehicleForm.drive||""} onChange={e=>setVehicleForm(prev=>({...prev,drive:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
+                              <option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div>
+                            <select value={vehicleForm.fuel||""} onChange={e=>setVehicleForm(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
+                              <option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div>
+                            <input type="number" value={vehicleForm.engine_cc||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Pasajeros</div>
+                            <input type="number" value={vehicleForm.passengers||""} onChange={e=>setVehicleForm(prev=>({...prev,passengers:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Serie/Chasis</div>
+                            <input value={vehicleForm.chassis||""} onChange={e=>setVehicleForm(prev=>({...prev,chassis:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta USD</div>
+                            <input type="number" value={vehicleForm.price_usd||""} onChange={e=>setVehicleForm(prev=>({...prev,price_usd:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
+                          <div>
+                            <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta CRC</div>
+                            <input type="number" value={vehicleForm.price_crc||""} onChange={e=>setVehicleForm(prev=>({...prev,price_crc:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
+                          </div>
                           <div style={{gridColumn:"1/3"}}>
                             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div>
                             <select value={vehicleForm.cabys_code||""} onChange={e=>setVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
