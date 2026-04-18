@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { supabase } from './supabase.js';
 import * as XLSX from 'xlsx';
 
@@ -310,6 +310,123 @@ const SmartDropdown = ({ value, onChange, options = [], placeholder = "Seleccion
   );
 };
 
+// Canvas para capturar firma con dedo/mouse
+// Props:
+// - onSave(dataURL): se llama cuando clickean "Guardar firma"
+// - onCancel(): se llama cuando cierran sin guardar
+// - existingSignature: si ya habia firma, la muestra al abrir
+const SignaturePad = ({ onSave, onCancel, existingSignature }) => {
+  const canvasRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasDrawn, setHasDrawn] = useState(!!existingSignature);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    // Ajustar resolucion del canvas para que la firma no se vea pixelada
+    const ratio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * ratio;
+    canvas.height = rect.height * ratio;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(ratio, ratio);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#111";
+
+    // Si hay firma previa, dibujarla
+    if (existingSignature) {
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, rect.width, rect.height);
+      img.src = existingSignature;
+    }
+  }, [existingSignature]);
+
+  const getPos = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    if (e.touches && e.touches[0]) {
+      return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+    }
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const start = (e) => {
+    e.preventDefault();
+    setIsDrawing(true);
+    const { x, y } = getPos(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+
+  const draw = (e) => {
+    if (!isDrawing) return;
+    e.preventDefault();
+    const { x, y } = getPos(e);
+    const ctx = canvasRef.current.getContext("2d");
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    setHasDrawn(true);
+  };
+
+  const end = () => setIsDrawing(false);
+
+  const clear = () => {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    setHasDrawn(false);
+  };
+
+  const save = () => {
+    if (!hasDrawn) {
+      alert("Por favor firmá antes de guardar.");
+      return;
+    }
+    const dataURL = canvasRef.current.toDataURL("image/png");
+    onSave(dataURL);
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,maxWidth:600,width:"100%"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <h3 style={{fontSize:18,fontWeight:700,margin:0,color:"#111"}}>Firma del Cliente</h3>
+          <button onClick={onCancel} style={{background:"none",border:"none",cursor:"pointer",color:"#666",fontSize:20}}>✕</button>
+        </div>
+        <p style={{fontSize:12,color:"#666",marginBottom:10}}>
+          Firme en el recuadro con el dedo (móvil) o mouse (computadora).
+        </p>
+        <div style={{border:"2px dashed #ccc",borderRadius:10,background:"#fafafa",touchAction:"none"}}>
+          <canvas
+            ref={canvasRef}
+            style={{width:"100%",height:220,cursor:"crosshair",display:"block"}}
+            onMouseDown={start}
+            onMouseMove={draw}
+            onMouseUp={end}
+            onMouseLeave={end}
+            onTouchStart={start}
+            onTouchMove={draw}
+            onTouchEnd={end}
+          />
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+          <button onClick={clear} style={{background:"#f3f4f6",color:"#111",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 16px",cursor:"pointer",fontSize:13,fontWeight:500}}>
+            Limpiar
+          </button>
+          <button onClick={onCancel} style={{background:"#f3f4f6",color:"#111",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 16px",cursor:"pointer",fontSize:13,fontWeight:500}}>
+            Cancelar
+          </button>
+          <button onClick={save} style={{background:"#10b981",color:"#fff",border:"none",borderRadius:8,padding:"8px 24px",cursor:"pointer",fontSize:13,fontWeight:600}}>
+            Guardar firma
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export default function App() {
   const [tab, setTab] = useState("Dashboard");
   const [q, setQ] = useState("");
@@ -350,6 +467,7 @@ export default function App() {
   const [agents, setAgents] = useState([]);
   const [salesView, setSalesView] = useState("list"); // list, form, preview
   const [searchingClient, setSearchingClient] = useState(false);
+  const [showSignatureModal, setShowSignatureModal] = useState(false);
   const [saleForm, setSaleForm] = useState(null);
   const [pickedSale, setPickedSale] = useState(null);
   const [saleFilter, setSaleFilter] = useState("all");
@@ -971,6 +1089,7 @@ export default function App() {
     has_insurance: false, insurance_months: "",
     observations: "",
     agent1_id: "", agent2_id: "",
+    client_signature: null, signed_at: null,
   });
 
   const selectVehicleForSale = (plate) => {
@@ -1227,6 +1346,8 @@ export default function App() {
       has_insurance: saleForm.has_insurance,
       insurance_months: parseInt(saleForm.insurance_months) || null,
       observations: saleForm.observations || generateObservations(saleForm),
+      client_signature: saleForm.client_signature || null,
+      signed_at: saleForm.signed_at || null,
     };
 
     const { data, error } = await supabase.from('sales').insert(row).select().single();
@@ -1313,6 +1434,8 @@ export default function App() {
       observations: sale.observations || "",
       agent1_id: (sale.sale_agents && sale.sale_agents[0]) ? sale.sale_agents[0].agent_id : "",
       agent2_id: (sale.sale_agents && sale.sale_agents[1]) ? sale.sale_agents[1].agent_id : "",
+      client_signature: sale.client_signature || null,
+      signed_at: sale.signed_at || null,
     });
     setPickedSale(null);
     setSalesView("form");
@@ -1380,6 +1503,8 @@ export default function App() {
       transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
       has_insurance: saleForm.has_insurance, insurance_months: parseInt(saleForm.insurance_months) || null,
       observations: saleForm.observations || generateObservations(saleForm),
+      client_signature: saleForm.client_signature || null,
+      signed_at: saleForm.signed_at || null,
     };
     const { error } = await supabase.from('sales').update(row).eq('id', editingSaleId);
     if (error) { alert("Error: " + error.message); return; }
@@ -3660,6 +3785,50 @@ export default function App() {
               style={{ ...S.inp, width: "100%", resize: "vertical", fontFamily: "inherit" }} placeholder="Haga clic en 'Auto-generar' o escriba manualmente..." />
           </div>
 
+          {/* FIRMA DEL CLIENTE */}
+          <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#4f8cff" }}>Firma del Cliente (opcional)</div>
+              {F.client_signature && (
+                <span style={{ fontSize: 11, color: "#10b981", background: "#10b98118", padding: "4px 10px", borderRadius: 8 }}>
+                  ✓ Firmado {F.signed_at ? `el ${new Date(F.signed_at).toLocaleDateString("es-CR")}` : ""}
+                </span>
+              )}
+            </div>
+            {F.client_signature ? (
+              <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                <div style={{ background: "#fff", borderRadius: 8, padding: 8, border: "1px solid #2a2d3d" }}>
+                  <img src={F.client_signature} alt="Firma" style={{ height: 80, display: "block" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <button onClick={() => setShowSignatureModal(true)} style={{ ...S.sel, background: "#4f8cff18", color: "#4f8cff", fontWeight: 600, fontSize: 12 }}>
+                    ✍️ Volver a firmar
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (window.confirm("¿Borrar la firma actual?")) {
+                        uf("client_signature", null);
+                        uf("signed_at", null);
+                      }
+                    }}
+                    style={{ ...S.sel, background: "#e11d4818", color: "#e11d48", fontWeight: 500, fontSize: 12 }}
+                  >
+                    Borrar firma
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <p style={{ fontSize: 12, color: "#8b8fa4", marginBottom: 10 }}>
+                  Pedile al cliente que firme para dejar constancia de que vio y aceptó el plan. No es obligatorio para enviar.
+                </p>
+                <button onClick={() => setShowSignatureModal(true)} style={{ ...S.sel, background: "#10b98118", color: "#10b981", fontWeight: 600, padding: "10px 18px" }}>
+                  ✍️ Capturar firma del cliente
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* SUBMIT */}
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
             <button onClick={() => { setSalesView("list"); setSaleForm(null); setEditingSaleId(null); }} style={{ ...S.sel, color: "#8b8fa4", padding: "12px 24px" }}>Cancelar</button>
@@ -3667,6 +3836,22 @@ export default function App() {
               {editingSaleId ? "Guardar Correcciones" : "Enviar para Aprobación"}
             </button>
           </div>
+
+          {/* Modal de firma */}
+          {showSignatureModal && (
+            <SignaturePad
+              existingSignature={F.client_signature}
+              onCancel={() => setShowSignatureModal(false)}
+              onSave={(dataURL) => {
+                setSaleForm(prev => ({
+                  ...prev,
+                  client_signature: dataURL,
+                  signed_at: new Date().toISOString(),
+                }));
+                setShowSignatureModal(false);
+              }}
+            />
+          )}
         </div>
       );
     }
