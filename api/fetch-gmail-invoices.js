@@ -171,26 +171,24 @@ const ALEGRA_MAP = {
   otro:              {name:null, aid:null},
 };
 
-// Cedulas de proveedores con clasificacion deterministica (100% de sus facturas van a esta categoria)
+// Cedulas de proveedores con clasificacion deterministica
 const SUPPLIER_ID_CATEGORY = {
-  "4000042138": "agua",              // AyA
-  "3101000046": "electricidad",      // CNFL
-  "116050012":  "intereses_daniel",  // Daniel Aguilar
-  "400880609":  "intereses_sonia",   // Sonia Azofeifa
-  "3101412271": "gastos_viaje",      // Hotel Real de Pinilla (y hoteles similares por keywords)
-  "3101460251": "uniformes",         // Tejidos ROPS
-  "3101708345": "ferias",            // Serviautos del Norte (mercadeo)
+  "4000042138": "agua",
+  "3101000046": "electricidad",
+  "116050012":  "intereses_daniel",
+  "400880609":  "intereses_sonia",
+  "3101412271": "gastos_viaje",
+  "3101460251": "uniformes",
+  "3101708345": "ferias",
 };
 
-// Sub-clasificacion por keywords cuando el proveedor es INS (4000001902)
 function classifyINS(desc) {
   const d = (desc || "").toLowerCase();
   if (/licencia/i.test(d)) return "seguro_licencias";
   if (/riesgo.*trabajo|riesgos.*laborales/i.test(d)) return "riesgos_trabajo";
-  return "seguros"; // default INS: seguro de vehiculos
+  return "seguros";
 }
 
-// Sub-clasificacion de impuestos por keywords
 function classifyImpuestos(desc) {
   const d = (desc || "").toLowerCase();
   if (/patente.*municipal|licencia.*comercial/i.test(d)) return "patentes_mun";
@@ -198,63 +196,41 @@ function classifyImpuestos(desc) {
   if (/timbre.*educaci|educaci[oó]n.*cultura/i.test(d)) return "timbre_edu";
   if (/personas.*jur[ií]dicas|impuesto.*persona.*jur/i.test(d)) return "imp_pers_jur";
   if (/iva.*soportado|iva.*soportada/i.test(d)) return "iva_soportado";
-  return null; // Si no reconoce subtipo, queda sin clasificar
+  return null;
 }
 
 function classifyByDescription(desc) {
   const d = (desc || "").toLowerCase();
-  // Combustibles
   if (/gasolina|di[eé]sel|gas[oó]leo|combustible|queroseno|nafta|bunker|fuel|lubricant|aceite.*motor|grasa.*lubric/i.test(d)) return "combustible";
-  // Reparaciones
   if (/reparaci[oó]n|mantenimiento.*veh|mantenimiento.*auto|mantenimiento.*moto|taller|mec[aá]nic|mufla|transmisi[oó]n|suspensi[oó]n|alineamiento|balanceo|repuesto|neum[aá]tic|llanta|bater[ií]a|pintura.*auto|latoner[ií]a|enderezad|escape|radiador|embrague|amortiguador|buj[ií]a|filtro.*aceite|filtro.*aire|pastilla.*freno|disco.*freno|remolque|gr[uú]a|servicio.*transporte|c[aá]mara.*revers|parlante/i.test(d)) return "rep_vehiculos";
-  // Lavado
   if (/lavado|car.*wash|limpieza.*veh|encerado|pulido/i.test(d)) return "lavado";
-  // Herramientas/ferretería
   if (/ferreter[ií]a|tornillo|clavo|herramienta|llave.*mec|destornillador|broca|sierra|taladro|soldadura/i.test(d)) return "herramientas";
-  // Restaurantes/comidas -> viaticos
   if (/comida|restaurante|suministro.*comida|servicio.*mesa|cafeter[ií]a|alimento.*preparado|pizza|hamburguesa|pollo.*prepar|sushi|ramen|poke|bebida|cerveza|licor|bar\s|soda\s|gallo.*pinto|casado|carne|mariscos|almuerzo|desayuno|cena/i.test(d)) return "viaticos_emp";
-  // Hoteles -> gastos de viaje
   if (/hotel|hospedaje|alojamiento|hostal|posada/i.test(d)) return "gastos_viaje";
-  // Uniformes
   if (/uniforme|camisa.*empresa|camiseta.*logo|gorra.*empresa/i.test(d)) return "uniformes";
-  // Seguros
   if (/seguro.*licencia/i.test(d)) return "seguro_licencias";
   if (/riesgo.*trabajo|riesgos.*laborales/i.test(d)) return "riesgos_trabajo";
   if (/seguro|p[oó]liza|prima.*seguro|asegurad|reaseguro/i.test(d)) return "seguros";
-  // Alquiler
   if (/alquiler|arrendamiento|renta.*inmueble|renta.*local|renta.*oficina|administraci[oó]n.*inmueble/i.test(d)) return "alquiler";
-  // Servicios publicos separados (prioridad agua > luz > internet > telefono)
   if (/agua.*potable|acueducto|alcantarillado/i.test(d)) return "agua";
   if (/electricidad|el[eé]ctric|energ[ií]a.*el[eé]ctric/i.test(d)) return "electricidad";
   if (/internet|banda.*ancha|cable.*tv|televisi[oó]n.*cable|fibra.*[oó]ptica/i.test(d)) return "internet_cable";
   if (/tel[eé]fono|telefon[ií]a|celular|l[ií]nea.*m[oó]vil/i.test(d)) return "serv_publicos";
-  // Oficina
   if (/papel|papeler[ií]a|toner|tinta.*impresor|impresora|sobre.*carta|folder|grapas|l[aá]piz|bol[ií]grafo|cuaderno|tarjeta.*presentaci/i.test(d)) return "oficina";
-  // Servicios profesionales
   if (/abogad|notari|contador|contadora|auditor[ií]a|consultor[ií]a|asesor[ií]a|legal|jur[ií]dic|honorarios.*prof|servicio.*contab/i.test(d)) return "serv_prof";
-  // Mantenimiento edificios
   if (/mantenimiento.*edifici|plomer[ií]a|fontaner|electricista.*instal|aire.*acondicionado|construcci[oó]n|remodelaci[oó]n|ba[nñ]o|pintura.*pared|pintura.*local/i.test(d)) return "mantenimiento";
-  // Mantenimiento maquinaria (distinto a vehiculos)
   if (/mantenimiento.*maquinaria|mantenimiento.*equipo.*pesado|reparaci[oó]n.*maquinaria/i.test(d)) return "mant_maquinaria";
-  // Publicidad vs Ferias
   if (/feria|exhibici[oó]n|mercadeo.*evento|stand.*publicit/i.test(d)) return "ferias";
   if (/publicidad|marketing|dise[ñn]o.*gr[aá]fico|anuncio|promoci[oó]n|redes.*sociales|impresi[oó]n.*publicit/i.test(d)) return "representacion";
-  // Impuestos - usamos la sub-clasificacion
   const impSub = classifyImpuestos(d);
   if (impSub) return impSub;
-  // Marchamos / traspasos
   if (/marchamo|derecho.*circulaci|riteve|revisi[oó]n.*t[eé]cnica/i.test(d)) return "marchamo";
   if (/traspaso|registro.*nacional|inscripci[oó]n.*veh|derechos.*registro/i.test(d)) return "traspaso";
-  // Financieros
   if (/comisi[oó]n.*bancari|cargo.*bancari|servicio.*bancari/i.test(d)) return "com_bancarias";
   if (/inter[eé]s.*financier|inter[eé]s.*pr[eé]stamo|inter[eé]s.*cr[eé]dito/i.test(d)) return "intereses";
-  // Mensajeria
   if (/mensajer[ií]a|env[ií]o|courier|paqueter[ií]a|encomienda/i.test(d)) return "mensajeria";
-  // Aseo
   if (/aseo|limpieza.*local|limpieza.*oficina|desinfec|biodegradable/i.test(d)) return "aseo";
-  // Suscripciones
   if (/cuota|suscripci[oó]n|membres[ií]a|licencia.*software/i.test(d)) return "cuotas_susc";
-  // Default
   return "otro";
 }
 
@@ -269,28 +245,6 @@ function findAttachments(parts, result = []) {
     }
   }
   return result;
-}
-
-// Sube un PDF a Supabase Storage y retorna el path
-async function uploadPdfToStorage(supabase, pdfBuffer, xmlKey) {
-  try {
-    // Usa la clave XML (unica) como nombre de archivo
-    const filename = `${xmlKey}.pdf`;
-    const { data, error } = await supabase.storage
-      .from('invoice-pdfs')
-      .upload(filename, pdfBuffer, {
-        contentType: 'application/pdf',
-        upsert: true, // Si ya existe, lo reemplaza
-      });
-    if (error) {
-      console.error('PDF upload error:', error);
-      return null;
-    }
-    return filename;
-  } catch (err) {
-    console.error('PDF upload exception:', err);
-    return null;
-  }
 }
 
 export default async function handler(req, res) {
@@ -313,7 +267,6 @@ export default async function handler(req, res) {
       sinceEpoch = Math.floor(since.getTime() / 1000);
     }
 
-    // Buscar correos con XML (los PDFs vienen en el mismo correo)
     const query = `has:attachment filename:xml after:${sinceEpoch}`;
     let allMessages = [];
     let pageToken = null;
@@ -335,7 +288,6 @@ export default async function handler(req, res) {
     const VALID_RECEPTOR_IDS = ['3101124464'];
     const VALID_RECEPTOR_NAMES = ['vehiculos de costa rica', 'vehiculos de cr'];
 
-    // Cargar provider_mapping una sola vez
     const { data: providerMappings } = await supabase.from('provider_mapping').select('*');
     const provMap = {};
     if (providerMappings) {
@@ -345,7 +297,6 @@ export default async function handler(req, res) {
     let processed = 0;
     let skipped = 0;
     let rejected = 0;
-    let pdfsUploaded = 0;
     const rejectedList = [];
     const errors = [];
 
@@ -379,7 +330,6 @@ export default async function handler(req, res) {
           const parsed = parseXMLServer(xmlContent);
           if (!parsed.xml_key) continue;
 
-          // Validar receptor
           const receptorBlock = (xmlContent.match(/<(?:[\w]+:)?Receptor[\s\S]*?<\/(?:[\w]+:)?Receptor>/i) || [""])[0];
           const recIdBlock = (receptorBlock.match(/<(?:[\w]+:)?Identificacion[\s\S]*?<\/(?:[\w]+:)?Identificacion>/i) || [""])[0];
           const recId = (recIdBlock.match(/<(?:[\w]+:)?Numero[^>]*>([\s\S]*?)<\/(?:[\w]+:)?Numero>/i) || ["",""])[1].trim();
@@ -406,26 +356,22 @@ export default async function handler(req, res) {
           const { data: existingInv } = await supabase.from('invoices').select('id').eq('xml_key', parsed.xml_key).limit(1);
           if (existingInv && existingInv.length > 0) continue;
 
-          // === CLASIFICACION MULTI-NIVEL ===
           let catId = "otro";
           let groupId = "otros_gastos";
           let alegraCategory = null;
           let alegraAccountId = null;
 
-          // Nivel 0a: Proveedor deterministico por cedula (constante en codigo)
           if (parsed.supplier_id && SUPPLIER_ID_CATEGORY[parsed.supplier_id]) {
             catId = SUPPLIER_ID_CATEGORY[parsed.supplier_id];
             groupId = parsed.groupMap[catId] || "otros_gastos";
           }
 
-          // Nivel 0b: INS requiere sub-clasificacion por descripcion
           if (catId === "otro" && parsed.supplier_id === "4000001902") {
             const allText = parsed.lines.map(l => l.description).join(' ');
             catId = classifyINS(allText);
             groupId = parsed.groupMap[catId] || "gastos_generales";
           }
 
-          // Nivel 1: provider_mapping de Supabase (historico aprendido)
           if (catId === "otro" && parsed.supplier_id && provMap[parsed.supplier_id]) {
             const pm = provMap[parsed.supplier_id];
             catId = pm.default_category_id;
@@ -442,7 +388,6 @@ export default async function handler(req, res) {
             }).eq('supplier_id', parsed.supplier_id).then(() => {});
           }
 
-          // Nivel 2: cabys_mapping (correcciones manuales)
           if (catId === "otro") {
             for (const line of parsed.lines) {
               if (!line.cabys_code) continue;
@@ -455,7 +400,6 @@ export default async function handler(req, res) {
             }
           }
 
-          // Nivel 3: Catalogo CABYS de Hacienda (descripcion oficial)
           if (catId === "otro") {
             for (const line of parsed.lines) {
               if (!line.cabys_code) continue;
@@ -471,7 +415,6 @@ export default async function handler(req, res) {
             }
           }
 
-          // Nivel 4: Keywords en descripciones + nombre del proveedor
           if (catId === "otro") {
             const allText = parsed.lines.map(l => l.description).join(' ') + ' ' + parsed.supplier_name + ' ' + parsed.supplier_commercial_name;
             const kwCat = classifyByDescription(allText);
@@ -481,13 +424,11 @@ export default async function handler(req, res) {
             }
           }
 
-          // Resolver nombre e ID de Alegra desde el mapeo
           if (ALEGRA_MAP[catId]) {
             alegraCategory = ALEGRA_MAP[catId].name;
             alegraAccountId = ALEGRA_MAP[catId].aid;
           }
 
-          // === DETECCION DE COMPRA DE VEHICULOS ===
           let isVehiclePurchase = false;
           for (const line of parsed.lines) {
             const code = line.cabys_code || "";
@@ -511,14 +452,12 @@ export default async function handler(req, res) {
             parsed.is_credit_card = false;
           }
 
-          // Restaurantes: siempre tarjeta
           if (catId === "viaticos_emp") {
             parsed.payment_method_code = "02";
             parsed.payment_method_label = "Tarjeta";
             parsed.is_credit_card = true;
           }
 
-          // === DETECCION DE PLACAS ===
           let plate = parsed.detected_plate;
           let assignStatus = 'unassigned';
           let vehicleId = null;
@@ -548,24 +487,16 @@ export default async function handler(req, res) {
             }
           }
 
-          // === EXTRAER Y SUBIR PDF ===
-          let pdfStoragePath = null;
+          // PDF: solo guardamos info, NO descargamos ni subimos
+          let pdfAttachmentInfo = null;
           if (pdfParts.length > 0) {
-            try {
-              // Tomar el primer PDF adjunto (usualmente solo hay uno por factura)
-              const pdfPart = pdfParts[0];
-              const pdfData = await gmailAPI(
-                `messages/${msg.id}/attachments/${pdfPart.body.attachmentId}`, token
-              );
-              const pdfBuffer = Buffer.from(pdfData.data, 'base64url');
-              pdfStoragePath = await uploadPdfToStorage(supabase, pdfBuffer, parsed.xml_key);
-              if (pdfStoragePath) pdfsUploaded++;
-            } catch (pdfErr) {
-              errors.push(`PDF extraction error for ${parsed.xml_key}: ${pdfErr.message}`);
-            }
+            pdfAttachmentInfo = {
+              message_id: msg.id,
+              attachment_id: pdfParts[0].body.attachmentId,
+              filename: pdfParts[0].filename,
+            };
           }
 
-          // === INSERTAR FACTURA ===
           const { data: inv, error: invError } = await supabase.from('invoices').insert({
             xml_key: parsed.xml_key, consecutive: parsed.consecutive, last_four: parsed.last_four,
             emission_date: parsed.emission_date, supplier_name: parsed.supplier_name,
@@ -589,7 +520,7 @@ export default async function handler(req, res) {
             alegra_code: parsed.last_four,
             alegra_bodega: 'Principal',
             alegra_sync_status: 'pending',
-            pdf_storage_path: pdfStoragePath,
+            pdf_attachment_info: pdfAttachmentInfo,
             vehicle_observation: vehicleObservation,
             is_vehicle_purchase: isVehiclePurchase,
             vehicle_purchase_status: isVehiclePurchase ? 'detected' : null,
@@ -605,7 +536,6 @@ export default async function handler(req, res) {
             await supabase.from('invoice_lines').insert(lineRows);
           }
 
-          // Auto-learn: guardar nuevo provider_mapping
           if (catId !== "otro" && parsed.supplier_id && !provMap[parsed.supplier_id] && !SUPPLIER_ID_CATEGORY[parsed.supplier_id]) {
             await supabase.from('provider_mapping').upsert({
               supplier_id: parsed.supplier_id,
@@ -630,7 +560,6 @@ export default async function handler(req, res) {
 
     return res.json({ 
       processed, skipped, rejected, 
-      pdfsUploaded,
       total: allMessages.length, 
       pages: pageCount,
       rejectedList: rejectedList.length > 0 ? rejectedList : undefined,
