@@ -83,15 +83,26 @@ function parseXMLServer(xmlStr) {
   });
 
   const groupMap = {
-    rep_vehiculos:"costos_ventas", combustible:"costos_ventas", lavado:"costos_ventas",
-    herramientas:"costos_ventas", traspaso:"costos_ventas", marchamo:"costos_ventas",
+    herramientas:"costos_ventas", lavado:"costos_ventas", combustible:"costos_ventas",
+    rep_vehiculos:"costos_ventas", traspaso:"costos_ventas", marchamo:"costos_ventas",
     costo_inv:"costos_merc", ajuste_inv:"costos_merc",
-    viaticos_emp:"gastos_generales", atencion_cli:"gastos_generales", seguros:"gastos_generales",
-    alquiler:"gastos_generales", serv_publicos:"gastos_generales", oficina:"gastos_generales",
-    serv_prof:"gastos_generales", mantenimiento:"gastos_generales", representacion:"gastos_generales",
-    impuestos_pat:"gastos_generales", cuotas_susc:"gastos_generales", mensajeria:"gastos_generales",
-    aseo:"gastos_generales",
+    sueldos:"gastos_personal", cargas_sociales:"gastos_personal", comisiones_p:"gastos_personal",
+    aguinaldos:"gastos_personal", riesgos_trabajo:"gastos_personal",
+    atencion_cli:"gastos_generales", viaticos_emp:"gastos_generales",
+    gastos_viaje:"gastos_generales", uniformes:"gastos_generales",
+    aseo:"gastos_generales", mensajeria:"gastos_generales", oficina:"gastos_generales",
+    seguros:"gastos_generales", seguro_licencias:"gastos_generales",
+    mantenimiento:"gastos_generales", mant_maquinaria:"gastos_generales",
+    cuotas_susc:"gastos_generales",
+    patentes_mun:"gastos_generales", imp_territoriales:"gastos_generales",
+    timbre_edu:"gastos_generales", imp_pers_jur:"gastos_generales", iva_soportado:"gastos_generales",
+    serv_prof:"gastos_generales", alquiler:"gastos_generales",
+    serv_publicos:"gastos_generales", agua:"gastos_generales",
+    electricidad:"gastos_generales", internet_cable:"gastos_generales",
+    representacion:"gastos_generales", ferias:"gastos_generales",
     com_bancarias:"gastos_financieros", intereses:"gastos_financieros",
+    intereses_daniel:"gastos_financieros", intereses_sonia:"gastos_financieros",
+    gastos_no_ded:"otros_gastos", contrib_parafisc:"otros_gastos",
     otro:"otros_gastos"
   };
 
@@ -111,57 +122,139 @@ function parseXMLServer(xmlStr) {
   };
 }
 
-const ALEGRA_NAMES = {
-  rep_vehiculos: "Reparaciones de Vehículos",
-  combustible: "Combustibles y Lubricantes",
-  lavado: "Lavado de Vehiculos",
-  herramientas: "Herramientas y Suministros Menores",
-  traspaso: "Inscripción y Traspaso",
-  marchamo: "Derechos de Circulacion",
-  costo_inv: "Inventarios",
-  ajuste_inv: "Ajustes al inventario",
-  viaticos_emp: "Viaticos a Empleados",
-  atencion_cli: "Atencion a Clientes",
-  seguros: "Seguro de Vehiculos",
-  alquiler: "Alquiler de Local",
-  serv_publicos: "Telefonos",
-  oficina: "Papeleria y Suministos de Oficina",
-  serv_prof: "Servicios Profesionales",
-  mantenimiento: "Mantenimiento Propiedades Arrendadas",
-  representacion: "Anuncios en Medios",
-  impuestos_pat: "Impuestos y Patentes",
-  cuotas_susc: "Cuotas y Suscripciones",
-  mensajeria: "Mensajeria",
-  aseo: "Aseo y Limpieza",
-  com_bancarias: "Comisiones Bancarias",
-  intereses: "Intereses",
-  otro: "Otros Gastos",
+// Mapeo categoria -> nombre en Alegra + id numerico cuenta contable
+const ALEGRA_MAP = {
+  herramientas:      {name:"Herramientas y Suministros Menores",    aid:"5319"},
+  lavado:            {name:"Lavado de Vehiculos",                    aid:"5292"},
+  combustible:       {name:"Combustibles y Lubricantes",             aid:"5291"},
+  rep_vehiculos:     {name:"Reparaciones de Vehículos",              aid:"5290"},
+  traspaso:          {name:"Gastos de Inscripcion y Traspaso",       aid:"5289"},
+  marchamo:          {name:"Derechos de Circulacion",                aid:"5288"},
+  costo_inv:         {name:"Costos del inventario",                  aid:"5147"},
+  ajuste_inv:        {name:"Ajustes al inventario",                  aid:"5148"},
+  sueldos:           {name:"Sueldos",                                aid:"5155"},
+  cargas_sociales:   {name:"Cargas Sociales",                        aid:"5157"},
+  comisiones_p:      {name:"Comisiones",                             aid:"5158"},
+  aguinaldos:        {name:"Aguinaldos",                             aid:"5160"},
+  riesgos_trabajo:   {name:"Poliza de Riesgos del Trabajo",          aid:"5159"},
+  atencion_cli:      {name:"Atencion a Clientes",                    aid:"5327"},
+  viaticos_emp:      {name:"Viaticos a Empleados",                   aid:"5326"},
+  gastos_viaje:      {name:"Gastos de Viaje",                        aid:"5325"},
+  uniformes:         {name:"Uniformes para el Personal",             aid:"5324"},
+  aseo:              {name:"Aseo y Limpieza",                        aid:"5329"},
+  mensajeria:        {name:"Mensajeria",                             aid:"5328"},
+  oficina:           {name:"Papeleria y Suministos de Oficina",      aid:"5193"},
+  seguros:           {name:"Seguro de Vehiculos",                    aid:"5202"},
+  seguro_licencias:  {name:"Seguro de Licencias",                    aid:"5201"},
+  mantenimiento:     {name:"Mantenimiento Propiedades Arrendadas",   aid:"5213"},
+  mant_maquinaria:   {name:"Mantenimiento de Maquinaria y Herramientas", aid:"5339"},
+  cuotas_susc:       {name:"Cuotas y Suscripciones",                 aid:"5331"},
+  patentes_mun:      {name:"Patentes Municipales",                   aid:"5335"},
+  imp_territoriales: {name:"Impuestos Municipales y Territoriales",  aid:"5333"},
+  timbre_edu:        {name:"Timbre de Educacion y Cultura",          aid:"5334"},
+  imp_pers_jur:      {name:"Impuesto a las Personas Juridicas",      aid:"5340"},
+  iva_soportado:     {name:"Gasto por IVA Soportado",                aid:"5336"},
+  serv_prof:         {name:"Servicios Profesionales",                aid:"5341"},
+  alquiler:          {name:"Alquiler de Local",                      aid:"5179"},
+  serv_publicos:     {name:"Telefonos",                              aid:"5185"},
+  agua:              {name:"Agua",                                   aid:"5183"},
+  electricidad:      {name:"Energia Electrica",                      aid:"5184"},
+  internet_cable:    {name:"Internet y Cable",                       aid:"5186"},
+  representacion:    {name:"Anuncios en Medios",                     aid:"5337"},
+  ferias:            {name:"Ferias y Otros de Mercadeo",             aid:"5338"},
+  com_bancarias:     {name:"Comisiones Bancarias",                   aid:"5308"},
+  intereses:         {name:"Gastos por Intereses financieros",       aid:"5227"},
+  intereses_daniel:  {name:"Intereses Daniel Aguilar Akerman",       aid:"5304"},
+  intereses_sonia:   {name:"Intereses Sonia Azofeifa Villalobos",    aid:"5305"},
+  gastos_no_ded:     {name:"Gastos no Deducibles de ISR",            aid:"5311"},
+  contrib_parafisc:  {name:"Contribuciones Parafiscales",            aid:"5312"},
+  otro:              {name:null, aid:null},
 };
+
+// Cedulas de proveedores con clasificacion deterministica (100% de sus facturas van a esta categoria)
+const SUPPLIER_ID_CATEGORY = {
+  "4000042138": "agua",              // AyA
+  "3101000046": "electricidad",      // CNFL
+  "116050012":  "intereses_daniel",  // Daniel Aguilar
+  "400880609":  "intereses_sonia",   // Sonia Azofeifa
+  "3101412271": "gastos_viaje",      // Hotel Real de Pinilla (y hoteles similares por keywords)
+  "3101460251": "uniformes",         // Tejidos ROPS
+  "3101708345": "ferias",            // Serviautos del Norte (mercadeo)
+};
+
+// Sub-clasificacion por keywords cuando el proveedor es INS (4000001902)
+function classifyINS(desc) {
+  const d = (desc || "").toLowerCase();
+  if (/licencia/i.test(d)) return "seguro_licencias";
+  if (/riesgo.*trabajo|riesgos.*laborales/i.test(d)) return "riesgos_trabajo";
+  return "seguros"; // default INS: seguro de vehiculos
+}
+
+// Sub-clasificacion de impuestos por keywords
+function classifyImpuestos(desc) {
+  const d = (desc || "").toLowerCase();
+  if (/patente.*municipal|licencia.*comercial/i.test(d)) return "patentes_mun";
+  if (/bienes.*inmuebles|impuesto.*territorial|impuesto.*bienes/i.test(d)) return "imp_territoriales";
+  if (/timbre.*educaci|educaci[oó]n.*cultura/i.test(d)) return "timbre_edu";
+  if (/personas.*jur[ií]dicas|impuesto.*persona.*jur/i.test(d)) return "imp_pers_jur";
+  if (/iva.*soportado|iva.*soportada/i.test(d)) return "iva_soportado";
+  return null; // Si no reconoce subtipo, queda sin clasificar
+}
 
 function classifyByDescription(desc) {
   const d = (desc || "").toLowerCase();
+  // Combustibles
   if (/gasolina|di[eé]sel|gas[oó]leo|combustible|queroseno|nafta|bunker|fuel|lubricant|aceite.*motor|grasa.*lubric/i.test(d)) return "combustible";
+  // Reparaciones
   if (/reparaci[oó]n|mantenimiento.*veh|mantenimiento.*auto|mantenimiento.*moto|taller|mec[aá]nic|mufla|transmisi[oó]n|suspensi[oó]n|alineamiento|balanceo|repuesto|neum[aá]tic|llanta|bater[ií]a|pintura.*auto|latoner[ií]a|enderezad|escape|radiador|embrague|amortiguador|buj[ií]a|filtro.*aceite|filtro.*aire|pastilla.*freno|disco.*freno|remolque|gr[uú]a|servicio.*transporte|c[aá]mara.*revers|parlante/i.test(d)) return "rep_vehiculos";
+  // Lavado
   if (/lavado|car.*wash|limpieza.*veh|encerado|pulido/i.test(d)) return "lavado";
+  // Herramientas/ferretería
   if (/ferreter[ií]a|tornillo|clavo|herramienta|llave.*mec|destornillador|broca|sierra|taladro|soldadura/i.test(d)) return "herramientas";
+  // Restaurantes/comidas -> viaticos
   if (/comida|restaurante|suministro.*comida|servicio.*mesa|cafeter[ií]a|alimento.*preparado|pizza|hamburguesa|pollo.*prepar|sushi|ramen|poke|bebida|cerveza|licor|bar\s|soda\s|gallo.*pinto|casado|carne|mariscos|almuerzo|desayuno|cena/i.test(d)) return "viaticos_emp";
-  if (/seguro|p[oó]liza|prima.*seguro|asegurad|reaseguro|riesgo.*trabajo/i.test(d)) return "seguros";
+  // Hoteles -> gastos de viaje
+  if (/hotel|hospedaje|alojamiento|hostal|posada/i.test(d)) return "gastos_viaje";
+  // Uniformes
+  if (/uniforme|camisa.*empresa|camiseta.*logo|gorra.*empresa/i.test(d)) return "uniformes";
+  // Seguros
+  if (/seguro.*licencia/i.test(d)) return "seguro_licencias";
+  if (/riesgo.*trabajo|riesgos.*laborales/i.test(d)) return "riesgos_trabajo";
+  if (/seguro|p[oó]liza|prima.*seguro|asegurad|reaseguro/i.test(d)) return "seguros";
+  // Alquiler
   if (/alquiler|arrendamiento|renta.*inmueble|renta.*local|renta.*oficina|administraci[oó]n.*inmueble/i.test(d)) return "alquiler";
-  if (/electricidad|el[eé]ctric|energ[ií]a.*el[eé]ctric/i.test(d)) return "serv_publicos";
-  if (/agua.*potable|acueducto|alcantarillado/i.test(d)) return "serv_publicos";
-  if (/tel[eé]fono|telefon[ií]a|internet|banda.*ancha|cable.*tv|televisi[oó]n.*cable|celular|l[ií]nea.*m[oó]vil/i.test(d)) return "serv_publicos";
+  // Servicios publicos separados (prioridad agua > luz > internet > telefono)
+  if (/agua.*potable|acueducto|alcantarillado/i.test(d)) return "agua";
+  if (/electricidad|el[eé]ctric|energ[ií]a.*el[eé]ctric/i.test(d)) return "electricidad";
+  if (/internet|banda.*ancha|cable.*tv|televisi[oó]n.*cable|fibra.*[oó]ptica/i.test(d)) return "internet_cable";
+  if (/tel[eé]fono|telefon[ií]a|celular|l[ií]nea.*m[oó]vil/i.test(d)) return "serv_publicos";
+  // Oficina
   if (/papel|papeler[ií]a|toner|tinta.*impresor|impresora|sobre.*carta|folder|grapas|l[aá]piz|bol[ií]grafo|cuaderno|tarjeta.*presentaci/i.test(d)) return "oficina";
+  // Servicios profesionales
   if (/abogad|notari|contador|contadora|auditor[ií]a|consultor[ií]a|asesor[ií]a|legal|jur[ií]dic|honorarios.*prof|servicio.*contab/i.test(d)) return "serv_prof";
+  // Mantenimiento edificios
   if (/mantenimiento.*edifici|plomer[ií]a|fontaner|electricista.*instal|aire.*acondicionado|construcci[oó]n|remodelaci[oó]n|ba[nñ]o|pintura.*pared|pintura.*local/i.test(d)) return "mantenimiento";
-  if (/publicidad|marketing|dise[ñn]o.*gr[aá]fico|anuncio|promoci[oó]n|redes.*sociales|impresi[oó]n.*publicit|feria|mercadeo/i.test(d)) return "representacion";
-  if (/patente|impuesto.*municipal|marchamo|derecho.*circulaci|riteve|revisi[oó]n.*t[eé]cnica/i.test(d)) return "marchamo";
+  // Mantenimiento maquinaria (distinto a vehiculos)
+  if (/mantenimiento.*maquinaria|mantenimiento.*equipo.*pesado|reparaci[oó]n.*maquinaria/i.test(d)) return "mant_maquinaria";
+  // Publicidad vs Ferias
+  if (/feria|exhibici[oó]n|mercadeo.*evento|stand.*publicit/i.test(d)) return "ferias";
+  if (/publicidad|marketing|dise[ñn]o.*gr[aá]fico|anuncio|promoci[oó]n|redes.*sociales|impresi[oó]n.*publicit/i.test(d)) return "representacion";
+  // Impuestos - usamos la sub-clasificacion
+  const impSub = classifyImpuestos(d);
+  if (impSub) return impSub;
+  // Marchamos / traspasos
+  if (/marchamo|derecho.*circulaci|riteve|revisi[oó]n.*t[eé]cnica/i.test(d)) return "marchamo";
   if (/traspaso|registro.*nacional|inscripci[oó]n.*veh|derechos.*registro/i.test(d)) return "traspaso";
+  // Financieros
   if (/comisi[oó]n.*bancari|cargo.*bancari|servicio.*bancari/i.test(d)) return "com_bancarias";
   if (/inter[eé]s.*financier|inter[eé]s.*pr[eé]stamo|inter[eé]s.*cr[eé]dito/i.test(d)) return "intereses";
+  // Mensajeria
   if (/mensajer[ií]a|env[ií]o|courier|paqueter[ií]a|encomienda/i.test(d)) return "mensajeria";
+  // Aseo
   if (/aseo|limpieza.*local|limpieza.*oficina|desinfec|biodegradable/i.test(d)) return "aseo";
+  // Suscripciones
   if (/cuota|suscripci[oó]n|membres[ií]a|licencia.*software/i.test(d)) return "cuotas_susc";
-  if (/alimento.*animal|mascota|perro|gato|veterinari/i.test(d)) return "otro";
+  // Default
   return "otro";
 }
 
@@ -178,6 +271,28 @@ function findAttachments(parts, result = []) {
   return result;
 }
 
+// Sube un PDF a Supabase Storage y retorna el path
+async function uploadPdfToStorage(supabase, pdfBuffer, xmlKey) {
+  try {
+    // Usa la clave XML (unica) como nombre de archivo
+    const filename = `${xmlKey}.pdf`;
+    const { data, error } = await supabase.storage
+      .from('invoice-pdfs')
+      .upload(filename, pdfBuffer, {
+        contentType: 'application/pdf',
+        upsert: true, // Si ya existe, lo reemplaza
+      });
+    if (error) {
+      console.error('PDF upload error:', error);
+      return null;
+    }
+    return filename;
+  } catch (err) {
+    console.error('PDF upload exception:', err);
+    return null;
+  }
+}
+
 export default async function handler(req, res) {
   const auth = req.headers.authorization;
   if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -188,7 +303,6 @@ export default async function handler(req, res) {
     const token = await getGmailToken();
     const supabase = getSupabase();
 
-    // Support custom date range via query params: ?after=2026-04-10
     const customAfter = req.query?.after;
     let sinceEpoch;
     if (customAfter) {
@@ -199,11 +313,7 @@ export default async function handler(req, res) {
       sinceEpoch = Math.floor(since.getTime() / 1000);
     }
 
-    // ============================================
-    // PAGINATION FIX: fetch ALL matching messages
-    // Gmail API returns max 100 per page with nextPageToken
-    // Loop until no more pages (safety cap: 10 pages = ~1000 emails)
-    // ============================================
+    // Buscar correos con XML (los PDFs vienen en el mismo correo)
     const query = `has:attachment filename:xml after:${sinceEpoch}`;
     let allMessages = [];
     let pageToken = null;
@@ -215,18 +325,17 @@ export default async function handler(req, res) {
       if (page.messages) allMessages.push(...page.messages);
       pageToken = page.nextPageToken || null;
       pageCount++;
-      if (pageCount > 10) break; // safety: max ~1000 emails per run
+      if (pageCount > 10) break;
     } while (pageToken);
 
     if (allMessages.length === 0) {
       return res.json({ processed: 0, skipped: 0, rejected: 0, total: 0, pages: pageCount, message: 'No new emails with XML' });
     }
 
-    // Valid receptor IDs for this company
     const VALID_RECEPTOR_IDS = ['3101124464'];
     const VALID_RECEPTOR_NAMES = ['vehiculos de costa rica', 'vehiculos de cr'];
 
-    // Load provider mappings once for all invoices
+    // Cargar provider_mapping una sola vez
     const { data: providerMappings } = await supabase.from('provider_mapping').select('*');
     const provMap = {};
     if (providerMappings) {
@@ -236,6 +345,7 @@ export default async function handler(req, res) {
     let processed = 0;
     let skipped = 0;
     let rejected = 0;
+    let pdfsUploaded = 0;
     const rejectedList = [];
     const errors = [];
 
@@ -251,6 +361,8 @@ export default async function handler(req, res) {
       }
 
       const xmlParts = allParts.filter(p => p.filename?.toLowerCase().endsWith('.xml'));
+      const pdfParts = allParts.filter(p => p.filename?.toLowerCase().endsWith('.pdf'));
+
       if (xmlParts.length === 0) { skipped++; continue; }
 
       for (const xmlPart of xmlParts) {
@@ -267,7 +379,7 @@ export default async function handler(req, res) {
           const parsed = parseXMLServer(xmlContent);
           if (!parsed.xml_key) continue;
 
-          // === RECEPTOR VALIDATION ===
+          // Validar receptor
           const receptorBlock = (xmlContent.match(/<(?:[\w]+:)?Receptor[\s\S]*?<\/(?:[\w]+:)?Receptor>/i) || [""])[0];
           const recIdBlock = (receptorBlock.match(/<(?:[\w]+:)?Identificacion[\s\S]*?<\/(?:[\w]+:)?Identificacion>/i) || [""])[0];
           const recId = (recIdBlock.match(/<(?:[\w]+:)?Numero[^>]*>([\s\S]*?)<\/(?:[\w]+:)?Numero>/i) || ["",""])[1].trim();
@@ -294,18 +406,30 @@ export default async function handler(req, res) {
           const { data: existingInv } = await supabase.from('invoices').select('id').eq('xml_key', parsed.xml_key).limit(1);
           if (existingInv && existingInv.length > 0) continue;
 
-          // === CLASSIFICATION: 4-level strategy ===
+          // === CLASIFICACION MULTI-NIVEL ===
           let catId = "otro";
           let groupId = "otros_gastos";
           let alegraCategory = null;
+          let alegraAccountId = null;
 
-          // Level 0: Provider mapping (from Alegra history)
-          if (parsed.supplier_id && provMap[parsed.supplier_id]) {
+          // Nivel 0a: Proveedor deterministico por cedula (constante en codigo)
+          if (parsed.supplier_id && SUPPLIER_ID_CATEGORY[parsed.supplier_id]) {
+            catId = SUPPLIER_ID_CATEGORY[parsed.supplier_id];
+            groupId = parsed.groupMap[catId] || "otros_gastos";
+          }
+
+          // Nivel 0b: INS requiere sub-clasificacion por descripcion
+          if (catId === "otro" && parsed.supplier_id === "4000001902") {
+            const allText = parsed.lines.map(l => l.description).join(' ');
+            catId = classifyINS(allText);
+            groupId = parsed.groupMap[catId] || "gastos_generales";
+          }
+
+          // Nivel 1: provider_mapping de Supabase (historico aprendido)
+          if (catId === "otro" && parsed.supplier_id && provMap[parsed.supplier_id]) {
             const pm = provMap[parsed.supplier_id];
             catId = pm.default_category_id;
             groupId = parsed.groupMap[catId] || "otros_gastos";
-            alegraCategory = pm.default_alegra_category;
-            // Override payment method if provider has a forced method
             if (pm.force_payment_method) {
               const payMap = {"01":"Efectivo","02":"Tarjeta","03":"Cheque","04":"Transferencia","05":"Recaudado terceros","99":"Otros"};
               parsed.payment_method_code = pm.force_payment_method;
@@ -313,12 +437,12 @@ export default async function handler(req, res) {
               parsed.is_credit_card = pm.force_payment_method === "02";
             }
             supabase.from('provider_mapping').update({ 
-              times_used: pm.times_used + 1, 
+              times_used: (pm.times_used || 0) + 1, 
               updated_at: new Date().toISOString() 
             }).eq('supplier_id', parsed.supplier_id).then(() => {});
           }
 
-          // Level 1: cabys_mapping (user corrections)
+          // Nivel 2: cabys_mapping (correcciones manuales)
           if (catId === "otro") {
             for (const line of parsed.lines) {
               if (!line.cabys_code) continue;
@@ -326,13 +450,12 @@ export default async function handler(req, res) {
               if (exact && exact.length > 0) {
                 catId = exact[0].category_id;
                 groupId = exact[0].group_id;
-                alegraCategory = ALEGRA_NAMES[catId] || null;
                 break;
               }
             }
           }
 
-          // Level 2: CABYS catalog description (check ALL lines)
+          // Nivel 3: Catalogo CABYS de Hacienda (descripcion oficial)
           if (catId === "otro") {
             for (const line of parsed.lines) {
               if (!line.cabys_code) continue;
@@ -342,37 +465,33 @@ export default async function handler(req, res) {
                 if (catalogCat !== "otro") {
                   catId = catalogCat;
                   groupId = parsed.groupMap[catalogCat] || "otros_gastos";
-                  alegraCategory = ALEGRA_NAMES[catId] || null;
                   break;
                 }
               }
             }
           }
 
-          // Level 3: Keywords from line descriptions + supplier name
+          // Nivel 4: Keywords en descripciones + nombre del proveedor
           if (catId === "otro") {
             const allText = parsed.lines.map(l => l.description).join(' ') + ' ' + parsed.supplier_name + ' ' + parsed.supplier_commercial_name;
             const kwCat = classifyByDescription(allText);
             if (kwCat !== "otro") {
               catId = kwCat;
               groupId = parsed.groupMap[kwCat] || "otros_gastos";
-              alegraCategory = ALEGRA_NAMES[catId] || null;
             }
           }
 
-          if (!alegraCategory) alegraCategory = ALEGRA_NAMES[catId] || "Otros Gastos";
+          // Resolver nombre e ID de Alegra desde el mapeo
+          if (ALEGRA_MAP[catId]) {
+            alegraCategory = ALEGRA_MAP[catId].name;
+            alegraAccountId = ALEGRA_MAP[catId].aid;
+          }
 
-          // === VEHICLE PURCHASE DETECTION ===
-          // ONLY detect via CABYS codes starting with 491 (passenger) or 492 (cargo vehicles)
-          // Keyword detection removed because supplier names like "Autostar Vehiculos" 
-          // or "Auto Partes" trigger false positives
+          // === DETECCION DE COMPRA DE VEHICULOS ===
           let isVehiclePurchase = false;
           for (const line of parsed.lines) {
             const code = line.cabys_code || "";
-            // CABYS 491xxxx = passenger vehicles, 492xxxx = cargo vehicles
             if (code.startsWith('491') || code.startsWith('492')) {
-              // Extra check: line total must be significant (> $3000 or > ₡2M) 
-              // to avoid detecting vehicle PARTS that share similar CABYS prefixes
               const lineAmt = line.line_total || 0;
               const isSignificant = (parsed.currency === 'USD' && lineAmt >= 3000) || 
                                     (parsed.currency !== 'USD' && lineAmt >= 2000000);
@@ -385,22 +504,21 @@ export default async function handler(req, res) {
           if (isVehiclePurchase) {
             catId = "costo_inv";
             groupId = "costos_merc";
-            alegraCategory = "Inventarios";
-            // Vehicle purchases are ALWAYS paid by transfer, regardless of what the XML says
+            alegraCategory = ALEGRA_MAP.costo_inv.name;
+            alegraAccountId = ALEGRA_MAP.costo_inv.aid;
             parsed.payment_method_code = "04";
             parsed.payment_method_label = "Transferencia";
             parsed.is_credit_card = false;
           }
 
-          // Restaurants/comida: ALWAYS paid by card, regardless of what the XML says
-          // (In Costa Rica, restaurants are never paid by transfer)
+          // Restaurantes: siempre tarjeta
           if (catId === "viaticos_emp") {
             parsed.payment_method_code = "02";
             parsed.payment_method_label = "Tarjeta";
             parsed.is_credit_card = true;
           }
 
-          // === PLATE DETECTION (all lines) ===
+          // === DETECCION DE PLACAS ===
           let plate = parsed.detected_plate;
           let assignStatus = 'unassigned';
           let vehicleId = null;
@@ -430,6 +548,24 @@ export default async function handler(req, res) {
             }
           }
 
+          // === EXTRAER Y SUBIR PDF ===
+          let pdfStoragePath = null;
+          if (pdfParts.length > 0) {
+            try {
+              // Tomar el primer PDF adjunto (usualmente solo hay uno por factura)
+              const pdfPart = pdfParts[0];
+              const pdfData = await gmailAPI(
+                `messages/${msg.id}/attachments/${pdfPart.body.attachmentId}`, token
+              );
+              const pdfBuffer = Buffer.from(pdfData.data, 'base64url');
+              pdfStoragePath = await uploadPdfToStorage(supabase, pdfBuffer, parsed.xml_key);
+              if (pdfStoragePath) pdfsUploaded++;
+            } catch (pdfErr) {
+              errors.push(`PDF extraction error for ${parsed.xml_key}: ${pdfErr.message}`);
+            }
+          }
+
+          // === INSERTAR FACTURA ===
           const { data: inv, error: invError } = await supabase.from('invoices').insert({
             xml_key: parsed.xml_key, consecutive: parsed.consecutive, last_four: parsed.last_four,
             emission_date: parsed.emission_date, supplier_name: parsed.supplier_name,
@@ -449,7 +585,11 @@ export default async function handler(req, res) {
             assign_status: assignStatus, group_id: groupId,
             category_id: catId, pay_status: 'pending',
             alegra_category: alegraCategory,
+            alegra_account_id: alegraAccountId,
+            alegra_code: parsed.last_four,
             alegra_bodega: 'Principal',
+            alegra_sync_status: 'pending',
+            pdf_storage_path: pdfStoragePath,
             vehicle_observation: vehicleObservation,
             is_vehicle_purchase: isVehiclePurchase,
             vehicle_purchase_status: isVehiclePurchase ? 'detected' : null,
@@ -465,13 +605,14 @@ export default async function handler(req, res) {
             await supabase.from('invoice_lines').insert(lineRows);
           }
 
-          // Auto-learn: save new provider mapping
-          if (catId !== "otro" && parsed.supplier_id && !provMap[parsed.supplier_id]) {
+          // Auto-learn: guardar nuevo provider_mapping
+          if (catId !== "otro" && parsed.supplier_id && !provMap[parsed.supplier_id] && !SUPPLIER_ID_CATEGORY[parsed.supplier_id]) {
             await supabase.from('provider_mapping').upsert({
               supplier_id: parsed.supplier_id,
               supplier_name: parsed.supplier_name,
               default_category_id: catId,
               default_alegra_category: alegraCategory,
+              alegra_account_id: alegraAccountId,
               times_used: 1,
             }, { onConflict: 'supplier_id' }).then(() => {});
           }
@@ -489,6 +630,7 @@ export default async function handler(req, res) {
 
     return res.json({ 
       processed, skipped, rejected, 
+      pdfsUploaded,
       total: allMessages.length, 
       pages: pageCount,
       rejectedList: rejectedList.length > 0 ? rejectedList : undefined,
