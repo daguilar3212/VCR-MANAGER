@@ -226,13 +226,21 @@ export default async function handler(req, res) {
 
     const currencyCode = invoice.currency || 'CRC';
 
+    // Alegra espera fechas puras YYYY-MM-DD, no timestamps completos
+    const toDateOnly = (d) => {
+      if (!d) return null;
+      const s = String(d);
+      // Si ya tiene formato YYYY-MM-DD lo dejamos, sino recortamos
+      return s.length > 10 ? s.slice(0, 10) : s;
+    };
+
     const billPayload = {
       provider: contactId,
-      date: invoice.emission_date,
-      dueDate: invoice.due_date || invoice.emission_date,
+      date: toDateOnly(invoice.emission_date),
+      dueDate: toDateOnly(invoice.due_date) || toDateOnly(invoice.emission_date),
       observations,
-      currency: currencyCode,         // string directo (no objeto)
-      exchangeRate: exchangeRate,     // como campo top-level
+      currency: currencyCode,
+      exchangeRate: exchangeRate,
       categories,
       stamp: {
         generateStamp: false  // IMPORTANTE: NO timbrar. Es solo registro contable.
@@ -246,11 +254,15 @@ export default async function handler(req, res) {
     });
 
     if (!billRes.ok) {
-      // Guardamos el error para que se vea en la UI
+      // Guardamos el error + el payload completo para debug
+      const errorWithPayload = {
+        alegra_error: billRes.data,
+        sent_payload: billPayload
+      };
       await supabase.from('invoices')
         .update({
           alegra_sync_status: 'error',
-          alegra_sync_error: JSON.stringify(billRes.data).slice(0, 500)
+          alegra_sync_error: JSON.stringify(errorWithPayload).slice(0, 2000)
         })
         .eq('id', invoice_id);
 
