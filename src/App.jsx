@@ -389,7 +389,7 @@ export default function App() {
       return;
     }
 
-    const bank = bankAccounts.find(b => b.id === inv.paidBankId);
+    const bank = bankAccounts.find(b => parseInt(b.id, 10) === parseInt(inv.paidBankId, 10));
     const conf = window.confirm(
       `¿Marcar factura como pagada?\n\n` +
       `Proveedor: ${inv.supName}\n` +
@@ -3570,8 +3570,15 @@ export default function App() {
                       <select
                         value={pickedInv.paidBankId != null ? String(pickedInv.paidBankId) : ""}
                         onChange={e=>{
-                          const bankId = e.target.value ? parseInt(e.target.value) : null;
-                          const bank = bankAccounts.find(b => b.id === bankId);
+                          const val = e.target.value;
+                          if (!val) {
+                            updateInv(pickedInv.key, { paidBankId: null, paidBank: '' });
+                            setPickedInv({...pickedInv, paidBankId: null, paidBank: ''});
+                            return;
+                          }
+                          const bankId = parseInt(val, 10);
+                          // Comparacion con conversion a numero para manejar bigint de Supabase
+                          const bank = bankAccounts.find(b => parseInt(b.id, 10) === bankId);
                           const bankName = bank ? bank.name : '';
                           updateInv(pickedInv.key, { paidBankId: bankId, paidBank: bankName });
                           setPickedInv({...pickedInv, paidBankId: bankId, paidBank: bankName});
