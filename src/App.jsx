@@ -389,7 +389,7 @@ export default function App() {
       return;
     }
 
-    const bank = bankAccounts.find(b => parseInt(b.id, 10) === parseInt(inv.paidBankId, 10));
+    const bank = bankAccounts.find(b => b.id === inv.paidBankId);
     const conf = window.confirm(
       `¿Marcar factura como pagada?\n\n` +
       `Proveedor: ${inv.supName}\n` +
@@ -3569,17 +3569,14 @@ export default function App() {
                     <div>
                       <div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Cuenta bancaria</div>
                       <select
-                        value={pickedInv.paidBankId != null ? String(pickedInv.paidBankId) : ""}
+                        value={pickedInv.paidBankId || ""}
                         onChange={e => {
                           const val = e.target.value;
-                          console.log('[DEBUG] onChange disparado, val=', val);
-                          const bankId = val ? parseInt(val, 10) : null;
-                          const bank = bankId != null ? bankAccounts.find(b => parseInt(b.id, 10) === bankId) : null;
+                          const bankId = val || null;  // UUID string, no parseInt
+                          const bank = bankId ? bankAccounts.find(b => b.id === bankId) : null;
                           const bankName = bank ? bank.name : '';
-                          console.log('[DEBUG] bankId=', bankId, 'bank=', bank, 'bankAccounts.length=', bankAccounts.length);
                           updateInv(pickedInv.key, { paidBankId: bankId, paidBank: bankName });
                           setPickedInv({...pickedInv, paidBankId: bankId, paidBank: bankName});
-                          console.log('[DEBUG] setPickedInv llamado con paidBankId=', bankId);
                         }}
                         style={{...S.sel, width:"100%", marginBottom:8}}
                       >
@@ -3587,7 +3584,7 @@ export default function App() {
                         {bankAccounts
                           .filter(b => b.currency === (pickedInv.currency || 'CRC'))
                           .map(b => (
-                            <option key={b.id} value={String(b.id)}>
+                            <option key={b.id} value={b.id}>
                               {b.name} ({b.currency})
                             </option>
                           ))
