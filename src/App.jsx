@@ -187,6 +187,7 @@ export default function App() {
   const [editingVehicle, setEditingVehicle] = useState(null);
   const [invoices, setInvoices] = useState([]);
   const [pickedInv, setPickedInv] = useState(null);
+  const [bankAccounts, setBankAccounts] = useState([]);
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
@@ -265,7 +266,12 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); }, []);
+
+  const loadBankAccounts = async () => {
+    const { data } = await supabase.from('bank_accounts').select('*').order('id');
+    if (data) setBankAccounts(data);
+  };
 
   // Realtime: escuchar planes de venta nuevos (pendientes) de agentes
   useEffect(() => {
@@ -350,6 +356,7 @@ export default function App() {
         plate: inv.plate, warnPlate: inv.assign_status === 'warning' ? inv.detected_plate : null,
         catId: inv.category_id || 'otro', assignStatus: inv.assign_status || 'unassigned',
         payStatus: inv.pay_status || 'pending', paidBank: inv.paid_bank || '', paidRef: inv.paid_reference || '',
+        paidBankId: inv.paid_bank_id || null,
         isVehicle: inv.is_vehicle_purchase || false, vehicleStatus: inv.vehicle_purchase_status || null,
         paidDate: inv.paid_date || '', liquidationId: inv.liquidation_id || null,
         lines: [], dbId: inv.id,
@@ -453,6 +460,7 @@ export default function App() {
     if ('payStatus' in updates) dbUpdates.pay_status = updates.payStatus;
     if ('paidBank' in updates) dbUpdates.paid_bank = updates.paidBank;
     if ('paidRef' in updates) dbUpdates.paid_reference = updates.paidRef;
+    if ('paidBankId' in updates) dbUpdates.paid_bank_id = updates.paidBankId;
     if ('catId' in updates) {
       const cat = CATS.find(c => c.id === updates.catId);
       if (cat) {
@@ -2486,11 +2494,12 @@ export default function App() {
                   {x.isVehicle&&x.vehicleStatus==="detected"&&<span style={S.badge("#f59e0b")}>🚗 Completar</span>}
                   {x.alegraSyncStatus==="synced"&&<span style={S.badge("#10b981")}>✓ Alegra #{x.alegraBillId}</span>}
                   {x.alegraSyncStatus==="synced_no_pdf"&&<span style={S.badge("#f59e0b")}>✓ Alegra #{x.alegraBillId} (sin PDF)</span>}
+                  {x.alegraSyncStatus==="synced_manual"&&<span style={S.badge("#64748b")}>✓ Alegra (manual)</span>}
                   {x.alegraSyncStatus==="syncing"&&<span style={S.badge("#4f8cff")}>⏳ Enviando...</span>}
                   {x.alegraSyncStatus==="error"&&<span style={S.badge("#e11d48")} title={x.alegraSyncError||""}>✗ Error Alegra</span>}
                 </div>
                 </div>
-                {x.alegraSyncStatus!=="synced"&&x.alegraSyncStatus!=="synced_no_pdf"&&x.alegraSyncStatus!=="syncing"&&x.alegraAccountId&&(
+                {x.alegraSyncStatus!=="synced"&&x.alegraSyncStatus!=="synced_no_pdf"&&x.alegraSyncStatus!=="synced_manual"&&x.alegraSyncStatus!=="syncing"&&x.alegraAccountId&&(
                   <button
                     onClick={(e)=>{e.stopPropagation();syncInvoiceToAlegra(x.dbId,x.supName);}}
                     style={{...S.sel,fontSize:11,padding:"6px 10px",background:"#4f8cff18",color:"#4f8cff",fontWeight:600,flexShrink:0,cursor:"pointer"}}
@@ -3449,8 +3458,28 @@ export default function App() {
                       {pickedInv.payStatus==="paid"?"✓ Pagada":"Marcar pagada"}
                     </button>
                     {pickedInv.payStatus==="paid"&&<>
-                      <input placeholder="Banco" value={pickedInv.paidBank||""} onChange={e=>{updateInv(pickedInv.key,{paidBank:e.target.value});setPickedInv({...pickedInv,paidBank:e.target.value});}} style={{...S.inp,flex:1}} />
-                      <input placeholder="# depósito" value={pickedInv.paidRef||""} onChange={e=>{updateInv(pickedInv.key,{paidRef:e.target.value});setPickedInv({...pickedInv,paidRef:e.target.value});}} style={{...S.inp,flex:1}} />
+                      <select
+                        value={pickedInv.paidBankId || ""}
+                        onChange={e=>{
+                          const bankId = e.target.value ? parseInt(e.target.value) : null;
+                          const bank = bankAccounts.find(b => b.id === bankId);
+                          const bankName = bank ? bank.name : '';
+                          updateInv(pickedInv.key, { paidBankId: bankId, paidBank: bankName });
+                          setPickedInv({...pickedInv, paidBankId: bankId, paidBank: bankName});
+                        }}
+                        style={{...S.sel, flex: 1}}
+                      >
+                        <option value="">Seleccionar cuenta...</option>
+                        {bankAccounts
+                          .filter(b => b.currency === (pickedInv.currency || 'CRC'))
+                          .map(b => (
+                            <option key={b.id} value={b.id}>
+                              {b.name} ({b.currency})
+                            </option>
+                          ))
+                        }
+                      </select>
+                      <input placeholder="# depósito / referencia" value={pickedInv.paidRef||""} onChange={e=>{updateInv(pickedInv.key,{paidRef:e.target.value});setPickedInv({...pickedInv,paidRef:e.target.value});}} style={{...S.inp,flex:1}} />
                     </>}
                   </div>
                 </div>
