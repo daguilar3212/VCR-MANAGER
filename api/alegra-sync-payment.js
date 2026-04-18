@@ -98,6 +98,15 @@ export default async function handler(req, res) {
     // (cash / transfer / creditCard)
     const paymentMethod = bank.alegra_payment_method || 'transfer';
 
+    // IMPORTANTE: bank.id es UUID de Supabase. El ID real de la cuenta en Alegra
+    // esta en bank.alegra_account_id (1-9).
+    if (!bank.alegra_account_id) {
+      return res.status(400).json({
+        ok: false,
+        error: 'La cuenta bancaria no tiene alegra_account_id configurado'
+      });
+    }
+
     // 3) Fecha: usar paid_date si existe, sino hoy
     const toDateOnly = (d) => {
       if (!d) return null;
@@ -115,9 +124,9 @@ export default async function handler(req, res) {
       date: paidDate,
       amount: parseFloat(invoice.total),
       paymentMethod: paymentMethod,
-      bankAccount: { id: String(bank.id) },
+      bankAccount: { id: String(bank.alegra_account_id) },  // ID numerico de Alegra, NO el UUID
       observations,
-      anotation: observations,  // Alegra a veces usa este campo en lugar de observations
+      anotation: observations,
       bills: [
         {
           id: parseInt(invoice.alegra_bill_id),
