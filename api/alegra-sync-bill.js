@@ -196,7 +196,9 @@ export default async function handler(req, res) {
     }
 
     // Armar categories array para Alegra (formato Costa Rica)
-    // Cada categoria lleva: id, price, quantity, observations y tax
+    // Observado de bills reales:
+    // - rate > 0: tax: [{ id: "X" }]
+    // - rate = 0 o exento: tax: [] (array vacio, NO poner IVA exento id 2)
     const categories = [];
     for (const rate of Object.keys(groups)) {
       const g = groups[rate];
@@ -206,12 +208,12 @@ export default async function handler(req, res) {
         id: String(invoice.alegra_account_id),
         price: Math.round(g.subtotal * 100) / 100,
         quantity: 1,
-        observations: invoice.alegra_category || invoice.supplier_name || 'Factura de compra'
+        observations: invoice.detected_plate || ''
       };
       if (taxAlegraId !== undefined && parseFloat(rate) > 0) {
         cat.tax = [{ id: String(taxAlegraId) }];
-      } else if (parseFloat(rate) === 0) {
-        cat.tax = [{ id: "2" }]; // IVA exento
+      } else {
+        cat.tax = [];  // Array vacio para rate 0 / ninguno / exento
       }
       categories.push(cat);
     }
@@ -220,35 +222,41 @@ export default async function handler(req, res) {
     const plateStr = invoice.detected_plate ? ` | ${invoice.detected_plate}` : '';
     const observations = `VCR #${invoice.consecutive || invoice.last_four}${plateStr}`;
 
-    // 6) Payload del bill
-    // Alegra SIEMPRE exige exchangeRate en facturas de proveedor.
-    // Para CRC lo mandamos como 1, para USD usamos el del XML (o 1 si no viene).
-    const exchangeRate = invoice.exchange_rate && parseFloat(invoice.exchange_rate) > 0
-      ? parseFloat(invoice.exchange_rate)
-      : 1;
-
-    const currencyCode = invoice.currency || 'CRC';
-
     // Alegra espera fechas puras YYYY-MM-DD, no timestamps completos
     const toDateOnly = (d) => {
       if (!d) return null;
       const s = String(d);
-      // Si ya tiene formato YYYY-MM-DD lo dejamos, sino recortamos
       return s.length > 10 ? s.slice(0, 10) : s;
     };
 
+    // 6) Payload del bill
+    // Observado de bills reales en Alegra CR:
+    // - Moneda base es CRC, NO se manda currency cuando es CRC
+    // - Solo para USD (o moneda extranjera) se manda currency como objeto { code, exchangeRate }
+    // - decimalPrecision y calculationScale estan siempre presentes
     const billPayload = {
       provider: contactId,
       date: toDateOnly(invoice.emission_date),
       dueDate: toDateOnly(invoice.due_date) || toDateOnly(invoice.emission_date),
       observations,
-      currency: currencyCode,
-      exchangeRate: exchangeRate,
-      warehouse: { id: "1" },  // Bodega Principal (id 1 en Alegra)
+      warehouse: { id: "1" },
+      decimalPrecision: 2,
+      calculationScale: 6,
       purchases: {
         categories: categories
       }
     };
+
+    // Solo agregar currency si NO es CRC (moneda base de la cuenta)
+    if (invoice.currency && invoice.currency !== 'CRC') {
+      const rate = invoice.exchange_rate && parseFloat(invoice.exchange_rate) > 0
+        ? parseFloat(invoice.exchange_rate)
+        : 1;
+      billPayload.currency = {
+        code: invoice.currency,
+        exchangeRate: rate
+      };
+    }
 
     // 7) Crear bill en Alegra
     const billRes = await alegraFetch('/bills', {
