@@ -218,24 +218,26 @@ export default async function handler(req, res) {
     const observations = `VCR #${invoice.consecutive || invoice.last_four}${plateStr}`;
 
     // 6) Payload del bill
+    // Alegra SIEMPRE exige exchangeRate en facturas de proveedor.
+    // Para CRC lo mandamos como 1, para USD usamos el del XML (o 1 si no viene).
+    const exchangeRate = invoice.exchange_rate && parseFloat(invoice.exchange_rate) > 0
+      ? parseFloat(invoice.exchange_rate)
+      : 1;
+
     const billPayload = {
       provider: contactId,
       date: invoice.emission_date,
       dueDate: invoice.due_date || invoice.emission_date,
       observations,
       currency: {
-        code: invoice.currency || 'CRC'
+        code: invoice.currency || 'CRC',
+        exchangeRate: exchangeRate
       },
       categories,
       stamp: {
         generateStamp: false  // IMPORTANTE: NO timbrar. Es solo registro contable.
       }
     };
-
-    // Tipo de cambio si es moneda extranjera
-    if (invoice.currency && invoice.currency !== 'CRC' && invoice.exchange_rate) {
-      billPayload.currency.exchangeRate = parseFloat(invoice.exchange_rate);
-    }
 
     // 7) Crear bill en Alegra
     const billRes = await alegraFetch('/bills', {
