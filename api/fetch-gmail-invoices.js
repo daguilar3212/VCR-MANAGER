@@ -122,7 +122,6 @@ function parseXMLServer(xmlStr) {
   };
 }
 
-// Mapeo categoria -> nombre en Alegra + id numerico cuenta contable
 const ALEGRA_MAP = {
   herramientas:      {name:"Herramientas y Suministros Menores",    aid:"5319"},
   lavado:            {name:"Lavado de Vehiculos",                    aid:"5292"},
@@ -171,7 +170,6 @@ const ALEGRA_MAP = {
   otro:              {name:null, aid:null},
 };
 
-// Cedulas de proveedores con clasificacion deterministica
 const SUPPLIER_ID_CATEGORY = {
   "4000042138": "agua",
   "3101000046": "electricidad",
@@ -297,6 +295,7 @@ export default async function handler(req, res) {
     let processed = 0;
     let skipped = 0;
     let rejected = 0;
+    let pdfsUploaded = 0;
     const rejectedList = [];
     const errors = [];
 
@@ -487,7 +486,8 @@ export default async function handler(req, res) {
             }
           }
 
-          // PDF: solo guardamos info, NO descargamos ni subimos
+          // PDF: bajar y subir a Storage con timeout por PDF y limite total
+          let pdfStoragePath = null;
           let pdfAttachmentInfo = null;
           if (pdfParts.length > 0) {
             pdfAttachmentInfo = {
@@ -495,6 +495,35 @@ export default async function handler(req, res) {
               attachment_id: pdfParts[0].body.attachmentId,
               filename: pdfParts[0].filename,
             };
+            if (pdfsUploaded < 30) {
+              try {
+                const pdfPromise = (async () => {
+                  const pdfPart = pdfParts[0];
+                  const pdfData = await gmailAPI(
+                    `messages/${msg.id}/attachments/${pdfPart.body.attachmentId}`, token
+                  );
+                  const pdfBuffer = Buffer.from(pdfData.data, 'base64url');
+                  const filename = `${parsed.xml_key}.pdf`;
+                  const { error: upErr } = await supabase.storage
+                    .from('invoice-pdfs')
+                    .upload(filename, pdfBuffer, {
+                      contentType: 'application/pdf',
+                      upsert: true,
+                    });
+                  if (upErr) throw new Error(upErr.message);
+                  return filename;
+                })();
+                
+                const timeoutPromise = new Promise((_, reject) =>
+                  setTimeout(() => reject(new Error('PDF timeout')), 5000)
+                );
+                
+                pdfStoragePath = await Promise.race([pdfPromise, timeoutPromise]);
+                if (pdfStoragePath) pdfsUploaded++;
+              } catch (pdfErr) {
+                errors.push(`PDF ${parsed.xml_key}: ${pdfErr.message}`);
+              }
+            }
           }
 
           const { data: inv, error: invError } = await supabase.from('invoices').insert({
@@ -520,6 +549,7 @@ export default async function handler(req, res) {
             alegra_code: parsed.last_four,
             alegra_bodega: 'Principal',
             alegra_sync_status: 'pending',
+            pdf_storage_path: pdfStoragePath,
             pdf_attachment_info: pdfAttachmentInfo,
             vehicle_observation: vehicleObservation,
             is_vehicle_purchase: isVehiclePurchase,
@@ -559,7 +589,7 @@ export default async function handler(req, res) {
     }
 
     return res.json({ 
-      processed, skipped, rejected, 
+      processed, skipped, rejected, pdfsUploaded,
       total: allMessages.length, 
       pages: pageCount,
       rejectedList: rejectedList.length > 0 ? rejectedList : undefined,
