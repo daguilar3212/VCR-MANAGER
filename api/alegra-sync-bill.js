@@ -195,20 +195,23 @@ export default async function handler(req, res) {
       groups[13] = { subtotal: invoice.subtotal || invoice.total || 0, tax_rate: 13 };
     }
 
-    // Armar categories array para Alegra
+    // Armar categories array para Alegra (formato Costa Rica)
+    // Cada categoria lleva: id, price, quantity, observations y tax
     const categories = [];
     for (const rate of Object.keys(groups)) {
       const g = groups[rate];
       const taxAlegraId = TAX_RATE_TO_ALEGRA_ID[parseFloat(rate)];
 
       const cat = {
-        id: invoice.alegra_account_id,
-        price: Math.round(g.subtotal * 100) / 100
+        id: String(invoice.alegra_account_id),
+        price: Math.round(g.subtotal * 100) / 100,
+        quantity: 1,
+        observations: invoice.alegra_category || invoice.supplier_name || 'Factura de compra'
       };
       if (taxAlegraId !== undefined && parseFloat(rate) > 0) {
-        cat.tax = [{ id: taxAlegraId }];
+        cat.tax = [{ id: String(taxAlegraId) }];
       } else if (parseFloat(rate) === 0) {
-        cat.tax = [{ id: 2 }]; // IVA exento
+        cat.tax = [{ id: "2" }]; // IVA exento
       }
       categories.push(cat);
     }
@@ -241,11 +244,9 @@ export default async function handler(req, res) {
       observations,
       currency: currencyCode,
       exchangeRate: exchangeRate,
+      warehouse: { id: "1" },  // Bodega Principal (id 1 en Alegra)
       purchases: {
         categories: categories
-      },
-      stamp: {
-        generateStamp: false  // IMPORTANTE: NO timbrar. Es solo registro contable.
       }
     };
 
