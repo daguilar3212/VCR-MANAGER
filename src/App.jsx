@@ -71,48 +71,66 @@ const GROUPS = [
 
 const CATS = [
   // COSTOS - Ventas y Operación
-  {id:"herramientas",g:"costos_ventas",l:"Herramientas y Suministros",a:"Herramientas y Suministros Menores"},
-  {id:"lavado",g:"costos_ventas",l:"Lavado de Vehículos",a:"Lavado de Vehiculos"},
-  {id:"combustible",g:"costos_ventas",l:"Combustibles y Lubricantes",a:"Combustibles y Lubricantes"},
-  {id:"rep_vehiculos",g:"costos_ventas",l:"Reparaciones de Vehículos",a:"Reparaciones de Vehículos"},
-  {id:"traspaso",g:"costos_ventas",l:"Gastos de Inscripción y Traspaso",a:"Gastos de Inscripcion y Traspaso"},
-  {id:"marchamo",g:"costos_ventas",l:"Derechos de Circulación",a:"Derechos de Circulacion"},
+  {id:"herramientas",g:"costos_ventas",l:"Herramientas y Suministros",a:"Herramientas y Suministros Menores",aid:"5319"},
+  {id:"lavado",g:"costos_ventas",l:"Lavado de Vehículos",a:"Lavado de Vehiculos",aid:"5292"},
+  {id:"combustible",g:"costos_ventas",l:"Combustibles y Lubricantes",a:"Combustibles y Lubricantes",aid:"5291"},
+  {id:"rep_vehiculos",g:"costos_ventas",l:"Reparaciones de Vehículos",a:"Reparaciones de Vehículos",aid:"5290"},
+  {id:"traspaso",g:"costos_ventas",l:"Gastos de Inscripción y Traspaso",a:"Gastos de Inscripcion y Traspaso",aid:"5289"},
+  {id:"marchamo",g:"costos_ventas",l:"Derechos de Circulación",a:"Derechos de Circulacion",aid:"5288"},
   // COSTOS - Mercancía vendida
-  {id:"costo_inv",g:"costos_merc",l:"Costos del Inventario",a:"Costos del inventario"},
-  {id:"ajuste_inv",g:"costos_merc",l:"Ajustes al Inventario",a:"Ajustes al inventario"},
+  {id:"costo_inv",g:"costos_merc",l:"Costos del Inventario",a:"Costos del inventario",aid:"5147"},
+  {id:"ajuste_inv",g:"costos_merc",l:"Ajustes al Inventario",a:"Ajustes al inventario",aid:"5148"},
   // GASTOS - Personal
-  {id:"sueldos",g:"gastos_personal",l:"Sueldos",a:"Sueldos"},
-  {id:"cargas_sociales",g:"gastos_personal",l:"Cargas Sociales",a:"Cargas Sociales"},
-  {id:"comisiones_p",g:"gastos_personal",l:"Comisiones",a:"Comisiones"},
-  {id:"aguinaldos",g:"gastos_personal",l:"Aguinaldos",a:"Aguinaldos"},
+  {id:"sueldos",g:"gastos_personal",l:"Sueldos",a:"Sueldos",aid:"5155"},
+  {id:"cargas_sociales",g:"gastos_personal",l:"Cargas Sociales",a:"Cargas Sociales",aid:"5157"},
+  {id:"comisiones_p",g:"gastos_personal",l:"Comisiones",a:"Comisiones",aid:"5158"},
+  {id:"aguinaldos",g:"gastos_personal",l:"Aguinaldos",a:"Aguinaldos",aid:"5160"},
+  {id:"riesgos_trabajo",g:"gastos_personal",l:"Póliza Riesgos del Trabajo",a:"Poliza de Riesgos del Trabajo",aid:"5159"},
   // GASTOS - Generales > Representación
-  {id:"atencion_cli",g:"gastos_generales",l:"Atención a Clientes",a:"Atencion a Clientes"},
-  {id:"viaticos_emp",g:"gastos_generales",l:"Viáticos a Empleados",a:"Viaticos a Empleados"},
+  {id:"atencion_cli",g:"gastos_generales",l:"Atención a Clientes",a:"Atencion a Clientes",aid:"5327"},
+  {id:"viaticos_emp",g:"gastos_generales",l:"Viáticos a Empleados",a:"Viaticos a Empleados",aid:"5326"},
+  {id:"gastos_viaje",g:"gastos_generales",l:"Gastos de Viaje",a:"Gastos de Viaje",aid:"5325"},
+  {id:"uniformes",g:"gastos_generales",l:"Uniformes para el Personal",a:"Uniformes para el Personal",aid:"5324"},
   // GASTOS - Generales > Oficina
-  {id:"aseo",g:"gastos_generales",l:"Aseo y Limpieza",a:"Aseo y Limpieza"},
-  {id:"mensajeria",g:"gastos_generales",l:"Mensajería",a:"Mensajeria"},
-  {id:"oficina",g:"gastos_generales",l:"Papelería y Suministros de Oficina",a:"Papeleria y Suministos de Oficina"},
+  {id:"aseo",g:"gastos_generales",l:"Aseo y Limpieza",a:"Aseo y Limpieza",aid:"5329"},
+  {id:"mensajeria",g:"gastos_generales",l:"Mensajería",a:"Mensajeria",aid:"5328"},
+  {id:"oficina",g:"gastos_generales",l:"Papelería y Suministros de Oficina",a:"Papeleria y Suministos de Oficina",aid:"5193"},
   // GASTOS - Generales > Seguros
-  {id:"seguros",g:"gastos_generales",l:"Seguro de Vehículos",a:"Seguro de Vehiculos"},
+  {id:"seguros",g:"gastos_generales",l:"Seguro de Vehículos",a:"Seguro de Vehiculos",aid:"5202"},
+  {id:"seguro_licencias",g:"gastos_generales",l:"Seguro de Licencias",a:"Seguro de Licencias",aid:"5201"},
   // GASTOS - Generales > Mantenimiento
-  {id:"mantenimiento",g:"gastos_generales",l:"Mantenimiento Propiedades Arrendadas",a:"Mantenimiento Propiedades Arrendadas"},
+  {id:"mantenimiento",g:"gastos_generales",l:"Mantenimiento Propiedades Arrendadas",a:"Mantenimiento Propiedades Arrendadas",aid:"5213"},
+  {id:"mant_maquinaria",g:"gastos_generales",l:"Mantenimiento de Maquinaria y Herramientas",a:"Mantenimiento de Maquinaria y Herramientas",aid:"5339"},
   // GASTOS - Generales > Cuotas
-  {id:"cuotas_susc",g:"gastos_generales",l:"Cuotas y Suscripciones",a:"Cuotas y Suscripciones"},
-  // GASTOS - Generales > Impuestos
-  {id:"impuestos_pat",g:"gastos_generales",l:"Impuestos y Patentes",a:"Impuestos y Patentes"},
+  {id:"cuotas_susc",g:"gastos_generales",l:"Cuotas y Suscripciones",a:"Cuotas y Suscripciones",aid:"5331"},
+  // GASTOS - Generales > Impuestos (sub-categorías)
+  {id:"patentes_mun",g:"gastos_generales",l:"Patentes Municipales",a:"Patentes Municipales",aid:"5335"},
+  {id:"imp_territoriales",g:"gastos_generales",l:"Impuestos Municipales y Territoriales",a:"Impuestos Municipales y Territoriales",aid:"5333"},
+  {id:"timbre_edu",g:"gastos_generales",l:"Timbre de Educación y Cultura",a:"Timbre de Educacion y Cultura",aid:"5334"},
+  {id:"imp_pers_jur",g:"gastos_generales",l:"Impuesto a las Personas Jurídicas",a:"Impuesto a las Personas Juridicas",aid:"5340"},
+  {id:"iva_soportado",g:"gastos_generales",l:"Gasto por IVA Soportado",a:"Gasto por IVA Soportado",aid:"5336"},
   // GASTOS - Generales > Servicios Profesionales
-  {id:"serv_prof",g:"gastos_generales",l:"Servicios Profesionales",a:"Servicios Profesionales"},
+  {id:"serv_prof",g:"gastos_generales",l:"Servicios Profesionales",a:"Servicios Profesionales",aid:"5341"},
   // GASTOS - Generales > Alquileres
-  {id:"alquiler",g:"gastos_generales",l:"Alquiler de Local",a:"Alquiler de Local"},
+  {id:"alquiler",g:"gastos_generales",l:"Alquiler de Local",a:"Alquiler de Local",aid:"5179"},
   // GASTOS - Generales > Servicios Públicos
-  {id:"serv_publicos",g:"gastos_generales",l:"Servicios Públicos (Tel/Agua/Luz)",a:"Telefonos"},
+  {id:"serv_publicos",g:"gastos_generales",l:"Teléfonos",a:"Telefonos",aid:"5185"},
+  {id:"agua",g:"gastos_generales",l:"Agua",a:"Agua",aid:"5183"},
+  {id:"electricidad",g:"gastos_generales",l:"Energía Eléctrica",a:"Energia Electrica",aid:"5184"},
+  {id:"internet_cable",g:"gastos_generales",l:"Internet y Cable",a:"Internet y Cable",aid:"5186"},
   // GASTOS - Generales > Publicidad
-  {id:"representacion",g:"gastos_generales",l:"Publicidad y Mercadeo",a:"Anuncios en Medios"},
+  {id:"representacion",g:"gastos_generales",l:"Publicidad y Mercadeo",a:"Anuncios en Medios",aid:"5337"},
+  {id:"ferias",g:"gastos_generales",l:"Ferias y Mercadeo",a:"Ferias y Otros de Mercadeo",aid:"5338"},
   // GASTOS - Financieros
-  {id:"com_bancarias",g:"gastos_financieros",l:"Comisiones Bancarias",a:"Comisiones Bancarias"},
-  {id:"intereses",g:"gastos_financieros",l:"Intereses Financieros",a:"Gastos por Intereses financieros"},
-  // OTROS
-  {id:"otro",g:"otros_gastos",l:"Otro",a:"Otros Gastos"},
+  {id:"com_bancarias",g:"gastos_financieros",l:"Comisiones Bancarias",a:"Comisiones Bancarias",aid:"5308"},
+  {id:"intereses",g:"gastos_financieros",l:"Intereses Financieros",a:"Gastos por Intereses financieros",aid:"5227"},
+  {id:"intereses_daniel",g:"gastos_financieros",l:"Intereses Daniel Aguilar",a:"Intereses Daniel Aguilar Akerman",aid:"5304"},
+  {id:"intereses_sonia",g:"gastos_financieros",l:"Intereses Sonia Azofeifa",a:"Intereses Sonia Azofeifa Villalobos",aid:"5305"},
+  // OTROS GASTOS
+  {id:"gastos_no_ded",g:"otros_gastos",l:"Gastos no Deducibles de ISR",a:"Gastos no Deducibles de ISR",aid:"5311"},
+  {id:"contrib_parafisc",g:"otros_gastos",l:"Contribuciones Parafiscales",a:"Contribuciones Parafiscales",aid:"5312"},
+  // OTROS (default)
+  {id:"otro",g:"otros_gastos",l:"Sin clasificar",a:null,aid:null},
 ];
 
 // ===== LIQUIDATION CATEGORY MAPPING =====
