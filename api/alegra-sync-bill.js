@@ -241,7 +241,9 @@ export default async function handler(req, res) {
       observations,
       currency: currencyCode,
       exchangeRate: exchangeRate,
-      categories,
+      purchases: {
+        categories: categories
+      },
       stamp: {
         generateStamp: false  // IMPORTANTE: NO timbrar. Es solo registro contable.
       }
