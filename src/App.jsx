@@ -44,20 +44,53 @@ const CABYS_VEHICLES = [
   { code: "4911404000000", label: "Pick up <= 5t", type: "pickup" },
 ];
 
-// Auto-suggest CABYS based on vehicle style
-const suggestCabys = (style) => {
+// Auto-suggest CABYS based on vehicle style and engine CC
+// Corte: <=2000cc usa codigo "...100", >2000cc usa codigo "...200"
+// Si cc no se provee, usa el default >2000 (mas comun)
+const suggestCabys = (style, cc) => {
   if (!style) return "";
   const s = style.toLowerCase();
+  const ccNum = parseInt(cc, 10);
+  const isSmall = !isNaN(ccNum) && ccNum > 0 && ccNum <= 2000;
+
+  // Pick up: no distingue CC
   if (s.includes("pick up") || s.includes("pickup")) return "4911404000000";
-  if (s.includes("suv")) return "4911306020200";
-  if (s.includes("sedan") || s.includes("sedán")) return "4911308050200";
-  if (s.includes("hatchback")) return "4911308040200";
-  if (s.includes("todoterreno")) return "4911307020200";
-  if (s.includes("coupe") || s.includes("coupé")) return "4911305000200";
-  if (s.includes("familiar") || s.includes("camioneta")) return "4911309000200";
+  // Microbus: no distingue CC
   if (s.includes("microbus") || s.includes("microbús")) return "4911200000100";
+  // Hibrido/electrico: no distingue CC
   if (s.includes("hibrido") || s.includes("híbrido") || s.includes("electri")) return "4911315000000";
+
+  // Estos si distinguen CC
+  if (s.includes("suv")) return isSmall ? "4911306020100" : "4911306020200";
+  if (s.includes("sedan") || s.includes("sedán")) return isSmall ? "4911308050100" : "4911308050200";
+  if (s.includes("hatchback")) return isSmall ? "4911308040100" : "4911308040200";
+  if (s.includes("todoterreno")) return isSmall ? "4911307020100" : "4911307020200";
+  if (s.includes("coupe") || s.includes("coupé")) return isSmall ? "4911305000100" : "4911305000200";
+  if (s.includes("familiar") || s.includes("camioneta")) return isSmall ? "4911309000100" : "4911309000200";
+
   return "";
+};
+
+// Opciones fijas para dropdowns
+const DRIVETRAIN_OPTIONS = ["4x2", "4x4", "AWD"];
+const FUEL_OPTIONS = ["Gasolina", "Diesel", "Eléctrico", "Híbrido"];
+
+// Helper: valores unicos de un campo del inventario, ordenados alfabeticamente
+// Se usa para alimentar los datalist "learning" de marca/modelo/color/año
+const uniqueFromInventory = (cars, field) => {
+  if (!cars || !Array.isArray(cars)) return [];
+  const set = new Set();
+  cars.forEach(c => {
+    const val = c[field];
+    if (val != null && String(val).trim() !== "") {
+      set.add(String(val).trim());
+    }
+  });
+  return Array.from(set).sort((a, b) => {
+    // Años: orden descendente (mas nuevo primero)
+    if (field === "y" || field === "year") return Number(b) - Number(a);
+    return a.localeCompare(b);
+  });
 };
 
 const GROUPS = [
@@ -828,6 +861,7 @@ export default function App() {
     client_email: "", client_address: "", client_workplace: "", client_occupation: "", client_civil_status: "",
     vehicle_plate: "", vehicle_brand: "", vehicle_model: "", vehicle_year: "", vehicle_color: "",
     vehicle_km: "", vehicle_engine: "", vehicle_drive: "", vehicle_fuel: "",
+    vehicle_style: "", vehicle_engine_cc: "",
     has_tradein: false,
     tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "", tradein_color: "",
     tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
@@ -842,12 +876,23 @@ export default function App() {
   });
 
   const selectVehicleForSale = (plate) => {
+    // Si elige "Otro", limpiar campos para que el vendedor los llene manualmente
+    if (plate === "__OTRO__") {
+      setSaleForm(prev => ({ ...prev,
+        vehicle_id: null, vehicle_plate: "", vehicle_brand: "", vehicle_model: "",
+        vehicle_style: "", vehicle_year: "", vehicle_color: "", vehicle_km: "",
+        vehicle_drive: "", vehicle_fuel: "", vehicle_engine_cc: "",
+        vehicle_cabys: "", sale_price: "",
+      }));
+      return;
+    }
     const car = cars.find(c => c.p === plate);
     if (!car) return;
     setSaleForm(prev => ({ ...prev,
       vehicle_id: car.id || null,
       vehicle_plate: car.p, vehicle_brand: car.b, vehicle_model: car.m, vehicle_year: car.y,
       vehicle_color: car.co, vehicle_km: car.km, vehicle_drive: car.dr, vehicle_fuel: car.f,
+      vehicle_style: car.st || "", vehicle_engine_cc: car.engine_cc || "",
       vehicle_cabys: car.cabys || "",
       sale_price: car.usd,
     }));
@@ -965,6 +1010,8 @@ export default function App() {
       vehicle_model: saleForm.vehicle_model, vehicle_year: parseInt(saleForm.vehicle_year) || null,
       vehicle_color: saleForm.vehicle_color, vehicle_km: parseFloat(saleForm.vehicle_km) || null,
       vehicle_engine: saleForm.vehicle_engine, vehicle_drive: saleForm.vehicle_drive, vehicle_fuel: saleForm.vehicle_fuel,
+      vehicle_style: saleForm.vehicle_style || null,
+      vehicle_engine_cc: parseInt(saleForm.vehicle_engine_cc) || null,
       vehicle_cabys: saleForm.vehicle_cabys || null,
       has_tradein: saleForm.has_tradein,
       tradein_plate: saleForm.has_tradein ? saleForm.tradein_plate : null,
@@ -1058,6 +1105,7 @@ export default function App() {
       vehicle_plate: sale.vehicle_plate || "", vehicle_brand: sale.vehicle_brand || "", vehicle_model: sale.vehicle_model || "",
       vehicle_year: sale.vehicle_year || "", vehicle_color: sale.vehicle_color || "", vehicle_km: sale.vehicle_km || "",
       vehicle_engine: sale.vehicle_engine || "", vehicle_drive: sale.vehicle_drive || "", vehicle_fuel: sale.vehicle_fuel || "",
+      vehicle_style: sale.vehicle_style || "", vehicle_engine_cc: sale.vehicle_engine_cc || "",
       vehicle_cabys: sale.vehicle_cabys || "",
       has_tradein: sale.has_tradein || false,
       tradein_plate: sale.tradein_plate || "", tradein_brand: sale.tradein_brand || "", tradein_model: sale.tradein_model || "",
@@ -2354,20 +2402,33 @@ export default function App() {
 
         {editingVehicle ? (
           <div>
+            <datalist id="dl-brands">{uniqueFromInventory(cars, "b").map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="dl-models">{uniqueFromInventory(cars, "m").map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="dl-colors">{uniqueFromInventory(cars, "co").map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="dl-years">{uniqueFromInventory(cars, "y").map(v => <option key={v} value={v} />)}</datalist>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px",marginBottom:14}}>
-              {[["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Cilindrada (CC)","engine_cc"],["# Pasajeros","passengers"],["Serie/Chasis","chassis"],["Proveedor","purchase_supplier"],["Costo compra (₡)","purchase_cost"],["TC referencia","exchange_rate"],["Precio venta USD","price_usd"],["Precio venta CRC","price_crc"]].map(([l,k])=>(
-                <div key={k}>
-                  <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div>
-                  <input value={editingVehicle[k]||""} onChange={e=>setEditingVehicle(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
-                </div>
-              ))}
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div><input list="dl-brands" value={editingVehicle.brand||""} onChange={e=>setEditingVehicle(prev=>({...prev,brand:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div><input list="dl-models" value={editingVehicle.model||""} onChange={e=>setEditingVehicle(prev=>({...prev,model:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Año</div><input list="dl-years" type="number" value={editingVehicle.year||""} onChange={e=>setEditingVehicle(prev=>({...prev,year:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={editingVehicle.color||""} onChange={e=>setEditingVehicle(prev=>({...prev,color:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div><input type="number" value={editingVehicle.km||""} onChange={e=>setEditingVehicle(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div><select value={editingVehicle.drive||editingVehicle.drivetrain||""} onChange={e=>setEditingVehicle(prev=>({...prev,drive:e.target.value,drivetrain:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={editingVehicle.fuel||""} onChange={e=>setEditingVehicle(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div><input type="number" value={editingVehicle.engine_cc||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Pasajeros</div><input type="number" value={editingVehicle.passengers||""} onChange={e=>setEditingVehicle(prev=>({...prev,passengers:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Serie/Chasis</div><input value={editingVehicle.chassis||""} onChange={e=>setEditingVehicle(prev=>({...prev,chassis:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Proveedor</div><input value={editingVehicle.purchase_supplier||""} onChange={e=>setEditingVehicle(prev=>({...prev,purchase_supplier:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Costo compra (₡)</div><input type="number" value={editingVehicle.purchase_cost||""} onChange={e=>setEditingVehicle(prev=>({...prev,purchase_cost:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>TC referencia</div><input type="number" value={editingVehicle.exchange_rate||""} onChange={e=>setEditingVehicle(prev=>({...prev,exchange_rate:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta USD</div><input type="number" value={editingVehicle.price_usd||""} onChange={e=>setEditingVehicle(prev=>({...prev,price_usd:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta CRC</div><input type="number" value={editingVehicle.price_crc||""} onChange={e=>setEditingVehicle(prev=>({...prev,price_crc:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div>
                 <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div>
                 <input type="date" value={editingVehicle.purchase_date||""} onChange={e=>setEditingVehicle(prev=>({...prev,purchase_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} />
               </div>
               <div>
                 <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div>
-                <select value={editingVehicle.style||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,style:val,cabys_code:suggestCabys(val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
+                <select value={editingVehicle.style||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
                   <option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
@@ -2404,13 +2465,27 @@ export default function App() {
 
       {showAddVehicle&&newVehicleForm&&(<div style={S.modal} onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}}><div style={{...S.mbox,maxWidth:600}} onClick={e=>e.stopPropagation()}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}><h3 style={{fontSize:18,fontWeight:800,margin:0}}>Agregar Vehículo</h3><button onClick={()=>{setShowAddVehicle(false);setNewVehicleForm(null);}} style={{background:"none",border:"none",cursor:"pointer",color:"#8b8fa4",fontSize:18}}>✕</button></div>
+        <datalist id="dl-brands">{uniqueFromInventory(cars, "b").map(v => <option key={v} value={v} />)}</datalist>
+        <datalist id="dl-models">{uniqueFromInventory(cars, "m").map(v => <option key={v} value={v} />)}</datalist>
+        <datalist id="dl-colors">{uniqueFromInventory(cars, "co").map(v => <option key={v} value={v} />)}</datalist>
+        <datalist id="dl-years">{uniqueFromInventory(cars, "y").map(v => <option key={v} value={v} />)}</datalist>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>
-          {[["Placa *","plate"],["Marca","brand"],["Modelo","model"],["Año","year"],["Color","color"],["Kilometraje","km"],["Tracción","drive"],["Combustible","fuel"],["Cilindrada (CC)","engine_cc"],["# Pasajeros","passengers"],["Serie/Chasis","chassis"]].map(([l,k])=>(<div key={k}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>{l}</div><input value={newVehicleForm[k]||""} onChange={e=>setNewVehicleForm(prev=>({...prev,[k]:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>))}
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Placa *</div><input value={newVehicleForm.plate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,plate:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Marca</div><input list="dl-brands" value={newVehicleForm.brand||""} onChange={e=>setNewVehicleForm(prev=>({...prev,brand:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Modelo</div><input list="dl-models" value={newVehicleForm.model||""} onChange={e=>setNewVehicleForm(prev=>({...prev,model:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Año</div><input list="dl-years" type="number" value={newVehicleForm.year||""} onChange={e=>setNewVehicleForm(prev=>({...prev,year:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={newVehicleForm.color||""} onChange={e=>setNewVehicleForm(prev=>({...prev,color:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div><input type="number" value={newVehicleForm.km||""} onChange={e=>setNewVehicleForm(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div><select value={newVehicleForm.drive||""} onChange={e=>setNewVehicleForm(prev=>({...prev,drive:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={newVehicleForm.fuel||""} onChange={e=>setNewVehicleForm(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div><input type="number" value={newVehicleForm.engine_cc||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Pasajeros</div><input type="number" value={newVehicleForm.passengers||""} onChange={e=>setNewVehicleForm(prev=>({...prev,passengers:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Serie/Chasis</div><input value={newVehicleForm.chassis||""} onChange={e=>setNewVehicleForm(prev=>({...prev,chassis:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div><input type="date" value={newVehicleForm.entry_date||""} onChange={e=>setNewVehicleForm(prev=>({...prev,entry_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Costo compra (₡)</div><input type="number" value={newVehicleForm.purchase_cost||""} onChange={e=>setNewVehicleForm(prev=>({...prev,purchase_cost:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tipo cambio (ref.)</div><input type="number" value={newVehicleForm.exchange_rate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,exchange_rate:e.target.value}))} placeholder="Ej: 530" style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta (₡)</div><input type="number" value={newVehicleForm.price_crc||""} onChange={e=>setNewVehicleForm(prev=>({...prev,price_crc:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estado</div><select value={newVehicleForm.status||"disponible"} onChange={e=>setNewVehicleForm(prev=>({...prev,status:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="disponible">Disponible</option><option value="reservado">Reservado</option></select></div>
           <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div><select value={newVehicleForm.cabys_code||""} onChange={e=>setNewVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar CABYS</option>{CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}</select></div>
         </div>
@@ -2847,7 +2922,7 @@ export default function App() {
             {(opts.options || []).map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
           </select>
         ) : (
-          <input value={F[key] || ""} onChange={e => uf(key, e.target.value)} placeholder={opts.ph || ""} type={opts.inputType || "text"} style={{ ...S.inp, width: "100%" }} />
+          <input list={opts.list || undefined} value={F[key] || ""} onChange={e => { uf(key, e.target.value); if (opts.onChange) opts.onChange(e.target.value); }} placeholder={opts.ph || ""} type={opts.inputType || "text"} style={{ ...S.inp, width: "100%" }} />
         )}
       </div>
     );
@@ -2940,22 +3015,29 @@ export default function App() {
           {/* VEHICLE BEING SOLD */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Vehículo que Compra</div>
+            <datalist id="dl-sale-brands">{uniqueFromInventory(cars, "b").map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="dl-sale-models">{uniqueFromInventory(cars, "m").map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="dl-sale-colors">{uniqueFromInventory(cars, "co").map(v => <option key={v} value={v} />)}</datalist>
+            <datalist id="dl-sale-years">{uniqueFromInventory(cars, "y").map(v => <option key={v} value={v} />)}</datalist>
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Seleccionar del inventario</div>
               <select value={F.vehicle_plate || ""} onChange={e => selectVehicleForSale(e.target.value)} style={{ ...S.sel, width: "100%" }}>
                 <option value="">Seleccionar vehículo</option>
                 {cars.filter(c => c.s === "disponible").map(c => <option key={c.p} value={c.p}>{c.p} - {c.b} {c.m} {c.y} - {fmt(c.usd, "USD")}</option>)}
+                <option value="__OTRO__">➕ Otro (carro no listado)</option>
               </select>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
               {fld("Placa", "vehicle_plate")}
-              {fld("Marca", "vehicle_brand")}
-              {fld("Estilo / Modelo", "vehicle_model")}
-              {fld("Año", "vehicle_year", { inputType: "number" })}
-              {fld("Color", "vehicle_color")}
+              {fld("Marca", "vehicle_brand", { list: "dl-sale-brands" })}
+              {fld("Modelo", "vehicle_model", { list: "dl-sale-models" })}
+              {fld("Estilo", "vehicle_style", { type: "select", options: [{v:"SUV",l:"SUV"},{v:"SEDAN",l:"SEDAN"},{v:"PICK UP",l:"PICK UP"},{v:"HATCHBACK",l:"HATCHBACK"},{v:"COUPE",l:"COUPE"},{v:"FAMILIAR",l:"FAMILIAR"},{v:"TODOTERRENO",l:"TODOTERRENO"},{v:"MICROBUS",l:"MICROBUS"}] })}
+              {fld("Año", "vehicle_year", { inputType: "number", list: "dl-sale-years" })}
+              {fld("Color", "vehicle_color", { list: "dl-sale-colors" })}
               {fld("Kilometraje", "vehicle_km", { inputType: "number" })}
-              {fld("Tracción", "vehicle_drive")}
-              {fld("Combustible", "vehicle_fuel")}
+              {fld("Tracción", "vehicle_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
+              {fld("Combustible", "vehicle_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
+              {fld("Cilindrada (CC)", "vehicle_engine_cc", { inputType: "number" })}
             </div>
           </div>
 
