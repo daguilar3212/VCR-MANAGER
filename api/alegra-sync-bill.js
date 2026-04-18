@@ -218,6 +218,20 @@ export default async function handler(req, res) {
       categories.push(cat);
     }
 
+    // Si el XML tiene OtrosCargos (ej: impuesto de servicio 10% en restaurantes),
+    // se agrega como una linea ADICIONAL con tax: [] (sin impuesto).
+    // Asi lo hace la contadora manualmente en Alegra.
+    if (invoice.other_charges && parseFloat(invoice.other_charges) > 0) {
+      const serviceDesc = invoice.other_charges_detail || 'Servicio';
+      categories.push({
+        id: String(invoice.alegra_account_id),
+        price: Math.round(parseFloat(invoice.other_charges) * 100) / 100,
+        quantity: 1,
+        observations: serviceDesc.length > 80 ? serviceDesc.slice(0, 80) : serviceDesc,
+        tax: []
+      });
+    }
+
     // 5) Armar observations
     const plateStr = invoice.detected_plate ? ` | ${invoice.detected_plate}` : '';
     const observations = `VCR #${invoice.consecutive || invoice.last_four}${plateStr}`;
