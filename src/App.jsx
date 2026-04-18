@@ -349,6 +349,7 @@ export default function App() {
   const [sales, setSales] = useState([]);
   const [agents, setAgents] = useState([]);
   const [salesView, setSalesView] = useState("list"); // list, form, preview
+  const [searchingClient, setSearchingClient] = useState(false);
   const [saleForm, setSaleForm] = useState(null);
   const [pickedSale, setPickedSale] = useState(null);
   const [saleFilter, setSaleFilter] = useState("all");
@@ -1019,6 +1020,64 @@ export default function App() {
         client_occupation: c.client_occupation || "",
         client_civil_status: c.client_civil_status || "",
       }));
+      return true; // encontrado
+    }
+    return false; // no encontrado localmente
+  };
+
+  // Busqueda con boton lupa: primero en ventas anteriores, despues en Alegra
+  const searchClient = async () => {
+    const cedula = (saleForm?.client_cedula || "").replace(/[\s-]/g, "").trim();
+    if (!cedula) {
+      alert("Escribí la cédula primero.");
+      return;
+    }
+
+    setSearchingClient(true);
+    try {
+      // 1. Buscar primero en ventas anteriores locales
+      const foundLocal = await lookupClientByCedula(cedula);
+      if (foundLocal) {
+        alert("✓ Cliente encontrado en ventas anteriores.");
+        return;
+      }
+
+      // 2. No encontrado local -> buscar en Alegra
+      const res = await fetch('/api/alegra-lookup-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cedula })
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        alert(`Error buscando en Alegra: ${data.error || 'desconocido'}`);
+        return;
+      }
+
+      if (!data.found) {
+        alert("Cliente no encontrado en Alegra. Llená los datos manualmente.");
+        return;
+      }
+
+      // Encontrado en Alegra -> autocompletar
+      const c = data.client;
+      setSaleForm(prev => ({
+        ...prev,
+        client_id_type: c.client_id_type || prev.client_id_type || "fisica",
+        client_name: c.name || "",
+        client_phone1: c.phone1 || "",
+        client_phone2: c.phone2 || "",
+        client_email: c.email || "",
+        client_address: c.address || "",
+        // workplace, occupation, civil_status no estan en Alegra, se dejan vacios
+      }));
+      alert("✓ Cliente importado de Alegra. Completá los campos restantes (trabajo, oficio, estado civil).");
+
+    } catch (e) {
+      alert(`Error de red: ${e.message}`);
+    } finally {
+      setSearchingClient(false);
     }
   };
 
@@ -3181,21 +3240,37 @@ export default function App() {
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Datos del Cliente</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
               {fld("Tipo de identificación *", "client_id_type", { type: "select", options: [{v:"fisica",l:"Cédula Física"},{v:"juridica",l:"Cédula Jurídica"},{v:"dimex",l:"DIMEX"},{v:"extranjero",l:"Extranjero/Pasaporte"}] })}
-              {fld("Número de identificación *", "client_cedula", {
-                upperCase: true,
-                onChange: (val) => {
-                  // Quitar espacios y guiones al escribir (estandarizar formato)
-                  const clean = val.replace(/[\s-]/g, "");
-                  if (clean !== val) uf("client_cedula", clean);
-                },
-                onBlur: (val) => {
-                  // Al salir: lookup del cliente
-                  const clean = val.replace(/[\s-]/g, "");
-                  if (clean !== val) return clean;
-                  lookupClientByCedula(clean);
-                  return undefined;
-                }
-              })}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Número de identificación *</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={F.client_cedula || ""}
+                    onChange={e => {
+                      // Quitar espacios y guiones, mayusculas
+                      const clean = e.target.value.replace(/[\s-]/g, "").toUpperCase();
+                      uf("client_cedula", clean);
+                    }}
+                    placeholder="Sin espacios ni guiones"
+                    style={{ ...S.inp, flex: 1 }}
+                  />
+                  <button
+                    onClick={searchClient}
+                    disabled={searchingClient}
+                    title="Buscar cliente en Alegra"
+                    style={{
+                      ...S.sel,
+                      background: searchingClient ? "#1e2130" : "#4f8cff18",
+                      color: searchingClient ? "#8b8fa4" : "#4f8cff",
+                      fontWeight: 600,
+                      cursor: searchingClient ? "not-allowed" : "pointer",
+                      padding: "8px 14px",
+                      whiteSpace: "nowrap"
+                    }}
+                  >
+                    {searchingClient ? "⏳..." : "🔍 Buscar"}
+                  </button>
+                </div>
+              </div>
               {fld("Nombre del cliente *", "client_name", { full: true, upperCase: true })}
               {fld("Teléfono 1", "client_phone1", { onChange: (val) => {
                 const digits = val.replace(/\D/g, "");
