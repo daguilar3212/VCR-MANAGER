@@ -15,7 +15,7 @@ export default async function handler(req, res) {
   const auth = Buffer.from(`${email}:${token}`).toString('base64');
 
   try {
-    const response = await fetch('https://api.alegra.com/api/v1/bank-accounts?limit=100', {
+    const response = await fetch('https://api.alegra.com/api/v1/bank-accounts?limit=30', {
       method: 'GET',
       headers: {
         'Authorization': `Basic ${auth}`,
