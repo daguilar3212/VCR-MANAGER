@@ -3565,25 +3565,20 @@ export default function App() {
                       </button>
                     </div>
                   ) : (
-                    /* NO PAGADA: campos + boton de pago */
-                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    /* NO PAGADA: campos en lineas separadas como los otros selects que funcionan */
+                    <div>
+                      <div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Cuenta bancaria</div>
                       <select
                         value={pickedInv.paidBankId != null ? String(pickedInv.paidBankId) : ""}
-                        onChange={e=>{
+                        onChange={e => {
                           const val = e.target.value;
-                          if (!val) {
-                            updateInv(pickedInv.key, { paidBankId: null, paidBank: '' });
-                            setPickedInv({...pickedInv, paidBankId: null, paidBank: ''});
-                            return;
-                          }
-                          const bankId = parseInt(val, 10);
-                          // Comparacion con conversion a numero para manejar bigint de Supabase
-                          const bank = bankAccounts.find(b => parseInt(b.id, 10) === bankId);
+                          const bankId = val ? parseInt(val, 10) : null;
+                          const bank = bankId != null ? bankAccounts.find(b => parseInt(b.id, 10) === bankId) : null;
                           const bankName = bank ? bank.name : '';
                           updateInv(pickedInv.key, { paidBankId: bankId, paidBank: bankName });
                           setPickedInv({...pickedInv, paidBankId: bankId, paidBank: bankName});
                         }}
-                        style={{...S.sel, flex: 1, minWidth: 180}}
+                        style={{...S.sel, width:"100%", marginBottom:8}}
                       >
                         <option value="">Seleccionar cuenta...</option>
                         {bankAccounts
@@ -3595,24 +3590,27 @@ export default function App() {
                           ))
                         }
                       </select>
+                      <div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}># depósito / referencia</div>
                       <input
-                        placeholder="# depósito / referencia"
+                        placeholder="Número de depósito, transferencia, etc."
                         value={pickedInv.paidRef||""}
                         onChange={e=>{
                           updateInv(pickedInv.key,{paidRef:e.target.value});
                           setPickedInv({...pickedInv,paidRef:e.target.value});
                         }}
-                        style={{...S.inp, flex:1, minWidth: 150}}
+                        style={{...S.inp, width:"100%", marginBottom:10}}
                       />
                       <button
                         onClick={() => markAsPaidAndSync(pickedInv)}
                         style={{
                           ...S.sel,
+                          width:"100%",
                           background:"#10b98120",
                           color:"#10b981",
                           fontWeight:600,
                           cursor:"pointer",
-                          padding:"8px 14px"
+                          padding:"10px 14px",
+                          fontSize:14
                         }}
                       >
                         ✓ Marcar pagada
