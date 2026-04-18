@@ -1,9 +1,10 @@
 // Semilla inicial de contactos proveedores desde Alegra hacia Supabase.
 // Lee TODOS los contactos tipo "provider" en Alegra (paginado) y rellena
-// provider_mapping.alegra_contact_id buscando por cedula (identification).
+// provider_mapping.alegra_contact_id SOLO para cedulas que ya existen en
+// provider_mapping. No crea filas nuevas para evitar conflicto con la
+// constraint NOT NULL de default_category_id.
 //
 // Uso: GET /api/alegra-seed-contacts
-// Correr UNA SOLA VEZ despues de agregar la columna alegra_contact_id.
 // Es idempotente: se puede volver a correr sin duplicar nada.
 
 import { createClient } from '@supabase/supabase-js';
@@ -24,7 +25,6 @@ export default async function handler(req, res) {
   const supabase = createClient(supabaseUrl, supabaseKey);
   const auth = Buffer.from(`${email}:${token}`).toString('base64');
 
-  // Alegra pagina con start (offset) y limit. Max limit por request = 30.
   const PAGE_SIZE = 30;
   let start = 0;
   let totalFetched = 0;
@@ -57,14 +57,15 @@ export default async function handler(req, res) {
         }
       }
       totalFetched += page.length;
-      if (page.length < PAGE_SIZE) break; // ultima pagina
+      if (page.length < PAGE_SIZE) break;
       start += PAGE_SIZE;
-
-      // Proteccion: si hay mas de 2000 proveedores algo esta raro
       if (start > 2000) break;
     }
 
-    // 2) Traer provider_mapping actual (solo cedulas + contact_id si existe)
+    const alegraByCedula = {};
+    contacts.forEach(c => { alegraByCedula[c.cedula] = c; });
+
+    // 2) Traer provider_mapping actual
     const { data: existingMap, error: mapErr } = await supabase
       .from('provider_mapping')
       .select('supplier_id, supplier_name, alegra_contact_id');
@@ -73,61 +74,40 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, step: 'read_mapping', error: mapErr.message });
     }
 
-    const mapByCedula = {};
-    (existingMap || []).forEach(m => { mapByCedula[m.supplier_id] = m; });
-
-    // 3) Clasificar: matched (actualizar), new_insert (crear), already_set (skip)
+    // 3) Solo UPDATE de filas existentes
     let matched = 0;
-    let newInsert = 0;
     let alreadySet = 0;
-    const rowsToUpsert = [];
-    const matchedCedulas = new Set();
+    let notFoundInAlegra = 0;
+    const notFoundList = [];
 
-    for (const c of contacts) {
-      const existing = mapByCedula[c.cedula];
-      if (existing) {
-        matchedCedulas.add(c.cedula);
-        if (existing.alegra_contact_id === c.alegra_id) {
-          alreadySet++;
-        } else {
-          rowsToUpsert.push({
-            supplier_id: c.cedula,
-            supplier_name: existing.supplier_name || c.name,
-            alegra_contact_id: c.alegra_id
-          });
-          matched++;
+    for (const row of (existingMap || [])) {
+      const alegraContact = alegraByCedula[row.supplier_id];
+      if (!alegraContact) {
+        notFoundInAlegra++;
+        if (notFoundList.length < 20) {
+          notFoundList.push({ cedula: row.supplier_id, name: row.supplier_name });
         }
-      } else {
-        // Proveedor que existe en Alegra pero no en provider_mapping (nunca facturo por Gmail)
-        rowsToUpsert.push({
-          supplier_id: c.cedula,
-          supplier_name: c.name,
-          alegra_contact_id: c.alegra_id
-        });
-        newInsert++;
+        continue;
       }
-    }
-
-    // 4) Upsert en lotes de 100
-    const BATCH = 100;
-    let upserted = 0;
-    for (let i = 0; i < rowsToUpsert.length; i += BATCH) {
-      const chunk = rowsToUpsert.slice(i, i + BATCH);
-      const { error: upErr } = await supabase
+      if (row.alegra_contact_id === alegraContact.alegra_id) {
+        alreadySet++;
+        continue;
+      }
+      const { error: updErr } = await supabase
         .from('provider_mapping')
-        .upsert(chunk, { onConflict: 'supplier_id' });
-      if (upErr) {
+        .update({ alegra_contact_id: alegraContact.alegra_id })
+        .eq('supplier_id', row.supplier_id);
+      if (updErr) {
         return res.status(500).json({
-          ok: false, step: 'upsert', batch_start: i, error: upErr.message
+          ok: false, step: 'update', cedula: row.supplier_id, error: updErr.message
         });
       }
-      upserted += chunk.length;
+      matched++;
     }
 
-    // 5) Detectar cedulas en provider_mapping que NO estan en Alegra (revision manual)
-    const orphanCedulas = (existingMap || [])
-      .filter(m => !matchedCedulas.has(m.supplier_id) && !m.alegra_contact_id)
-      .map(m => ({ cedula: m.supplier_id, name: m.supplier_name }));
+    // 4) Info: cuantos en Alegra no estan en mapping
+    const existingCedulas = new Set((existingMap || []).map(m => m.supplier_id));
+    const alegraOnlyCount = contacts.filter(c => !existingCedulas.has(c.cedula)).length;
 
     return res.status(200).json({
       ok: true,
@@ -135,16 +115,15 @@ export default async function handler(req, res) {
         alegra_contacts_fetched: totalFetched,
         alegra_contacts_with_cedula: contacts.length,
         mapping_rows_existing: existingMap?.length || 0,
-        matched_updated: matched,
-        new_rows_created: newInsert,
+        updated_with_contact_id: matched,
         already_correct_skipped: alreadySet,
-        total_upserted: upserted,
-        orphans_in_mapping_not_in_alegra: orphanCedulas.length
+        in_mapping_but_not_in_alegra: notFoundInAlegra,
+        in_alegra_but_not_in_mapping: alegraOnlyCount
       },
-      orphans_sample: orphanCedulas.slice(0, 10)
+      orphans_sample_mapping_not_in_alegra: notFoundList
     });
 
   } catch (err) {
-    return res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+    return res.status(500).json({ ok: false, error: err.message });
   }
 }
