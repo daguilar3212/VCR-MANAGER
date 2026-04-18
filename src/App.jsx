@@ -3572,11 +3572,14 @@ export default function App() {
                         value={pickedInv.paidBankId != null ? String(pickedInv.paidBankId) : ""}
                         onChange={e => {
                           const val = e.target.value;
+                          console.log('[DEBUG] onChange disparado, val=', val);
                           const bankId = val ? parseInt(val, 10) : null;
                           const bank = bankId != null ? bankAccounts.find(b => parseInt(b.id, 10) === bankId) : null;
                           const bankName = bank ? bank.name : '';
+                          console.log('[DEBUG] bankId=', bankId, 'bank=', bank, 'bankAccounts.length=', bankAccounts.length);
                           updateInv(pickedInv.key, { paidBankId: bankId, paidBank: bankName });
                           setPickedInv({...pickedInv, paidBankId: bankId, paidBank: bankName});
+                          console.log('[DEBUG] setPickedInv llamado con paidBankId=', bankId);
                         }}
                         style={{...S.sel, width:"100%", marginBottom:8}}
                       >
