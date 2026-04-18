@@ -224,15 +224,15 @@ export default async function handler(req, res) {
       ? parseFloat(invoice.exchange_rate)
       : 1;
 
+    const currencyCode = invoice.currency || 'CRC';
+
     const billPayload = {
       provider: contactId,
       date: invoice.emission_date,
       dueDate: invoice.due_date || invoice.emission_date,
       observations,
-      currency: {
-        code: invoice.currency || 'CRC',
-        exchangeRate: exchangeRate
-      },
+      currency: currencyCode,         // string directo (no objeto)
+      exchangeRate: exchangeRate,     // como campo top-level
       categories,
       stamp: {
         generateStamp: false  // IMPORTANTE: NO timbrar. Es solo registro contable.
