@@ -364,7 +364,93 @@ export default function App() {
         alegraBillId: inv.alegra_bill_id || null,
         alegraSyncError: inv.alegra_sync_error || null,
         alegraAccountId: inv.alegra_account_id || null,
+        alegraPaymentId: inv.alegra_payment_id || null,
+        alegraPaymentSyncedAt: inv.alegra_payment_synced_at || null,
       })));
+    }
+  };
+
+  const markAsPaidAndSync = async (inv) => {
+    // Validaciones Opcion A: todo tiene que estar listo antes
+    if (!inv.alegraBillId) {
+      alert(
+        '⚠ Esta factura aún no está sincronizada a Alegra.\n\n' +
+        'Primero hacé click en el botón "→ Alegra" para crear la bill allá. ' +
+        'Después podrás marcarla como pagada.'
+      );
+      return;
+    }
+    if (!inv.paidBankId) {
+      alert('⚠ Seleccioná la cuenta bancaria primero.');
+      return;
+    }
+    if (!inv.paidRef || !inv.paidRef.trim()) {
+      alert('⚠ Ingresá el número de depósito o referencia primero.');
+      return;
+    }
+
+    const bank = bankAccounts.find(b => b.id === inv.paidBankId);
+    const conf = window.confirm(
+      `¿Marcar factura como pagada?\n\n` +
+      `Proveedor: ${inv.supName}\n` +
+      `Monto: ${inv.total}\n` +
+      `Cuenta: ${bank ? bank.name : '-'}\n` +
+      `Referencia: ${inv.paidRef}\n\n` +
+      `Esto va a:\n` +
+      `1. Marcar como pagada en VCR Manager\n` +
+      `2. Crear el pago en Alegra vinculado a la bill #${inv.alegraBillId}`
+    );
+    if (!conf) return;
+
+    // Paso 1: marcar pagada localmente
+    const today = new Date().toISOString().slice(0, 10);
+    updateInv(inv.key, {
+      payStatus: 'paid',
+      paid_date: today
+    });
+    setPickedInv({...inv, payStatus: 'paid'});
+
+    // Forzar update en DB del paid_date (updateInv no tiene ese mapping)
+    await supabase.from('invoices')
+      .update({ pay_status: 'paid', paid_date: today })
+      .eq('id', inv.dbId);
+
+    // Paso 2: enviar pago a Alegra
+    try {
+      const res = await fetch('/api/alegra-sync-payment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_id: inv.dbId })
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        alert(`✓ Pagada. Alegra Payment ID: ${data.alegra_payment_id}`);
+        await loadInvoices();
+        // Refrescar pickedInv
+        const { data: fresh } = await supabase.from('invoices').select('*').eq('id', inv.dbId).single();
+        if (fresh && pickedInv && pickedInv.dbId === inv.dbId) {
+          setPickedInv({
+            ...pickedInv,
+            payStatus: 'paid',
+            alegraPaymentId: fresh.alegra_payment_id
+          });
+        }
+      } else {
+        const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+        alert(
+          `⚠ Factura marcada como pagada localmente, pero el sync a Alegra falló:\n\n` +
+          `${errMsg}\n\nStep: ${data.step || 'n/a'}\n\n` +
+          `Podés reintentar luego o registrar el pago manualmente en Alegra.`
+        );
+        await loadInvoices();
+      }
+    } catch (e) {
+      alert(
+        `⚠ Factura marcada como pagada localmente, pero hubo error de red:\n\n${e.message}\n\n` +
+        `Podés reintentar el sync más tarde.`
+      );
+      await loadInvoices();
     }
   };
 
@@ -3449,17 +3535,40 @@ export default function App() {
                 {/* Payment status */}
                 <div style={{marginBottom:14}}>
                   <div style={{fontSize:12,color:"#8b8fa4",marginBottom:4}}>Estado de pago</div>
-                  <div style={{display:"flex",gap:8}}>
-                    <button onClick={() => {
-                      const ns = pickedInv.payStatus==="paid"?"pending":"paid";
-                      updateInv(pickedInv.key, {payStatus:ns});
-                      setPickedInv({...pickedInv,payStatus:ns});
-                    }} style={{...S.sel,flex:"0 0 auto",background:pickedInv.payStatus==="paid"?"#10b98120":"#1e2130",color:pickedInv.payStatus==="paid"?"#10b981":"#8b8fa4",fontWeight:600}}>
-                      {pickedInv.payStatus==="paid"?"✓ Pagada":"Marcar pagada"}
-                    </button>
-                    {pickedInv.payStatus==="paid"&&<>
+
+                  {pickedInv.payStatus === "paid" ? (
+                    /* YA PAGADA: muestra info en modo lectura */
+                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      <span style={{...S.badge("#10b981"),fontSize:12,padding:"6px 10px"}}>✓ Pagada</span>
+                      <span style={{fontSize:12,color:"#8b8fa4"}}>Cuenta:</span>
+                      <span style={{fontSize:12,fontWeight:600}}>{pickedInv.paidBank || "-"}</span>
+                      <span style={{fontSize:12,color:"#8b8fa4",marginLeft:8}}>Ref:</span>
+                      <span style={{fontSize:12,fontWeight:600}}>{pickedInv.paidRef || "-"}</span>
+                      {pickedInv.alegraPaymentId ? (
+                        <span style={{...S.badge("#10b981"),fontSize:11,marginLeft:8}}>
+                          ✓ Alegra Pago #{pickedInv.alegraPaymentId}
+                        </span>
+                      ) : (
+                        <span style={{...S.badge("#f59e0b"),fontSize:11,marginLeft:8}}>
+                          ⚠ No sincronizado a Alegra
+                        </span>
+                      )}
+                      <button
+                        onClick={() => {
+                          if (!window.confirm("¿Desmarcar como pagada?\n\nNOTA: esto NO borra el pago en Alegra. Si ya se envió, hay que borrarlo manualmente allá.")) return;
+                          updateInv(pickedInv.key, {payStatus:"pending"});
+                          setPickedInv({...pickedInv, payStatus:"pending"});
+                        }}
+                        style={{...S.sel, fontSize:11, padding:"4px 10px", background:"#1e2130", color:"#8b8fa4", marginLeft:"auto"}}
+                      >
+                        Desmarcar
+                      </button>
+                    </div>
+                  ) : (
+                    /* NO PAGADA: campos + boton de pago */
+                    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                       <select
-                        value={pickedInv.paidBankId || ""}
+                        value={pickedInv.paidBankId != null ? String(pickedInv.paidBankId) : ""}
                         onChange={e=>{
                           const bankId = e.target.value ? parseInt(e.target.value) : null;
                           const bank = bankAccounts.find(b => b.id === bankId);
@@ -3467,21 +3576,42 @@ export default function App() {
                           updateInv(pickedInv.key, { paidBankId: bankId, paidBank: bankName });
                           setPickedInv({...pickedInv, paidBankId: bankId, paidBank: bankName});
                         }}
-                        style={{...S.sel, flex: 1}}
+                        style={{...S.sel, flex: 1, minWidth: 180}}
                       >
                         <option value="">Seleccionar cuenta...</option>
                         {bankAccounts
                           .filter(b => b.currency === (pickedInv.currency || 'CRC'))
                           .map(b => (
-                            <option key={b.id} value={b.id}>
+                            <option key={b.id} value={String(b.id)}>
                               {b.name} ({b.currency})
                             </option>
                           ))
                         }
                       </select>
-                      <input placeholder="# depósito / referencia" value={pickedInv.paidRef||""} onChange={e=>{updateInv(pickedInv.key,{paidRef:e.target.value});setPickedInv({...pickedInv,paidRef:e.target.value});}} style={{...S.inp,flex:1}} />
-                    </>}
-                  </div>
+                      <input
+                        placeholder="# depósito / referencia"
+                        value={pickedInv.paidRef||""}
+                        onChange={e=>{
+                          updateInv(pickedInv.key,{paidRef:e.target.value});
+                          setPickedInv({...pickedInv,paidRef:e.target.value});
+                        }}
+                        style={{...S.inp, flex:1, minWidth: 150}}
+                      />
+                      <button
+                        onClick={() => markAsPaidAndSync(pickedInv)}
+                        style={{
+                          ...S.sel,
+                          background:"#10b98120",
+                          color:"#10b981",
+                          fontWeight:600,
+                          cursor:"pointer",
+                          padding:"8px 14px"
+                        }}
+                      >
+                        ✓ Marcar pagada
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Line detail */}
