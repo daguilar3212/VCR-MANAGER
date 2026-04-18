@@ -353,7 +353,43 @@ export default function App() {
         isVehicle: inv.is_vehicle_purchase || false, vehicleStatus: inv.vehicle_purchase_status || null,
         paidDate: inv.paid_date || '', liquidationId: inv.liquidation_id || null,
         lines: [], dbId: inv.id,
+        alegraSyncStatus: inv.alegra_sync_status || 'pending',
+        alegraBillId: inv.alegra_bill_id || null,
+        alegraSyncError: inv.alegra_sync_error || null,
+        alegraAccountId: inv.alegra_account_id || null,
       })));
+    }
+  };
+
+  const syncInvoiceToAlegra = async (dbId, displayName) => {
+    const conf = window.confirm(
+      `¿Enviar factura de ${displayName} a Alegra?\n\n` +
+      `Esto va a crear una bill en tu cuenta de Alegra (no timbrada).`
+    );
+    if (!conf) return;
+
+    setInvoices(prev => prev.map(x => x.dbId === dbId ? { ...x, alegraSyncStatus: 'syncing' } : x));
+
+    try {
+      const res = await fetch('/api/alegra-sync-bill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoice_id: dbId })
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        const pdfMsg = data.pdf_uploaded ? ' con PDF' : (data.pdf_error ? ' (PDF falló)' : '');
+        alert(`✓ Sincronizada. Alegra Bill ID: ${data.alegra_bill_id}${pdfMsg}`);
+        await loadInvoices();
+      } else {
+        const errMsg = typeof data.error === 'string' ? data.error : JSON.stringify(data.error);
+        alert(`✗ Error: ${errMsg}\n\nStep: ${data.step || 'n/a'}`);
+        await loadInvoices();
+      }
+    } catch (e) {
+      alert(`Error de red: ${e.message}`);
+      setInvoices(prev => prev.map(x => x.dbId === dbId ? { ...x, alegraSyncStatus: 'error' } : x));
     }
   };
 
@@ -2448,8 +2484,21 @@ export default function App() {
                   {x.warnPlate&&<span style={S.badge("#e11d48")}>⚠ {x.warnPlate} no en inv.</span>}
                   {x.currency==="USD"&&<span style={S.badge("#10b981")}>USD</span>}
                   {x.isVehicle&&x.vehicleStatus==="detected"&&<span style={S.badge("#f59e0b")}>🚗 Completar</span>}
+                  {x.alegraSyncStatus==="synced"&&<span style={S.badge("#10b981")}>✓ Alegra #{x.alegraBillId}</span>}
+                  {x.alegraSyncStatus==="synced_no_pdf"&&<span style={S.badge("#f59e0b")}>✓ Alegra #{x.alegraBillId} (sin PDF)</span>}
+                  {x.alegraSyncStatus==="syncing"&&<span style={S.badge("#4f8cff")}>⏳ Enviando...</span>}
+                  {x.alegraSyncStatus==="error"&&<span style={S.badge("#e11d48")} title={x.alegraSyncError||""}>✗ Error Alegra</span>}
                 </div>
                 </div>
+                {x.alegraSyncStatus!=="synced"&&x.alegraSyncStatus!=="synced_no_pdf"&&x.alegraSyncStatus!=="syncing"&&x.alegraAccountId&&(
+                  <button
+                    onClick={(e)=>{e.stopPropagation();syncInvoiceToAlegra(x.dbId,x.supName);}}
+                    style={{...S.sel,fontSize:11,padding:"6px 10px",background:"#4f8cff18",color:"#4f8cff",fontWeight:600,flexShrink:0,cursor:"pointer"}}
+                    title="Enviar esta factura a Alegra"
+                  >
+                    → Alegra
+                  </button>
+                )}
               </div>
             ))}
           </div>
