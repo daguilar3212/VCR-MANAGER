@@ -3465,7 +3465,7 @@ export default function App() {
 
           {/* ======= GLOBAL INVOICE MODAL ======= */}
           {pickedInv && (
-            <div style={S.modal} onClick={() => setPickedInv(null)}>
+            <div style={S.modal}>
               <div style={S.mbox} onClick={e => e.stopPropagation()}>
                 {/* Header */}
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:14}}>
