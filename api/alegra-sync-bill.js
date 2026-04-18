@@ -310,6 +310,9 @@ export default async function handler(req, res) {
       .eq('id', invoice_id);
 
     // 9) Subir PDF a Alegra (si existe en Storage)
+    // Endpoint: POST /bills/{id}/attachment
+    // Formato: multipart/form-data con campo "file"
+    // Tamano maximo: 2MB
     let pdfUploaded = false;
     let pdfError = null;
     if (invoice.pdf_storage_path) {
@@ -321,25 +324,42 @@ export default async function handler(req, res) {
         if (dlErr) {
           pdfError = `Download from storage: ${dlErr.message}`;
         } else {
-          // Convertir Blob a base64 para Alegra
           const buf = Buffer.from(await fileBlob.arrayBuffer());
-          const base64 = buf.toString('base64');
           const filename = invoice.pdf_storage_path.split('/').pop() || 'factura.pdf';
 
-          const attachRes = await alegraFetch(`/bills/${alegraBillId}/files`, {
-            method: 'POST',
-            body: JSON.stringify({
-              fileName: filename,
-              file: base64
-            })
-          });
-          if (attachRes.ok) {
-            pdfUploaded = true;
-          } else {
-            pdfError = JSON.stringify(attachRes.data).slice(0, 300);
+          // Verificar tamano antes de subir (Alegra limita a 2MB)
+          if (buf.length > 2 * 1024 * 1024) {
+            pdfError = `PDF supera 2MB (${Math.round(buf.length / 1024)}KB). Alegra no lo acepta.`;
             await supabase.from('invoices')
               .update({ alegra_sync_status: 'synced_no_pdf' })
               .eq('id', invoice_id);
+          } else {
+            // Armar multipart/form-data manualmente
+            // Node 18+ (Vercel) tiene FormData y Blob nativos
+            const formData = new FormData();
+            const blob = new Blob([buf], { type: 'application/pdf' });
+            formData.append('file', blob, filename);
+
+            const attachResp = await fetch(`${ALEGRA_BASE}/bills/${alegraBillId}/attachment`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Basic ${auth}`,
+                'Accept': 'application/json'
+                // NO ponemos Content-Type: fetch lo agrega solo con boundary cuando usamos FormData
+              },
+              body: formData
+            });
+
+            const attachData = await attachResp.json().catch(() => ({}));
+
+            if (attachResp.ok) {
+              pdfUploaded = true;
+            } else {
+              pdfError = `Alegra attachment error: ${JSON.stringify(attachData).slice(0, 300)}`;
+              await supabase.from('invoices')
+                .update({ alegra_sync_status: 'synced_no_pdf' })
+                .eq('id', invoice_id);
+            }
           }
         }
       } catch (pdfE) {
