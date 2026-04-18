@@ -954,7 +954,7 @@ export default function App() {
 
   const emptySaleForm = () => ({
     sale_date: new Date().toISOString().split('T')[0],
-    client_name: "", client_cedula: "", client_phone1: "", client_phone2: "",
+    client_id_type: "fisica", client_cedula: "", client_name: "", client_phone1: "", client_phone2: "",
     client_email: "", client_address: "", client_workplace: "", client_occupation: "", client_civil_status: "",
     vehicle_plate: "", vehicle_brand: "", vehicle_model: "", vehicle_year: "", vehicle_color: "",
     vehicle_km: "", vehicle_engine: "", vehicle_drive: "", vehicle_fuel: "",
@@ -962,7 +962,7 @@ export default function App() {
     has_tradein: false,
     tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "", tradein_color: "",
     tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
-    sale_type: "propio", sale_price: "", sale_exchange_rate: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
+    sale_type: "propio", sale_currency: "USD", sale_price: "", sale_exchange_rate: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
     payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
     deposits: [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
     transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
@@ -993,6 +993,33 @@ export default function App() {
       vehicle_cabys: car.cabys || "",
       sale_price: car.usd,
     }));
+  };
+
+  // Busca cliente existente por cedula en ventas anteriores.
+  // Si encuentra, autocompleta TODOS los campos del cliente con los datos de la venta mas reciente.
+  const lookupClientByCedula = async (cedula) => {
+    if (!cedula || cedula.trim().length < 3) return;
+    const { data } = await supabase
+      .from('sales')
+      .select('client_id_type,client_name,client_phone1,client_phone2,client_email,client_address,client_workplace,client_occupation,client_civil_status')
+      .eq('client_cedula', cedula.trim())
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (data && data.length > 0) {
+      const c = data[0];
+      setSaleForm(prev => ({
+        ...prev,
+        client_id_type: c.client_id_type || prev.client_id_type || "fisica",
+        client_name: c.client_name || "",
+        client_phone1: c.client_phone1 || "",
+        client_phone2: c.client_phone2 || "",
+        client_email: c.client_email || "",
+        client_address: c.client_address || "",
+        client_workplace: c.client_workplace || "",
+        client_occupation: c.client_occupation || "",
+        client_civil_status: c.client_civil_status || "",
+      }));
+    }
   };
 
   // Cálculo completo del desglose de una venta
@@ -1097,6 +1124,7 @@ export default function App() {
 
     const row = {
       sale_date: saleForm.sale_date, status: "pendiente",
+      client_id_type: saleForm.client_id_type || "fisica",
       client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
       client_email: saleForm.client_email, client_address: saleForm.client_address,
@@ -1122,6 +1150,7 @@ export default function App() {
       tradein_fuel: saleForm.has_tradein ? saleForm.tradein_fuel : null,
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
+      sale_currency: saleForm.sale_currency || "USD",
       sale_price: parseFloat(saleForm.sale_price) || 0,
       sale_exchange_rate: parseFloat(saleForm.sale_exchange_rate) || null,
       tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
@@ -1195,7 +1224,9 @@ export default function App() {
   const editSale = (sale) => {
     setEditingSaleId(sale.id);
     setSaleForm({
-      sale_date: sale.sale_date || "", client_name: sale.client_name || "", client_cedula: sale.client_cedula || "",
+      sale_date: sale.sale_date || "",
+      client_id_type: sale.client_id_type || "fisica",
+      client_name: sale.client_name || "", client_cedula: sale.client_cedula || "",
       client_phone1: sale.client_phone1 || "", client_phone2: sale.client_phone2 || "", client_email: sale.client_email || "",
       client_address: sale.client_address || "", client_workplace: sale.client_workplace || "", client_occupation: sale.client_occupation || "",
       client_civil_status: sale.client_civil_status || "",
@@ -1209,7 +1240,9 @@ export default function App() {
       tradein_year: sale.tradein_year || "", tradein_color: sale.tradein_color || "", tradein_km: sale.tradein_km || "",
       tradein_engine: sale.tradein_engine || "", tradein_drive: sale.tradein_drive || "", tradein_fuel: sale.tradein_fuel || "",
       tradein_value: sale.tradein_value || 0,
-      sale_type: sale.sale_type || "propio", sale_price: sale.sale_price || "", sale_exchange_rate: sale.sale_exchange_rate || "",
+      sale_type: sale.sale_type || "propio",
+      sale_currency: sale.sale_currency || "USD",
+      sale_price: sale.sale_price || "", sale_exchange_rate: sale.sale_exchange_rate || "",
       tradein_amount: sale.tradein_amount || 0, down_payment: sale.down_payment || 0, deposit_signal: sale.deposit_signal || 0,
       payment_method: sale.payment_method || "", financing_term_months: sale.financing_term_months || "",
       financing_interest_pct: sale.financing_interest_pct || "", financing_amount: sale.financing_amount || "",
@@ -1253,7 +1286,9 @@ export default function App() {
     const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
     const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
     const row = {
-      sale_date: saleForm.sale_date, client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
+      sale_date: saleForm.sale_date,
+      client_id_type: saleForm.client_id_type || "fisica",
+      client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
       client_email: saleForm.client_email, client_address: saleForm.client_address,
       client_workplace: saleForm.client_workplace, client_occupation: saleForm.client_occupation,
@@ -1270,6 +1305,7 @@ export default function App() {
       tradein_year: saleForm.has_tradein ? (parseInt(saleForm.tradein_year) || null) : null,
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
+      sale_currency: saleForm.sale_currency || "USD",
       sale_price: parseFloat(saleForm.sale_price) || 0,
       sale_exchange_rate: parseFloat(saleForm.sale_exchange_rate) || null,
       tradein_amount: parseFloat(saleForm.tradein_amount) || 0,
@@ -3144,11 +3180,35 @@ export default function App() {
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Datos del Cliente</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
-              {fld("Nombre del cliente *", "client_name", { full: true })}
-              {fld("Cédula", "client_cedula")}
-              {fld("Teléfono 1", "client_phone1")}
-              {fld("Teléfono 2", "client_phone2")}
-              {fld("Email", "client_email")}
+              {fld("Tipo de identificación *", "client_id_type", { type: "select", options: [{v:"fisica",l:"Cédula Física"},{v:"juridica",l:"Cédula Jurídica"},{v:"dimex",l:"DIMEX"},{v:"extranjero",l:"Extranjero/Pasaporte"}] })}
+              {fld("Número de identificación *", "client_cedula", {
+                upperCase: true,
+                onChange: (val) => {
+                  // Quitar espacios y guiones al escribir (estandarizar formato)
+                  const clean = val.replace(/[\s-]/g, "");
+                  if (clean !== val) uf("client_cedula", clean);
+                },
+                onBlur: (val) => {
+                  // Al salir: lookup del cliente
+                  const clean = val.replace(/[\s-]/g, "");
+                  if (clean !== val) return clean;
+                  lookupClientByCedula(clean);
+                  return undefined;
+                }
+              })}
+              {fld("Nombre del cliente *", "client_name", { full: true, upperCase: true })}
+              {fld("Teléfono 1", "client_phone1", { onChange: (val) => {
+                const digits = val.replace(/\D/g, "");
+                if (digits.length === 8 && !val.includes("-")) uf("client_phone1", `${digits.slice(0,4)}-${digits.slice(4)}`);
+              }})}
+              {fld("Teléfono 2", "client_phone2", { onChange: (val) => {
+                const digits = val.replace(/\D/g, "");
+                if (digits.length === 8 && !val.includes("-")) uf("client_phone2", `${digits.slice(0,4)}-${digits.slice(4)}`);
+              }})}
+              {fld("Email", "client_email", { onChange: (val) => {
+                const lower = val.toLowerCase();
+                if (lower !== val) uf("client_email", lower);
+              }})}
               {fld("Lugar de trabajo", "client_workplace")}
               {fld("Oficio", "client_occupation")}
               {fld("Estado civil", "client_civil_status", { type: "select", options: [{ v: "Soltero/a", l: "Soltero/a" }, { v: "Casado/a", l: "Casado/a" }, { v: "Divorciado/a", l: "Divorciado/a" }, { v: "Viudo/a", l: "Viudo/a" }, { v: "Unión libre", l: "Unión libre" }] })}
@@ -3218,7 +3278,7 @@ export default function App() {
             </div>
             {F.sale_type !== "propio" && (
               <div style={{ fontSize: 12, color: "#10b981", background: "#10b98110", padding: "8px 12px", borderRadius: 8 }}>
-                Ingreso por comisión: {F.sale_type === "consignacion_grupo" ? "1%" : "5%"} = {fmt((parseFloat(F.sale_price) || 0) * (F.sale_type === "consignacion_grupo" ? 0.01 : 0.05), "USD")}
+                Ingreso por comisión: {F.sale_type === "consignacion_grupo" ? "1%" : "5%"} = {fmt((parseFloat(F.sale_price) || 0) * (F.sale_type === "consignacion_grupo" ? 0.01 : 0.05), F.sale_currency === "CRC" ? undefined : "USD")}
               </div>
             )}
           </div>
@@ -3261,7 +3321,7 @@ export default function App() {
                 {fld("Kilometraje", "tradein_km", { inputType: "number" })}
                 {fld("Tracción", "tradein_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
                 {fld("Combustible", "tradein_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
-                {fld("Valor del trade-in ($)", "tradein_value", { inputType: "number" })}
+                {fld(`Valor del trade-in (${F.sale_currency === "CRC" ? "₡" : "$"})`, "tradein_value", { inputType: "number" })}
               </div>
             )}
           </div>
@@ -3269,17 +3329,65 @@ export default function App() {
           {/* CONDITIONS */}
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Condiciones de Venta</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
-              {fld("Precio de venta ($) *", "sale_price", { inputType: "number" })}
-              {fld("Tipo de cambio (₡) *", "sale_exchange_rate", { inputType: "number", ph: "Ej: 520" })}
-              {fld("Vehículo recibido ($)", "tradein_amount", { inputType: "number" })}
-              {fld("Prima ($)", "down_payment", { inputType: "number" })}
-              {fld("Señal de trato ($)", "deposit_signal", { inputType: "number" })}
+
+            {/* Selector de moneda */}
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 6 }}>Moneda de la operación</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[["USD", "Dólares ($)"], ["CRC", "Colones (₡)"]].map(([v, l]) => (
+                  <button
+                    key={v}
+                    onClick={() => {
+                      if (F.sale_currency === v) return;
+                      // Al cambiar moneda: limpiar TODOS los campos monetarios (Opcion C)
+                      if (F.sale_currency && F.sale_currency !== v) {
+                        const conf = window.confirm(
+                          "Cambiar la moneda limpiará todos los campos monetarios del plan.\n\n¿Continuar?"
+                        );
+                        if (!conf) return;
+                      }
+                      setSaleForm(prev => ({
+                        ...prev,
+                        sale_currency: v,
+                        sale_price: "",
+                        tradein_amount: 0,
+                        down_payment: 0,
+                        deposit_signal: 0,
+                        transfer_amount: "",
+                        tradein_value: 0,
+                        financing_amount: "",
+                        deposits: [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
+                      }));
+                    }}
+                    style={{
+                      ...S.sel, flex: 1, textAlign: "center",
+                      background: F.sale_currency === v ? (v === "USD" ? "#10b98120" : "#4f8cff20") : "#1e2130",
+                      color: F.sale_currency === v ? (v === "USD" ? "#10b981" : "#4f8cff") : "#8b8fa4",
+                      fontWeight: F.sale_currency === v ? 700 : 400,
+                    }}
+                  >{l}</button>
+                ))}
+              </div>
             </div>
-            <div style={{ background: "#1e2130", borderRadius: 10, padding: "12px 16px", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "#8b8fa4" }}>Saldo total:</span>
-              <span style={{ fontSize: 20, fontWeight: 800, color: "#4f8cff" }}>{fmt(balance, "USD")}</span>
-            </div>
+
+            {(() => {
+              const curSym = F.sale_currency === "CRC" ? "₡" : "$";
+              return (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
+                    {fld(`Precio de venta (${curSym}) *`, "sale_price", { inputType: "number" })}
+                    {fld(F.sale_currency === "CRC" ? "Tipo de cambio ref. ($)" : "Tipo de cambio ref. (₡)", "sale_exchange_rate", { inputType: "number", ph: "Ej: 520" })}
+                    {fld(`Vehículo recibido (${curSym})`, "tradein_amount", { inputType: "number" })}
+                    {fld(`Prima (${curSym})`, "down_payment", { inputType: "number" })}
+                    {fld(`Señal de trato (${curSym})`, "deposit_signal", { inputType: "number" })}
+                  </div>
+                  <div style={{ background: "#1e2130", borderRadius: 10, padding: "12px 16px", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 13, color: "#8b8fa4" }}>Saldo total:</span>
+                    <span style={{ fontSize: 20, fontWeight: 800, color: "#4f8cff" }}>{fmt(balance, F.sale_currency === "CRC" ? undefined : "USD")}</span>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {/* PAYMENT + DEPOSITS */}
@@ -3289,7 +3397,7 @@ export default function App() {
               {fld("Forma de pago", "payment_method", { type: "select", options: [{ v: "Contado", l: "Contado" }, { v: "Financiamiento", l: "Financiamiento" }, { v: "Mixto", l: "Mixto" }] })}
               {fld("Plazo (meses)", "financing_term_months", { inputType: "number" })}
               {fld("Interés (%)", "financing_interest_pct", { inputType: "number" })}
-              {fld("Monto financiado ($)", "financing_amount", { inputType: "number" })}
+              {fld(`Monto financiado (${F.sale_currency === "CRC" ? "₡" : "$"})`, "financing_amount", { inputType: "number" })}
             </div>
 
             <div style={{ marginTop: 14, borderTop: "1px solid #2a2d3d", paddingTop: 14 }}>
@@ -3313,7 +3421,7 @@ export default function App() {
                     <input type="date" value={dep.date} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], date: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
                   </div>
                   <div>
-                    <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Monto ($)</div>
+                    <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Monto ({F.sale_currency === "CRC" ? "₡" : "$"})</div>
                     <input type="number" value={dep.amount} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], amount: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
                   </div>
                   {F.deposits.length > 1 && (
@@ -3324,7 +3432,7 @@ export default function App() {
               ))}
               {depositsTotal(F) > 0 && (
                 <div style={{ display: "flex", justifyContent: "flex-end", fontSize: 13, color: "#10b981", fontWeight: 600, marginTop: 4 }}>
-                  Total depósitos: {fmt(depositsTotal(F), "USD")}
+                  Total depósitos: {fmt(depositsTotal(F), F.sale_currency === "CRC" ? undefined : "USD")}
                 </div>
               )}
             </div>
@@ -3349,7 +3457,7 @@ export default function App() {
                 <div style={{ fontSize: 12, color: "#f59e0b", fontWeight: 600, marginBottom: 6 }}>
                   Traspaso cobrado aparte - suma al total
                 </div>
-                <div style={{ width: 180 }}>{fld("Monto traspaso", "transfer_amount", { inputType: "number" })}</div>
+                <div style={{ width: 180 }}>{fld(`Monto traspaso (${F.sale_currency === "CRC" ? "₡" : "$"})`, "transfer_amount", { inputType: "number" })}</div>
               </div>
             )}
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
