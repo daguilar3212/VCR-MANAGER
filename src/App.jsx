@@ -1507,7 +1507,31 @@ export default function App() {
           tradeinMsg = `\n⚠ Error agregando trade-in al inventario: ${e.message}`;
         }
 
-        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.${alegraMsg}${tradeinMsg}`);
+        // Si hay trade-in, crear factura de COMPRA en Alegra
+        let billMsg = "";
+        try {
+          const billRes = await fetch('/api/create-tradein-bill', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sale_id: id })
+          });
+          const billData = await billRes.json();
+          if (billData.ok) {
+            if (billData.skipped) {
+              // Sin trade-in, nada que mostrar
+            } else if (billData.already_created) {
+              billMsg = `\n📝 Factura de compra ya existia: ${billData.bill_number || ''}`;
+            } else {
+              billMsg = `\n📝 Factura de compra ${billData.bill_number} creada en Alegra (TC: ${billData.tc_used}).`;
+            }
+          } else {
+            billMsg = `\n⚠ No se pudo crear factura de compra: ${billData.error || 'error'}`;
+          }
+        } catch (e) {
+          billMsg = `\n⚠ Error creando factura de compra: ${e.message}`;
+        }
+
+        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.${alegraMsg}${tradeinMsg}${billMsg}`);
       } else if (data.ok && data.approved) {
         // Aprobada pero el PDF o Drive falló
         const warn = data.error || 'El PDF no se pudo procesar completamente.';
