@@ -78,20 +78,18 @@ export default async function handler(req, res) {
       });
     }
 
-    // 3. Calcular precio para Alegra
-    // Alegra usa USD como referencia (la cuenta maneja multi-moneda)
-    const tc = parseFloat(vehicle.exchange_rate) || 500; // fallback razonable
-    let priceUSD = 0;
-    if (vehicle.price_currency === 'USD' && vehicle.price_usd) {
-      priceUSD = parseFloat(vehicle.price_usd) || 0;
-    } else if (vehicle.price_crc && tc > 0) {
-      priceUSD = Math.round(parseFloat(vehicle.price_crc) / tc);
+    // Calcular precio en CRC (moneda por default de tu cuenta de Alegra)
+    const tc = parseFloat(vehicle.exchange_rate) || 500;
+    let priceCRC = 0;
+    if (vehicle.price_crc && parseFloat(vehicle.price_crc) > 0) {
+      priceCRC = Math.round(parseFloat(vehicle.price_crc));
+    } else if (vehicle.price_usd && parseFloat(vehicle.price_usd) > 0) {
+      priceCRC = Math.round(parseFloat(vehicle.price_usd) * tc);
     }
 
-    // Costo del vehiculo: purchase_cost esta en CRC, convertir a USD
-    let costUSD = 0;
-    if (vehicle.purchase_cost && tc > 0) {
-      costUSD = Math.round(parseFloat(vehicle.purchase_cost) / tc);
+    let costCRC = 0;
+    if (vehicle.purchase_cost) {
+      costCRC = Math.round(parseFloat(vehicle.purchase_cost));
     }
 
     // 4. Construir item de Alegra
@@ -114,18 +112,27 @@ export default async function handler(req, res) {
     if (vehicle.km) parts.push(`${Number(vehicle.km).toLocaleString('es-CR')} KM`);
     const description = parts.join(', ').slice(0, 500);
 
+    // Price list ID (UUID de la cuenta CR)
+    const PRICE_LIST_ID = '01983f21-0f79-737f-85df-988548dcbc02';
+    const CATEGORY_ID = 5135; // "Ventas"
+
     const payload = {
       name: itemName,
       description,
-      price: [{ idPriceList: 1, price: priceUSD || 0 }],
+      category: { id: CATEGORY_ID },
+      price: [{
+        idPriceList: PRICE_LIST_ID,
+        price: priceCRC,
+      }],
       inventory: {
         unit: 'unit',
-        unitCost: costUSD || 0,
+        unitCost: costCRC,
         initialQuantity: 1,
+        warehouses: [{ id: 1, initialQuantity: 1 }],
       },
-      tax: [{ id: 2 }], // IVA exento
       productKey: vehicle.cabys_code || '4911404000000',
       type: 'product',
+      status: 'active',
     };
 
     // 5. Crear en Alegra
