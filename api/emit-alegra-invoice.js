@@ -245,23 +245,51 @@ export default async function handler(req, res) {
     const price = parseFloat(sale.sale_price) || 0;
 
     // Construir texto de notas con desglose de depositos
-    // Formato similar al tiquete manual:
-    // "VENTA DE CONTADO. DEPOSITO EN BANCO X NUMERO Y POR Z. SEÑAL DE TRATO W."
     const curSymbol = sale.sale_currency === 'USD' ? '$' : '₡';
     const fmtMoney = (n) => {
       const v = parseFloat(n) || 0;
       return curSymbol + v.toLocaleString('es-CR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     };
 
-    const notasParts = [];
-    notasParts.push(isCredit ? 'VENTA EN FINANCIAMIENTO.' : 'VENTA DE CONTADO.');
+    // Formatear fecha a DD/MM/YYYY
+    const fmtDate = (dateStr) => {
+      if (!dateStr) return '';
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return '';
+      return `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+    };
 
+    // Detectar si un banco es "tarjeta" (no lleva numero de deposito)
+    const isTarjeta = (bankText) => {
+      if (!bankText) return false;
+      return String(bankText).toLowerCase().includes('tarjeta');
+    };
+
+    const notasParts = [];
+
+    if (isCredit) {
+      notasParts.push('VENTA A CREDITO.');
+    } else {
+      notasParts.push('VENTA DE CONTADO.');
+    }
+
+    // Depositos / pagos
     if (deposits && deposits.length > 0) {
       for (const d of deposits) {
         if (!d.amount) continue;
-        const bankPart = d.bank ? ` EN ${String(d.bank).toUpperCase()}` : '';
-        const refPart = d.reference ? ` NUMERO ${d.reference}` : '';
-        notasParts.push(`DEPOSITO${bankPart}${refPart} POR ${fmtMoney(d.amount)}.`);
+        const amt = fmtMoney(d.amount);
+        const fecha = fmtDate(d.deposit_date);
+        const fechaPart = fecha ? ` DE FECHA ${fecha}` : '';
+
+        if (isTarjeta(d.bank)) {
+          // Tarjetas: sin numero
+          notasParts.push(`PAGO CON TARJETA POR ${amt}${fechaPart}.`);
+        } else {
+          // Depositos bancarios: con banco + numero + fecha
+          const bankPart = d.bank ? ` EN EL BANCO ${String(d.bank).toUpperCase()}` : '';
+          const refPart = d.reference ? ` NUMERO ${d.reference}` : '';
+          notasParts.push(`DEPOSITO${bankPart}${refPart}${fechaPart} POR ${amt}.`);
+        }
       }
     }
 
@@ -269,17 +297,21 @@ export default async function handler(req, res) {
       notasParts.push(`SEÑAL DE TRATO POR ${fmtMoney(sale.deposit_signal)}.`);
     }
 
-    if (sale.down_payment && parseFloat(sale.down_payment) > 0 && isCredit) {
-      notasParts.push(`PRIMA ${fmtMoney(sale.down_payment)}.`);
+    // Trade-in: descripcion completa del carro recibido
+    if (sale.has_tradein && sale.tradein_value) {
+      const parts = ['SE RECIBE'];
+      if (sale.tradein_brand) parts.push(String(sale.tradein_brand).toUpperCase());
+      if (sale.tradein_model) parts.push(String(sale.tradein_model).toUpperCase());
+      if (sale.tradein_year) parts.push(String(sale.tradein_year));
+      if (sale.tradein_plate) parts.push(`PLACA ${String(sale.tradein_plate).toUpperCase()}`);
+      parts.push(`POR ${fmtMoney(sale.tradein_value)}`);
+      notasParts.push(parts.join(' ') + '.');
     }
 
-    if (sale.has_tradein && sale.tradein_value) {
-      const tradeinInfo = [];
-      if (sale.tradein_brand) tradeinInfo.push(sale.tradein_brand);
-      if (sale.tradein_model) tradeinInfo.push(sale.tradein_model);
-      if (sale.tradein_year) tradeinInfo.push(sale.tradein_year);
-      if (sale.tradein_plate) tradeinInfo.push(`PLACA ${sale.tradein_plate}`);
-      notasParts.push(`TRADE-IN: ${tradeinInfo.join(' ')} POR ${fmtMoney(sale.tradein_value)}.`);
+    // Plazo del saldo restante (solo para venta a credito)
+    if (isCredit && sale.credit_due_days && parseInt(sale.credit_due_days) > 0) {
+      const dias = parseInt(sale.credit_due_days);
+      notasParts.push(`EL SALDO RESTANTE DEBERA CANCELARSE EN UN PLAZO MAXIMO DE ${dias} DIAS NATURALES A PARTIR DE LA EMISION DE ESTA FACTURA.`);
     }
 
     if (sale.observations) {
@@ -313,18 +345,32 @@ export default async function handler(req, res) {
       economicActivity: VCR_ACTIVITY_CODE,
     };
 
-    // Medio de pago - segun el primer deposito / banco (MAYUSCULAS)
+    // Medio de pago - REGLA: el que aporte el mayor monto gana
+    // Agrupar depositos por tipo de medio de pago y sumar montos
     // Valores validos vistos en facturas reales: TRANSFER, CASH, CARD, CHECK
-    const firstDeposit = (deposits && deposits.length > 0) ? deposits[0] : null;
-    if (firstDeposit && firstDeposit.bank) {
-      const b = String(firstDeposit.bank).toLowerCase();
-      if (b.includes('efectivo')) invoicePayload.paymentMethod = 'CASH';
-      else if (b.includes('tarjeta')) invoicePayload.paymentMethod = 'CARD';
-      else if (b.includes('cheque')) invoicePayload.paymentMethod = 'CHECK';
-      else invoicePayload.paymentMethod = 'TRANSFER';
-    } else {
-      invoicePayload.paymentMethod = 'TRANSFER';
+    const byMethod = { TRANSFER: 0, CARD: 0, CASH: 0, CHECK: 0 };
+
+    if (deposits && deposits.length > 0) {
+      for (const d of deposits) {
+        const amount = parseFloat(d.amount) || 0;
+        const bank = String(d.bank || '').toLowerCase();
+        if (bank.includes('efectivo')) byMethod.CASH += amount;
+        else if (bank.includes('tarjeta')) byMethod.CARD += amount;
+        else if (bank.includes('cheque')) byMethod.CHECK += amount;
+        else byMethod.TRANSFER += amount; // bancos = transferencia
+      }
     }
+
+    // Elegir el medio de pago con mayor monto total
+    let winnerMethod = 'TRANSFER';
+    let maxAmount = 0;
+    for (const [method, total] of Object.entries(byMethod)) {
+      if (total > maxAmount) {
+        maxAmount = total;
+        winnerMethod = method;
+      }
+    }
+    invoicePayload.paymentMethod = winnerMethod;
 
     // Notas (visibles en PDF)
     if (notasFinal) {
