@@ -210,7 +210,7 @@ export default async function handler(req, res) {
         plate: normalizedPlate,
         brand: parsed.brand,
         model: parsed.model,
-        year: parsed.year,
+        year: parsed.year || new Date().getFullYear(), // fallback: año actual si no se detectó
         color: parsed.color,
         engine_cc: parsed.engine_cc,
         fuel: parsed.fuel,
@@ -229,15 +229,22 @@ export default async function handler(req, res) {
       if (!parsed.year) results.warnings.push(`"${item.name}" sin año detectable`);
     }
 
-    // 3. Insertar en batches
+    // 3. Insertar en chunks (si un chunk falla, reintentar uno por uno)
     if (rows.length > 0) {
-      // insertamos en chunks de 50 por si acaso
       for (let i = 0; i < rows.length; i += 50) {
         const chunk = rows.slice(i, i + 50);
         const { error: insErr } = await supabase.from('vehicles').insert(chunk);
         if (insErr) {
-          results.failed += chunk.length;
-          results.warnings.push(`Error al insertar chunk ${i}: ${insErr.message}`);
+          // Reintentar uno por uno para ver exactamente cual falla
+          for (const row of chunk) {
+            const { error: singleErr } = await supabase.from('vehicles').insert([row]);
+            if (singleErr) {
+              results.failed++;
+              results.warnings.push(`Error "${row.brand || ''} ${row.model || ''} ${row.plate}": ${singleErr.message}`);
+            } else {
+              results.inserted++;
+            }
+          }
         } else {
           results.inserted += chunk.length;
         }
