@@ -860,7 +860,19 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
                   <td style={S.td}>{v.km ? v.km.toLocaleString() : "-"}</td>
                   <td style={S.td}>{v.fuel || "-"}</td>
                   <td style={S.td}>
-                    {v.price_currency === "USD" ? fmt(v.price_usd, "USD") : fmt(v.price_crc, "CRC")}
+                    {(() => {
+                      // Detectar moneda inteligentemente
+                      const usdVal = parseFloat(v.price_usd) || 0;
+                      const crcVal = parseFloat(v.price_crc) || 0;
+                      // Si price_currency está seteado, respetarlo
+                      if (v.price_currency === "USD" && usdVal > 0) return fmt(usdVal, "USD");
+                      if (v.price_currency === "CRC" && crcVal > 0) return fmt(crcVal, "CRC");
+                      // Si no está seteado: el valor > 100,000 casi seguro son colones
+                      if (usdVal > 100000) return fmt(usdVal, "CRC");
+                      if (crcVal > 0) return fmt(crcVal, "CRC");
+                      if (usdVal > 0) return fmt(usdVal, "USD");
+                      return "-";
+                    })()}
                   </td>
                   <td style={S.td}>
                     <span style={S.badge(statusColor(v.status))}>{v.status || "-"}</span>
@@ -986,9 +998,6 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
   const salePrice = parseFloat(form.sale_price) || 0;
   const saleTC = parseFloat(form.sale_exchange_rate) || 0;
   const hasAgent2 = form.agent2_id && form.agent2_id !== "";
-  const splitPct = hasAgent2 ? 0.5 : 1;
-  const commUsd = salePrice * 0.01 * splitPct;
-  const commCrc = commUsd * saleTC;
 
   return (
     <div>
