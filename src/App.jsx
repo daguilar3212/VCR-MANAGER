@@ -3734,7 +3734,21 @@ export default function App() {
                 <div key={di} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 8, marginBottom: 8, alignItems: "end" }}>
                   <div>
                     <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Banco</div>
-                    <input value={dep.bank} onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], bank: e.target.value }; uf("deposits", d); }} style={{ ...S.inp, width: "100%" }} />
+                    <select
+                      value={dep.bank || ""}
+                      onChange={e => { const d = [...F.deposits]; d[di] = { ...d[di], bank: e.target.value }; uf("deposits", d); }}
+                      style={{ ...S.sel, width: "100%" }}
+                    >
+                      <option value="">Seleccionar cuenta</option>
+                      <option value="Banco BAC Dólares">Banco BAC Dólares</option>
+                      <option value="Banco Nacional Dólares">Banco Nacional Dólares</option>
+                      <option value="Banco de Costa Rica Dólares">Banco de Costa Rica Dólares</option>
+                      <option value="Banco BAC Colones">Banco BAC Colones</option>
+                      <option value="Banco Nacional de Costa Rica Colones">Banco Nacional de Costa Rica Colones</option>
+                      <option value="Banco de Costa Rica Colones">Banco de Costa Rica Colones</option>
+                      <option value="Efectivo">Efectivo</option>
+                      <option value="Tarjeta">Tarjeta</option>
+                    </select>
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}># Referencia</div>
