@@ -43,14 +43,66 @@ function parseVehicleData(alegraItem) {
   const ref = String(alegraItem.reference || '').toUpperCase();
   const combo = `${name} ${desc}`;
 
-  // Placa: priorizar reference, luego buscar en nombre
-  // Patrones validos CR: 3 letras + 3 digitos, 2 letras + 3 digitos, 6 digitos solos
-  let plate = ref || extractMatch(name, [
-    /\b([A-Z]{3}[\s-]?\d{3,4})\b/,     // BXR237, BXR-237, BXR 237
-    /\b([A-Z]{2,3}\d{3,6})\b/,          // BSS530 o similar
-    /PLACA[S#:\s]*(\w+)/,               // "PLACA 353821"
-    /\b(\d{6})\b/,                      // 353821 (6 digitos solos, mas riesgoso)
-  ]);
+  // === PLACA ===
+  // Estrategia: buscar TODOS los candidatos posibles y elegir el que mas parezca placa CR
+  //
+  // Formatos validos CR:
+  // - 3 letras + 3 digitos (BWT435, BXR237)
+  // - CL + digitos (CL5136416) - 7 digitos tipicamente
+  // - 6 digitos solos (353821) - placas antiguas
+  // - En reference suele venir la placa ya
+  //
+  // Falsos positivos a evitar:
+  // - Años (2023, 2024)
+  // - Modelos cortos (ASX, RAV4) - suelen ser 3 letras + 1 digito
+
+  function isPlateLike(candidate) {
+    if (!candidate) return false;
+    const c = candidate.toUpperCase().replace(/[\s-]/g, '');
+    // Patron CL + digitos
+    if (/^CL\d{5,8}$/.test(c)) return true;
+    // Patron 3 letras + 3 digitos (SOLO si los digitos NO son año)
+    const m = c.match(/^([A-Z]{3})(\d{3})$/);
+    if (m) {
+      const digits = parseInt(m[2]);
+      // Descartar si los 3 digitos parecen año (poco probable con 3 digitos pero por si acaso)
+      return true;
+    }
+    // Patron 3 letras + 4 digitos (placas mas recientes)
+    const m2 = c.match(/^([A-Z]{3})(\d{4})$/);
+    if (m2) {
+      const digits = parseInt(m2[2]);
+      // Si los 4 digitos son un año (1990-2030), es modelo-año, no placa
+      if (digits >= 1990 && digits <= 2030) return false;
+      return true;
+    }
+    // Placas antiguas de 6 digitos solos
+    if (/^\d{6}$/.test(c)) return true;
+    return false;
+  }
+
+  // Prioridad 1: reference (casi siempre es la placa)
+  let plate = null;
+  if (ref && isPlateLike(ref)) plate = ref.replace(/[\s-]/g, '');
+
+  // Prioridad 2: buscar en el nombre palabra por palabra (de derecha a izquierda)
+  // Las placas en el nombre suelen estar al final: "MITSUBISHI ASX 2023 BWT435"
+  if (!plate) {
+    const tokens = name.split(/\s+/).reverse();
+    for (const token of tokens) {
+      const clean = token.replace(/[\s-]/g, '');
+      if (isPlateLike(clean)) {
+        plate = clean;
+        break;
+      }
+    }
+  }
+
+  // Prioridad 3: buscar en la descripcion con patron especifico "PLACA XXX"
+  if (!plate) {
+    const m = combo.match(/PLACA[S#:\s]*([A-Z0-9-]{4,12})/);
+    if (m && isPlateLike(m[1])) plate = m[1].replace(/[\s-]/g, '');
+  }
 
   // Año: 4 digitos entre 1950 y 2030
   const year = extractMatch(combo, [
