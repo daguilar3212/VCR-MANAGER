@@ -1,0 +1,302 @@
+// emit-alegra-invoice.js
+// Emite factura o tiquete en Alegra como BORRADOR
+//
+// POST /api/emit-alegra-invoice
+// Body: { sale_id: "uuid" }
+//
+// Flujo:
+// 1. Trae la venta de Supabase
+// 2. Busca o crea el cliente en Alegra (por cedula)
+// 3. Crea el item del vehiculo en Alegra (con CABYS, descripcion detallada)
+// 4. Crea la factura como BORRADOR (stamp=false) en Alegra
+// 5. Guarda alegra_invoice_id en Supabase
+
+import { createClient } from '@supabase/supabase-js';
+
+const ALEGRA_BASE = 'https://api.alegra.com/api/v1';
+const VCR_ACTIVITY_CODE = '4510.0'; // Actividad economica VCR
+
+// Tax IDs de Alegra CR:
+// 1 = IVA 13%
+// 2 = IVA exento (0%)
+// 4 = IVA 1%
+// 6 = IVA 4%
+// 16 = Tarifa 0% Art 32
+function getTaxIdForRate(rate) {
+  if (rate === 0 || !rate) return 2;  // exento
+  if (rate === 1) return 4;
+  if (rate === 4) return 6;
+  if (rate === 13) return 1;
+  // fallback: exento
+  return 2;
+}
+
+// Mapeo de tipo ID VCR -> Alegra
+const idTypeMap = {
+  fisica: '01',
+  juridica: '02',
+  dimex: '03',
+  extranjero: '04',
+};
+
+// Mapeo de medio de pago segun el banco/texto del primer deposito
+// Codigos Alegra CR:
+// 01 efectivo, 02 tarjeta, 03 cheque, 04 transferencia
+function getPaymentMethodFromDeposit(bankText) {
+  if (!bankText) return '01'; // default efectivo
+  const b = bankText.toLowerCase();
+  if (b.includes('efectivo')) return '01';
+  if (b.includes('tarjeta')) return '02';
+  if (b.includes('cheque')) return '03';
+  // Todo lo demas (bancos) -> transferencia
+  return '04';
+}
+
+async function alegraFetch(endpoint, method = 'GET', body = null) {
+  const email = process.env.ALEGRA_EMAIL;
+  const token = process.env.ALEGRA_TOKEN;
+  const auth = Buffer.from(`${email}:${token}`).toString('base64');
+
+  const opts = {
+    method,
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+
+  const resp = await fetch(`${ALEGRA_BASE}${endpoint}`, opts);
+  const data = await resp.json();
+  if (!resp.ok) {
+    throw new Error(`Alegra ${endpoint}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+// Busca cliente por identificacion o lo crea
+async function findOrCreateClient(sale) {
+  const cedula = (sale.client_cedula || '').replace(/[\s-]/g, '').trim();
+
+  // Buscar por identificacion
+  const existing = await alegraFetch(`/contacts?identification=${encodeURIComponent(cedula)}&limit=5`);
+  if (Array.isArray(existing) && existing.length > 0) {
+    const match = existing.find(c => {
+      if (!c.type) return true;
+      if (Array.isArray(c.type)) return c.type.includes('client');
+      return c.type === 'client';
+    }) || existing[0];
+    return match.id;
+  }
+
+  // No existe -> crear
+  const payload = {
+    name: (sale.client_name || '').toUpperCase(),
+    identification: cedula,
+    identificationObject: {
+      type: idTypeMap[sale.client_id_type] || '01',
+      number: cedula,
+    },
+    type: ['client'],
+    email: sale.client_email || undefined,
+    mobile: sale.client_phone1 || undefined,
+    phonePrimary: sale.client_phone2 || undefined,
+  };
+
+  // Si es contribuyente con actividad economica, agregarla
+  if (sale.client_has_activity && sale.client_activity_code) {
+    payload.economicActivities = [{
+      code: sale.client_activity_code,
+      isMain: true,
+    }];
+  }
+
+  // Direccion basica
+  if (sale.client_address) {
+    payload.address = {
+      address: sale.client_address,
+    };
+  }
+
+  const created = await alegraFetch('/contacts', 'POST', payload);
+  return created.id;
+}
+
+// Crea el item (producto) del vehiculo en Alegra
+// Nombre: "MARCA MODELO AÑO PLACA"
+// Descripcion: detalles tecnicos del vehiculo
+async function createVehicleItem(sale) {
+  const marca = (sale.vehicle_brand || '').toUpperCase();
+  const modelo = (sale.vehicle_model || '').toUpperCase();
+  const anio = sale.vehicle_year || '';
+  const placa = (sale.vehicle_plate || '').toUpperCase().replace(/-/g, '');
+
+  const itemName = `${marca} ${modelo} ${anio} ${placa}`.trim().replace(/\s+/g, ' ');
+
+  // Descripcion detallada
+  const parts = [];
+  if (sale.vehicle_brand && sale.vehicle_model) parts.push(`${sale.vehicle_brand} ${sale.vehicle_model}`);
+  if (sale.vehicle_style) parts.push(sale.vehicle_style);
+  if (sale.vehicle_year) parts.push(`AÑO ${sale.vehicle_year}`);
+  if (sale.vehicle_color) parts.push(`COLOR ${sale.vehicle_color}`);
+  if (sale.vehicle_engine_cc) parts.push(`${sale.vehicle_engine_cc} CC`);
+  if (sale.vehicle_drive) parts.push(sale.vehicle_drive);
+  if (sale.vehicle_fuel) parts.push(sale.vehicle_fuel);
+  if (sale.vehicle_plate) parts.push(`PLACA ${sale.vehicle_plate}`);
+  if (sale.vehicle_km) parts.push(`${Number(sale.vehicle_km).toLocaleString('es-CR')} KM`);
+  const description = parts.join(', ');
+
+  const taxId = getTaxIdForRate(sale.iva_exceptional ? parseFloat(sale.iva_rate) : 0);
+
+  const payload = {
+    name: itemName,
+    description,
+    price: [{ idPriceList: 1, price: parseFloat(sale.sale_price) || 0 }],
+    inventory: {
+      unit: 'unit',
+      unitCost: parseFloat(sale.sale_price) || 0,
+      initialQuantity: 1,
+    },
+    tax: [{ id: taxId }],
+    productKey: sale.vehicle_cabys || undefined,
+    reference: (sale.vehicle_plate || '').toUpperCase(),
+  };
+
+  const created = await alegraFetch('/items', 'POST', payload);
+  return created.id;
+}
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    return res.status(405).json({ ok: false, error: 'Method not allowed' });
+  }
+
+  const { sale_id } = req.body || {};
+  if (!sale_id) return res.status(400).json({ ok: false, error: 'Falta sale_id' });
+
+  const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+
+  try {
+    // 1. Traer venta
+    const { data: sale, error: saleErr } = await supabase.from('sales').select('*').eq('id', sale_id).single();
+    if (saleErr || !sale) return res.status(404).json({ ok: false, error: 'Venta no encontrada' });
+
+    // Si ya se emitio antes, avisar
+    if (sale.alegra_invoice_id) {
+      return res.status(200).json({
+        ok: true,
+        already_emitted: true,
+        alegra_invoice_id: sale.alegra_invoice_id,
+        message: 'Esta venta ya tiene factura emitida en Alegra.',
+      });
+    }
+
+    const { data: deposits } = await supabase.from('sale_deposits').select('*').eq('sale_id', sale_id).order('deposit_date');
+    const firstDeposit = (deposits && deposits.length > 0) ? deposits[0] : null;
+
+    // 2. Cliente en Alegra
+    let clientAlegraId;
+    try {
+      clientAlegraId = await findOrCreateClient(sale);
+    } catch (e) {
+      return res.status(500).json({ ok: false, step: 'client', error: e.message });
+    }
+
+    // 3. Item del vehiculo
+    let itemAlegraId;
+    try {
+      itemAlegraId = await createVehicleItem(sale);
+    } catch (e) {
+      return res.status(500).json({ ok: false, step: 'item', error: e.message });
+    }
+
+    // 4. Datos para la factura
+    const isCredit = sale.payment_method === 'Financiamiento' || sale.payment_method === 'Mixto';
+    const today = new Date();
+    const dueDate = new Date(today);
+    if (isCredit && sale.financing_term_months) {
+      dueDate.setDate(dueDate.getDate() + (parseInt(sale.financing_term_months) * 30));
+    }
+    const toISODate = (d) => d.toISOString().slice(0, 10);
+
+    const paymentMethod = getPaymentMethodFromDeposit(firstDeposit?.bank);
+
+    // Tipo documento: tiquete si no tiene actividad, factura si si
+    const documentType = sale.client_has_activity ? 'invoice' : 'ticket';
+
+    const taxRate = sale.iva_exceptional ? parseFloat(sale.iva_rate) : 0;
+    const taxId = getTaxIdForRate(taxRate);
+
+    const price = parseFloat(sale.sale_price) || 0;
+
+    // 5. Payload factura
+    const invoicePayload = {
+      date: toISODate(today),
+      dueDate: toISODate(dueDate),
+      client: clientAlegraId,
+      status: 'draft', // BORRADOR
+      stamp: { generateStamp: false }, // NO timbrar todavia
+      warehouse: { id: 1 },
+      items: [{
+        id: itemAlegraId,
+        price,
+        quantity: 1,
+        tax: [{ id: taxId }],
+        description: sale.vehicle_plate ? `Placa: ${sale.vehicle_plate}` : undefined,
+      }],
+      paymentMethod,
+      paymentForm: isCredit ? 'CREDIT' : 'CASH',
+      anotation: sale.observations || '',
+      numberTemplate: {
+        documentType, // 'invoice' o 'ticket'
+      },
+      // Actividad economica del emisor (VCR)
+      saleConditionCode: isCredit ? '02' : '01', // 01 contado, 02 credito
+      economicActivity: VCR_ACTIVITY_CODE,
+    };
+
+    // Moneda
+    if (sale.sale_currency === 'USD' && sale.sale_exchange_rate) {
+      invoicePayload.currency = {
+        code: 'USD',
+        exchangeRate: parseFloat(sale.sale_exchange_rate),
+      };
+    }
+
+    // Si es factura (no tiquete), Alegra usa la actividad del cliente tambien
+    // Eso ya esta en el payload del contacto que creamos
+
+    // 6. Crear factura
+    let invoice;
+    try {
+      invoice = await alegraFetch('/invoices', 'POST', invoicePayload);
+    } catch (e) {
+      return res.status(500).json({
+        ok: false,
+        step: 'invoice',
+        error: e.message,
+        debug_payload: invoicePayload,
+      });
+    }
+
+    // 7. Guardar en Supabase
+    await supabase.from('sales').update({
+      alegra_invoice_id: String(invoice.id),
+      alegra_invoice_number: invoice.numberTemplate?.fullNumber || invoice.number || null,
+      alegra_client_id: String(clientAlegraId),
+      alegra_item_id: String(itemAlegraId),
+    }).eq('id', sale_id);
+
+    return res.status(200).json({
+      ok: true,
+      document_type: documentType,
+      alegra_invoice_id: invoice.id,
+      alegra_invoice_number: invoice.numberTemplate?.fullNumber || invoice.number || null,
+      alegra_client_id: clientAlegraId,
+      alegra_item_id: itemAlegraId,
+    });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
