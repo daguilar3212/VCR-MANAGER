@@ -220,35 +220,30 @@ export default async function handler(req, res) {
       alegraItemId = vehicle?.alegra_item_id;
     } catch {}
 
-    // 10. Construir payload del bill
-    // Si tenemos alegra_item_id, enlazamos al item. Si no, creamos inline.
-    const itemPayload = {
-      price: tradeinPriceCRC,
-      quantity: 1,
-      tax: [], // IVA exento (array vacio)
-      observations: description.slice(0, 500),
-    };
-
-    if (alegraItemId) {
-      // Enlazar al item existente
-      itemPayload.id = Number(alegraItemId);
-    } else {
-      // Fallback: crear item inline en el bill
-      itemPayload.name = itemName;
-      itemPayload.description = description.slice(0, 500);
-      itemPayload.productKey = sale.tradein_cabys || '4911404000000';
+    if (!alegraItemId) {
+      return res.status(400).json({
+        ok: false,
+        error: 'El vehiculo no tiene alegra_item_id. Ejecuta create-tradein-vehicle primero.',
+      });
     }
 
+    // 10. Construir payload del bill (formato que Alegra CR acepta)
     const billPayload = {
       date: today,
       dueDate: today,
       provider: { id: Number(sale.alegra_client_id) },
-      billNumber: billNumber,
+      numberTemplate: {
+        number: billNumber,
+        fullNumber: billNumber,
+      },
+      warehouse: { id: 1 },
       observations: `Compra de vehiculo recibido como trade-in. Factura de venta relacionada: ${invoiceNumber}.`,
-      stamp: { generateStamp: false }, // NO timbrar (borrador)
-      currency: { code: 'CRC', exchangeRate: 1 },
       purchases: {
-        items: [itemPayload],
+        items: [{
+          id: Number(alegraItemId),
+          price: tradeinPriceCRC,
+          quantity: 1,
+        }],
       },
     };
 
