@@ -29,8 +29,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, result });
     }
 
-    // Traer ultimos 30 bills (limite maximo de Alegra)
-    const all = await doFetch(`${ALEGRA_BASE}/bills?limit=30&order_direction=DESC`);
+    // Traer ultimos 30 bills ordenados por fecha DESC
+    const all = await doFetch(`${ALEGRA_BASE}/bills?limit=30&order_field=date&order_direction=DESC`);
 
     if (!Array.isArray(all)) {
       return res.status(200).json({ ok: false, raw: all });
