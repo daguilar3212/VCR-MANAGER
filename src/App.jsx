@@ -9,64 +9,48 @@ const exportXLS = (rows, name) => {
   XLSX.writeFile(wb, `${name}_${new Date().toISOString().split('T')[0]}.xlsx`);
 };
 
-// CABYS codes for vehicles (most used)
+// CABYS vigentes Hacienda (formato v4.4, 13 dígitos)
+// Las 12 categorías que realmente vende VCR
 const CABYS_VEHICLES = [
-  { code: "4911200000100", label: "Microbús", type: "microbus" },
-  { code: "4911200000200", label: "Buseta", type: "buseta" },
-  { code: "4911305000100", label: "Coupé <= 2000cc", type: "coupe" },
-  { code: "4911305000200", label: "Coupé > 2000cc", type: "coupe" },
-  { code: "4911306010100", label: "SUV 2 puertas <= 2000cc", type: "suv" },
-  { code: "4911306010200", label: "SUV 2 puertas > 2000cc", type: "suv" },
   { code: "4911306020100", label: "SUV 4 puertas <= 2000cc", type: "suv" },
   { code: "4911306020200", label: "SUV 4 puertas > 2000cc", type: "suv" },
-  { code: "4911307010100", label: "Todoterreno 2 puertas <= 2000cc", type: "todoterreno" },
-  { code: "4911307010200", label: "Todoterreno 2 puertas > 2000cc", type: "todoterreno" },
   { code: "4911307020100", label: "Todoterreno 4 puertas <= 2000cc", type: "todoterreno" },
   { code: "4911307020200", label: "Todoterreno 4 puertas > 2000cc", type: "todoterreno" },
-  { code: "4911308010100", label: "Sedán 2p deportivo <= 2000cc", type: "sedan" },
-  { code: "4911308010200", label: "Sedán 2p deportivo > 2000cc", type: "sedan" },
-  { code: "4911308020100", label: "Sedán 2 puertas <= 2000cc", type: "sedan" },
-  { code: "4911308020200", label: "Sedán 2 puertas > 2000cc", type: "sedan" },
-  { code: "4911308030100", label: "Sedán 2p hatchback <= 2000cc", type: "sedan" },
-  { code: "4911308030200", label: "Sedán 2p hatchback > 2000cc", type: "sedan" },
-  { code: "4911308040100", label: "Sedán 3p hatchback <= 2000cc", type: "sedan" },
-  { code: "4911308040200", label: "Sedán 3p hatchback > 2000cc", type: "sedan" },
   { code: "4911308050100", label: "Sedán 4 puertas <= 2000cc", type: "sedan" },
   { code: "4911308050200", label: "Sedán 4 puertas > 2000cc", type: "sedan" },
-  { code: "4911308060000", label: "Sedán 2p 3 ruedas <= 1000cc", type: "sedan" },
-  { code: "4911308070000", label: "Sedán 4p 3 ruedas <= 1000cc", type: "sedan" },
-  { code: "4911308080000", label: "Sedán 4p 4 ruedas <= 1000cc", type: "sedan" },
-  { code: "4911309000100", label: "Familiar/Camioneta <= 2000cc", type: "familiar" },
-  { code: "4911309000200", label: "Familiar/Camioneta > 2000cc", type: "familiar" },
-  { code: "4911315000000", label: "Híbrido-eléctrico", type: "hibrido" },
-  { code: "4911401000100", label: "Adrales carga <= 5t", type: "carga" },
-  { code: "4911401000200", label: "Adrales carga 5-20t", type: "carga" },
-  { code: "4911404000000", label: "Pick up <= 5t", type: "pickup" },
+  { code: "4911308040100", label: "Sedán hatchback 3p <= 2000cc", type: "hatchback" },
+  { code: "4911308040200", label: "Sedán hatchback 3p > 2000cc", type: "hatchback" },
+  { code: "4911404000000", label: "Pick Up (hasta 5t)", type: "pickup" },
+  { code: "4911200000100", label: "Microbús", type: "microbus" },
+  { code: "4911315000000", label: "Vehículo eléctrico", type: "electrico" },
+  { code: "4911316000000", label: "Vehículo híbrido", type: "hibrido" },
 ];
 
-// Auto-suggest CABYS based on vehicle style and engine CC
-// Corte: <=2000cc usa codigo "...100", >2000cc usa codigo "...200"
-// Si cc no se provee, usa el default >2000 (mas comun)
-const suggestCabys = (style, cc) => {
+// Auto-sugerir CABYS segun estilo, CC y combustible
+// Combustible tiene prioridad: si es electrico o hibrido, usa esos codigos especiales
+// Despues el estilo decide la categoria, y el CC decide el sub-codigo (<=2000 o >2000)
+const suggestCabys = (style, cc, fuel) => {
+  // Combustible primero: electrico/hibrido ganan siempre
+  if (fuel) {
+    const f = String(fuel).toLowerCase();
+    if (f.includes("electri")) return "4911315000000";
+    if (f.includes("hibrido") || f.includes("híbrido") || f.includes("hybrid")) return "4911316000000";
+  }
+
   if (!style) return "";
-  const s = style.toLowerCase();
+  const s = String(style).toLowerCase();
   const ccNum = parseInt(cc, 10);
   const isSmall = !isNaN(ccNum) && ccNum > 0 && ccNum <= 2000;
 
-  // Pick up: no distingue CC
-  if (s.includes("pick up") || s.includes("pickup")) return "4911404000000";
-  // Microbus: no distingue CC
-  if (s.includes("microbus") || s.includes("microbús")) return "4911200000100";
-  // Hibrido/electrico: no distingue CC
-  if (s.includes("hibrido") || s.includes("híbrido") || s.includes("electri")) return "4911315000000";
+  // Sin distinción de CC
+  if (s.includes("pick up") || s.includes("pickup") || s.includes("camioneta")) return "4911404000000";
+  if (s.includes("microbus") || s.includes("microbús") || s.includes("van")) return "4911200000100";
 
-  // Estos si distinguen CC
+  // Con distinción de CC
   if (s.includes("suv")) return isSmall ? "4911306020100" : "4911306020200";
-  if (s.includes("sedan") || s.includes("sedán")) return isSmall ? "4911308050100" : "4911308050200";
+  if (s.includes("todoterreno") || s.includes("todo terreno")) return isSmall ? "4911307020100" : "4911307020200";
   if (s.includes("hatchback")) return isSmall ? "4911308040100" : "4911308040200";
-  if (s.includes("todoterreno")) return isSmall ? "4911307020100" : "4911307020200";
-  if (s.includes("coupe") || s.includes("coupé")) return isSmall ? "4911305000100" : "4911305000200";
-  if (s.includes("familiar") || s.includes("camioneta")) return isSmall ? "4911309000100" : "4911309000200";
+  if (s.includes("sedan") || s.includes("sedán")) return isSmall ? "4911308050100" : "4911308050200";
 
   return "";
 };
@@ -2884,8 +2868,8 @@ export default function App() {
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={editingVehicle.color||""} onChange={e=>setEditingVehicle(prev=>({...prev,color:e.target.value.toUpperCase()}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div><input type="number" value={editingVehicle.km||""} onChange={e=>setEditingVehicle(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div><select value={editingVehicle.drive||editingVehicle.drivetrain||""} onChange={e=>setEditingVehicle(prev=>({...prev,drive:e.target.value,drivetrain:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
-              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={editingVehicle.fuel||""} onChange={e=>setEditingVehicle(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
-              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div><input type="number" value={editingVehicle.engine_cc||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={editingVehicle.fuel||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,fuel:val,cabys_code:suggestCabys(prev.style,prev.engine_cc,val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+              <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div><input type="number" value={editingVehicle.engine_cc||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val,prev.fuel)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Pasajeros</div><input type="number" value={editingVehicle.passengers||""} onChange={e=>setEditingVehicle(prev=>({...prev,passengers:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Serie/Chasis</div><input value={editingVehicle.chassis||""} onChange={e=>setEditingVehicle(prev=>({...prev,chassis:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
               <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Proveedor</div><input value={editingVehicle.purchase_supplier||""} onChange={e=>setEditingVehicle(prev=>({...prev,purchase_supplier:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
@@ -2899,7 +2883,7 @@ export default function App() {
               </div>
               <div>
                 <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div>
-                <select value={editingVehicle.style||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
+                <select value={editingVehicle.style||""} onChange={e=>{const val=e.target.value;setEditingVehicle(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc,prev.fuel)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
                   <option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
@@ -2964,15 +2948,15 @@ export default function App() {
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Color</div><input list="dl-colors" value={newVehicleForm.color||""} onChange={e=>setNewVehicleForm(prev=>({...prev,color:e.target.value.toUpperCase()}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Kilometraje</div><input type="number" value={newVehicleForm.km||""} onChange={e=>setNewVehicleForm(prev=>({...prev,km:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tracción</div><select value={newVehicleForm.drive||""} onChange={e=>setNewVehicleForm(prev=>({...prev,drive:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{DRIVETRAIN_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={newVehicleForm.fuel||""} onChange={e=>setNewVehicleForm(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div><input type="number" value={newVehicleForm.engine_cc||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} /></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div><select value={newVehicleForm.fuel||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,fuel:val,cabys_code:suggestCabys(prev.style,prev.engine_cc,val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}</select></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div><input type="number" value={newVehicleForm.engine_cc||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val,prev.fuel)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Pasajeros</div><input type="number" value={newVehicleForm.passengers||""} onChange={e=>setNewVehicleForm(prev=>({...prev,passengers:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Serie/Chasis</div><input value={newVehicleForm.chassis||""} onChange={e=>setNewVehicleForm(prev=>({...prev,chassis:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Fecha compra</div><input type="date" value={newVehicleForm.entry_date||""} onChange={e=>setNewVehicleForm(prev=>({...prev,entry_date:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Costo compra (₡)</div><input type="number" value={newVehicleForm.purchase_cost||""} onChange={e=>setNewVehicleForm(prev=>({...prev,purchase_cost:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Tipo cambio (ref.)</div><input type="number" value={newVehicleForm.exchange_rate||""} onChange={e=>setNewVehicleForm(prev=>({...prev,exchange_rate:e.target.value}))} placeholder="Ej: 530" style={{...S.inp,width:"100%",fontSize:12}} /></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Precio venta (₡)</div><input type="number" value={newVehicleForm.price_crc||""} onChange={e=>setNewVehicleForm(prev=>({...prev,price_crc:e.target.value}))} style={{...S.inp,width:"100%",fontSize:12}} /></div>
-          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
+          <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div><select value={newVehicleForm.style||""} onChange={e=>{const val=e.target.value;setNewVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc,prev.fuel)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}</select></div>
           <div><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estado</div><select value={newVehicleForm.status||"disponible"} onChange={e=>setNewVehicleForm(prev=>({...prev,status:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="disponible">Disponible</option><option value="reservado">Reservado</option></select></div>
           <div style={{gridColumn:"1/3"}}><div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Código CABYS *</div><select value={newVehicleForm.cabys_code||""} onChange={e=>setNewVehicleForm(prev=>({...prev,cabys_code:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}><option value="">Seleccionar CABYS</option>{CABYS_VEHICLES.map(c=><option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}</select></div>
         </div>
@@ -3624,7 +3608,7 @@ export default function App() {
                 type: "select",
                 options: [{v:"SUV",l:"SUV"},{v:"SEDAN",l:"SEDAN"},{v:"PICK UP",l:"PICK UP"},{v:"HATCHBACK",l:"HATCHBACK"},{v:"COUPE",l:"COUPE"},{v:"FAMILIAR",l:"FAMILIAR"},{v:"TODOTERRENO",l:"TODOTERRENO"},{v:"MICROBUS",l:"MICROBUS"}],
                 onChange: (val) => {
-                  const cabys = suggestCabys(val, F.vehicle_engine_cc);
+                  const cabys = suggestCabys(val, F.vehicle_engine_cc, F.vehicle_fuel);
                   if (cabys && !F.vehicle_cabys) uf("vehicle_cabys", cabys);
                 }
               })}
@@ -3636,7 +3620,7 @@ export default function App() {
               {fld("Cilindrada (CC)", "vehicle_engine_cc", {
                 inputType: "number",
                 onChange: (val) => {
-                  const cabys = suggestCabys(F.vehicle_style, val);
+                  const cabys = suggestCabys(F.vehicle_style, val, F.vehicle_fuel);
                   if (cabys && !F.vehicle_cabys) uf("vehicle_cabys", cabys);
                 }
               })}
@@ -4652,7 +4636,7 @@ export default function App() {
                           </div>
                           <div>
                             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Estilo</div>
-                            <select value={vehicleForm.style||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
+                            <select value={vehicleForm.style||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,style:val,cabys_code:suggestCabys(val,prev.engine_cc,prev.fuel)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
                               <option value="">Seleccionar</option>{["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s=><option key={s} value={s}>{s}</option>)}
                             </select>
                           </div>
@@ -4664,13 +4648,13 @@ export default function App() {
                           </div>
                           <div>
                             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Combustible</div>
-                            <select value={vehicleForm.fuel||""} onChange={e=>setVehicleForm(prev=>({...prev,fuel:e.target.value}))} style={{...S.sel,width:"100%",fontSize:12}}>
+                            <select value={vehicleForm.fuel||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,fuel:val,cabys_code:suggestCabys(prev.style,prev.engine_cc,val)||prev.cabys_code}));}} style={{...S.sel,width:"100%",fontSize:12}}>
                               <option value="">Seleccionar</option>{FUEL_OPTIONS.map(o=><option key={o} value={o}>{o}</option>)}
                             </select>
                           </div>
                           <div>
                             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Cilindrada (CC)</div>
-                            <input type="number" value={vehicleForm.engine_cc||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} />
+                            <input type="number" value={vehicleForm.engine_cc||""} onChange={e=>{const val=e.target.value;setVehicleForm(prev=>({...prev,engine_cc:val,cabys_code:suggestCabys(prev.style,val,prev.fuel)||prev.cabys_code}));}} style={{...S.inp,width:"100%",fontSize:12}} />
                           </div>
                           <div>
                             <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}># Pasajeros</div>
