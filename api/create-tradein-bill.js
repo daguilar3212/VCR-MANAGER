@@ -197,13 +197,12 @@ export default async function handler(req, res) {
     if (sale.tradein_km) descParts.push(`${Number(sale.tradein_km).toLocaleString('es-CR')} KM`);
     const description = descParts.join(', ').slice(0, 500);
 
-    // 7. Calcular monto: tradein_value × TC (si venta es USD)
-    let tradeinPriceCRC = parseFloat(sale.tradein_value) || 0;
-    if (sale.sale_currency === 'USD') {
-      tradeinPriceCRC = Math.round(tradeinPriceCRC * tc);
-    } else {
-      tradeinPriceCRC = Math.round(tradeinPriceCRC);
-    }
+    // 7. Calcular monto y moneda del bill
+    // El bill queda en la moneda del plan de ventas (USD o CRC)
+    // El item del catalogo (inventario) siempre en CRC, pero el bill respeta la moneda del negocio
+    const billCurrency = sale.sale_currency || 'CRC';
+    let billAmount = parseFloat(sale.tradein_value) || 0;
+    billAmount = Math.round(billAmount * 100) / 100; // 2 decimales
 
     // 8. Fecha
     const today = new Date().toISOString().split('T')[0];
@@ -227,7 +226,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 10. Construir payload del bill (formato que Alegra CR acepta)
+    // 10. Construir payload del bill
     const billPayload = {
       date: today,
       dueDate: today,
@@ -241,11 +240,19 @@ export default async function handler(req, res) {
       purchases: {
         items: [{
           id: Number(alegraItemId),
-          price: tradeinPriceCRC,
+          price: billAmount,
           quantity: 1,
         }],
       },
     };
+
+    // Si es USD, agregar currency con TC
+    if (billCurrency === 'USD') {
+      billPayload.currency = {
+        code: 'USD',
+        exchangeRate: tc,
+      };
+    }
 
     // 10. Crear el bill
     const bill = await alegraFetch('/bills', 'POST', billPayload);
@@ -264,10 +271,11 @@ export default async function handler(req, res) {
       ok: true,
       alegra_bill_id: bill.id,
       bill_number: billNumber,
-      amount_crc: tradeinPriceCRC,
+      amount: billAmount,
+      currency: billCurrency,
       tc_used: tc,
       invoice_number: invoiceNumber,
-      message: `Factura de compra ${billNumber} creada en Alegra`,
+      message: `Factura de compra ${billNumber} creada en Alegra por ${billCurrency === 'USD' ? '$' : '₡'}${billAmount.toLocaleString()}`,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stack: err.stack });
