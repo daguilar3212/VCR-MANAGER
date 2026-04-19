@@ -75,12 +75,23 @@ async function ensureContactIsProvider(alegraClientId) {
     return alegraClientId;
   }
 
-  // 4. Agregar 'provider' al type (Alegra requiere name en el PUT)
+  // 4. Agregar 'provider' al type
+  // Alegra PUT requiere campos obligatorios completos
   const newType = [...new Set([...typeArray, 'client', 'provider'])];
-  await alegraFetch(`/contacts/${alegraClientId}`, 'PUT', {
+
+  const updatePayload = {
     name: contact.name,
     type: newType,
-  });
+  };
+
+  // Incluir identification si existe
+  if (contact.identificationObject) {
+    updatePayload.identificationObject = contact.identificationObject;
+  } else if (contact.identification) {
+    updatePayload.identification = contact.identification;
+  }
+
+  await alegraFetch(`/contacts/${alegraClientId}`, 'PUT', updatePayload);
 
   return alegraClientId;
 }
@@ -194,30 +205,51 @@ export default async function handler(req, res) {
       tradeinPriceCRC = Math.round(tradeinPriceCRC);
     }
 
-    // 8. Fecha: usar la misma fecha que la factura de venta (approved_at)
+    // 8. Fecha
     const today = new Date().toISOString().split('T')[0];
-    const dueDate = today; // Mismo dia (sin credito)
 
-    // 9. Construir payload del bill
-    // Estructura Alegra CR: /bills (compras)
+    // 9. Buscar el alegra_item_id del vehiculo recien creado
+    // (create-tradein-vehicle ya lo creo como item en Alegra)
+    let alegraItemId = null;
+    try {
+      const { data: vehicle } = await supabase
+        .from('vehicles')
+        .select('alegra_item_id')
+        .eq('plate', plateFormatted)
+        .maybeSingle();
+      alegraItemId = vehicle?.alegra_item_id;
+    } catch {}
+
+    // 10. Construir payload del bill
+    // Si tenemos alegra_item_id, enlazamos al item. Si no, creamos inline.
+    const itemPayload = {
+      price: tradeinPriceCRC,
+      quantity: 1,
+      tax: [], // IVA exento (array vacio)
+      observations: description.slice(0, 500),
+    };
+
+    if (alegraItemId) {
+      // Enlazar al item existente
+      itemPayload.id = Number(alegraItemId);
+    } else {
+      // Fallback: crear item inline en el bill
+      itemPayload.name = itemName;
+      itemPayload.description = description.slice(0, 500);
+      itemPayload.productKey = sale.tradein_cabys || '4911404000000';
+    }
+
     const billPayload = {
       date: today,
-      dueDate: dueDate,
-      provider: { id: sale.alegra_client_id }, // mismo contact que cliente
+      dueDate: today,
+      provider: { id: Number(sale.alegra_client_id) },
       billNumber: billNumber,
-      observations: `Compra de vehiculo recibido como trade-in. Factura de venta relacionada: ${invoiceNumber}. ${description}`,
+      observations: `Compra de vehiculo recibido como trade-in. Factura de venta relacionada: ${invoiceNumber}.`,
+      stamp: { generateStamp: false }, // NO timbrar (borrador)
+      currency: { code: 'CRC', exchangeRate: 1 },
       purchases: {
-        items: [{
-          name: itemName,
-          description: description,
-          price: tradeinPriceCRC,
-          quantity: 1,
-          tax: [], // IVA exento
-          productKey: sale.tradein_cabys || '4911404000000',
-        }],
+        items: [itemPayload],
       },
-      paymentMethod: 'CASH',
-      status: 'open', // Estado borrador/abierta
     };
 
     // 10. Crear el bill
