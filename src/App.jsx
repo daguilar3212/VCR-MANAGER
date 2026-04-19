@@ -1067,8 +1067,10 @@ export default function App() {
     has_tradein: false,
     tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "", tradein_color: "",
     tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
+    tradein_engine_cc: "", tradein_chassis: "", tradein_style: "", tradein_cabys: "",
     sale_type: "propio", sale_currency: "USD", sale_price: "", sale_exchange_rate: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
     payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
+    credit_due_days: "",
     deposits: [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
     transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
     transfer_amount: "",
@@ -1337,6 +1339,10 @@ export default function App() {
       tradein_engine: saleForm.has_tradein ? saleForm.tradein_engine : null,
       tradein_drive: saleForm.has_tradein ? saleForm.tradein_drive : null,
       tradein_fuel: saleForm.has_tradein ? saleForm.tradein_fuel : null,
+      tradein_engine_cc: saleForm.has_tradein ? (parseInt(saleForm.tradein_engine_cc) || null) : null,
+      tradein_chassis: saleForm.has_tradein ? (saleForm.tradein_chassis || null) : null,
+      tradein_style: saleForm.has_tradein ? (saleForm.tradein_style || null) : null,
+      tradein_cabys: saleForm.has_tradein ? (saleForm.tradein_cabys || null) : null,
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
       sale_currency: saleForm.sale_currency || "USD",
@@ -1351,6 +1357,7 @@ export default function App() {
       financing_term_months: parseInt(saleForm.financing_term_months) || null,
       financing_interest_pct: parseFloat(saleForm.financing_interest_pct) || null,
       financing_amount: parseFloat(saleForm.financing_amount) || null,
+      credit_due_days: parseInt(saleForm.credit_due_days) || null,
       transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
       transfer_in_financing: saleForm.transfer_in_financing,
       transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
@@ -1454,7 +1461,32 @@ export default function App() {
         } catch (e) {
           alegraMsg = `\n⚠ No se pudo conectar con Alegra: ${e.message}`;
         }
-        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.${alegraMsg}`);
+
+        // Si hay trade-in, crearlo en el inventario
+        let tradeinMsg = "";
+        try {
+          const trRes = await fetch('/api/create-tradein-vehicle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sale_id: id })
+          });
+          const trData = await trRes.json();
+          if (trData.ok) {
+            if (trData.skipped) {
+              // Sin trade-in, no mostrar nada
+            } else if (trData.already_exists) {
+              tradeinMsg = `\n🚗 Trade-in ${trData.plate} ya estaba en inventario.`;
+            } else {
+              tradeinMsg = `\n🚗 Trade-in ${trData.plate} agregado al inventario como DISPONIBLE.`;
+            }
+          } else {
+            tradeinMsg = `\n⚠ No se pudo agregar trade-in al inventario: ${trData.error || 'error'}`;
+          }
+        } catch (e) {
+          tradeinMsg = `\n⚠ Error agregando trade-in al inventario: ${e.message}`;
+        }
+
+        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.${alegraMsg}${tradeinMsg}`);
       } else if (data.ok && data.approved) {
         // Aprobada pero el PDF o Drive falló
         const warn = data.error || 'El PDF no se pudo procesar completamente.';
@@ -1496,6 +1528,8 @@ export default function App() {
       tradein_plate: sale.tradein_plate || "", tradein_brand: sale.tradein_brand || "", tradein_model: sale.tradein_model || "",
       tradein_year: sale.tradein_year || "", tradein_color: sale.tradein_color || "", tradein_km: sale.tradein_km || "",
       tradein_engine: sale.tradein_engine || "", tradein_drive: sale.tradein_drive || "", tradein_fuel: sale.tradein_fuel || "",
+      tradein_engine_cc: sale.tradein_engine_cc || "", tradein_chassis: sale.tradein_chassis || "",
+      tradein_style: sale.tradein_style || "", tradein_cabys: sale.tradein_cabys || "",
       tradein_value: sale.tradein_value || 0,
       sale_type: sale.sale_type || "propio",
       sale_currency: sale.sale_currency || "USD",
@@ -1503,6 +1537,7 @@ export default function App() {
       tradein_amount: sale.tradein_amount || 0, down_payment: sale.down_payment || 0, deposit_signal: sale.deposit_signal || 0,
       payment_method: sale.payment_method || "", financing_term_months: sale.financing_term_months || "",
       financing_interest_pct: sale.financing_interest_pct || "", financing_amount: sale.financing_amount || "",
+      credit_due_days: sale.credit_due_days || "",
       deposits: (sale.deposits && sale.deposits.length > 0) ? sale.deposits.map(d => ({ bank: d.bank || "", reference: d.reference || "", date: d.deposit_date || "", amount: d.amount || "" })) : [{ bank: "", reference: "", date: new Date().toISOString().split('T')[0], amount: "" }],
       transfer_included: sale.transfer_included || false, transfer_in_price: sale.transfer_in_price || false,
       transfer_in_financing: sale.transfer_in_financing || false,
@@ -1587,6 +1622,10 @@ export default function App() {
       tradein_brand: saleForm.has_tradein ? saleForm.tradein_brand : null,
       tradein_model: saleForm.has_tradein ? saleForm.tradein_model : null,
       tradein_year: saleForm.has_tradein ? (parseInt(saleForm.tradein_year) || null) : null,
+      tradein_engine_cc: saleForm.has_tradein ? (parseInt(saleForm.tradein_engine_cc) || null) : null,
+      tradein_chassis: saleForm.has_tradein ? (saleForm.tradein_chassis || null) : null,
+      tradein_style: saleForm.has_tradein ? (saleForm.tradein_style || null) : null,
+      tradein_cabys: saleForm.has_tradein ? (saleForm.tradein_cabys || null) : null,
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
       sale_currency: saleForm.sale_currency || "USD",
@@ -1600,6 +1639,7 @@ export default function App() {
       financing_term_months: parseInt(saleForm.financing_term_months) || null,
       financing_interest_pct: parseFloat(saleForm.financing_interest_pct) || null,
       financing_amount: parseFloat(saleForm.financing_amount) || null,
+      credit_due_days: parseInt(saleForm.credit_due_days) || null,
       transfer_included: saleForm.transfer_included, transfer_in_price: saleForm.transfer_in_price,
       transfer_in_financing: saleForm.transfer_in_financing,
       transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
@@ -3696,6 +3736,52 @@ export default function App() {
                 {fld("Kilometraje", "tradein_km", { inputType: "number" })}
                 {fld("Tracción", "tradein_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
                 {fld("Combustible", "tradein_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
+                <div>
+                  <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Estilo</div>
+                  <select
+                    value={F.tradein_style || ""}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setSaleForm(prev => ({
+                        ...prev,
+                        tradein_style: val,
+                        tradein_cabys: suggestCabys(val, prev.tradein_engine_cc, prev.tradein_fuel) || prev.tradein_cabys
+                      }));
+                    }}
+                    style={{ ...S.sel, width: "100%", fontSize: 12 }}
+                  >
+                    <option value="">Seleccionar</option>
+                    {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Cilindrada (CC)</div>
+                  <input
+                    type="number"
+                    value={F.tradein_engine_cc || ""}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setSaleForm(prev => ({
+                        ...prev,
+                        tradein_engine_cc: val,
+                        tradein_cabys: suggestCabys(prev.tradein_style, val, prev.tradein_fuel) || prev.tradein_cabys
+                      }));
+                    }}
+                    style={{ ...S.inp, width: "100%", fontSize: 12 }}
+                  />
+                </div>
+                {fld("Chasis (VIN)", "tradein_chassis", { upperCase: true })}
+                <div>
+                  <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Código CABYS</div>
+                  <select
+                    value={F.tradein_cabys || ""}
+                    onChange={e => uf("tradein_cabys", e.target.value)}
+                    style={{ ...S.sel, width: "100%", fontSize: 12 }}
+                  >
+                    <option value="">Seleccionar</option>
+                    {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+                  </select>
+                </div>
                 {fld(`Valor del trade-in (${F.sale_currency === "CRC" ? "₡" : "$"})`, "tradein_value", { inputType: "number" })}
               </div>
             )}
@@ -3804,6 +3890,7 @@ export default function App() {
               {fld("Plazo (meses)", "financing_term_months", { inputType: "number" })}
               {fld("Interés (%)", "financing_interest_pct", { inputType: "number" })}
               {fld(`Monto financiado (${F.sale_currency === "CRC" ? "₡" : "$"})`, "financing_amount", { inputType: "number" })}
+              {(F.payment_method === "Financiamiento" || F.payment_method === "Mixto") && fld("Días para cancelar saldo", "credit_due_days", { inputType: "number" })}
             </div>
 
             <div style={{ marginTop: 14, borderTop: "1px solid #2a2d3d", paddingTop: 14 }}>
