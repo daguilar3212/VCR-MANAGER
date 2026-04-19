@@ -1,6 +1,112 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from './supabase';
 import { useAuth } from './AuthProvider.jsx';
+
+// ============================================================
+// REGLA DE PLACA: MAYUSCULA sin guion, excepto CL que si lleva guion
+// ============================================================
+const formatPlate = (val) => {
+  if (!val) return "";
+  const clean = String(val).toUpperCase().replace(/[\s-]/g, "");
+  if (!clean) return "";
+  const clMatch = clean.match(/^CL(\d+)$/);
+  if (clMatch) return `CL-${clMatch[1]}`;
+  return clean;
+};
+
+// ============================================================
+// CATALOGO CABYS DE VEHICULOS
+// ============================================================
+const CABYS_VEHICLES = [
+  { code: "4911700100", label: "Automóvil gasolina hasta 2000cc" },
+  { code: "4911700200", label: "Automóvil gasolina más de 2000cc" },
+  { code: "4911800100", label: "Automóvil diésel hasta 2000cc" },
+  { code: "4911800200", label: "Automóvil diésel más de 2000cc" },
+  { code: "4911900100", label: "Automóvil híbrido/eléctrico" },
+  { code: "4912100000", label: "Microbús / Busetas" },
+  { code: "4912200000", label: "Pick Up / Camioneta" },
+  { code: "4912300000", label: "Camión de carga" },
+  { code: "4912400000", label: "Vehículo todo terreno" },
+];
+
+// Sugerir CABYS segun estilo y CC
+const suggestCabys = (style, engineCc) => {
+  if (!style) return null;
+  const s = String(style).toUpperCase();
+  if (s.includes("PICK") || s.includes("CAMIONETA")) return "4912200000";
+  if (s.includes("MICROBUS") || s.includes("BUSETA")) return "4912100000";
+  if (s.includes("TODO") || s.includes("TERRENO")) return "4912400000";
+  if (s.includes("HIBRIDO") || s.includes("ELECTRICO")) return "4911900100";
+  const cc = parseInt(engineCc) || 0;
+  if (cc > 0 && cc <= 2000) return "4911700100";
+  if (cc > 2000) return "4911700200";
+  return null;
+};
+
+// ============================================================
+// COMPONENTE DE FIRMA
+// ============================================================
+const SignaturePad = ({ onSave, onCancel, existingSignature }) => {
+  const canvasRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [hasDrawn, setHasDrawn] = useState(!!existingSignature);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ratio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * ratio;
+    canvas.height = rect.height * ratio;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(ratio, ratio);
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#111";
+    if (existingSignature) {
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, rect.width, rect.height);
+      img.src = existingSignature;
+    }
+  }, [existingSignature]);
+
+  const getPos = (e) => {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    if (e.touches && e.touches[0]) return { x: e.touches[0].clientX - rect.left, y: e.touches[0].clientY - rect.top };
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+  const start = (e) => { e.preventDefault(); setIsDrawing(true); const { x, y } = getPos(e); const ctx = canvasRef.current.getContext("2d"); ctx.beginPath(); ctx.moveTo(x, y); };
+  const draw = (e) => { if (!isDrawing) return; e.preventDefault(); const { x, y } = getPos(e); const ctx = canvasRef.current.getContext("2d"); ctx.lineTo(x, y); ctx.stroke(); setHasDrawn(true); };
+  const end = () => setIsDrawing(false);
+  const clear = () => { const c = canvasRef.current; const ctx = c.getContext("2d"); ctx.clearRect(0, 0, c.width, c.height); setHasDrawn(false); };
+  const save = () => {
+    if (!hasDrawn) { alert("Por favor firmá antes de guardar."); return; }
+    onSave(canvasRef.current.toDataURL("image/png"));
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"#fff",borderRadius:16,padding:24,maxWidth:600,width:"100%"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <h3 style={{fontSize:18,fontWeight:700,margin:0,color:"#111"}}>Firma del Cliente</h3>
+          <button onClick={onCancel} style={{background:"none",border:"none",cursor:"pointer",color:"#666",fontSize:20}}>✕</button>
+        </div>
+        <p style={{fontSize:12,color:"#666",marginBottom:10}}>Firme en el recuadro con el dedo (móvil) o mouse (computadora).</p>
+        <div style={{border:"2px dashed #ccc",borderRadius:10,background:"#fafafa",touchAction:"none"}}>
+          <canvas ref={canvasRef} style={{width:"100%",height:220,cursor:"crosshair",display:"block"}}
+            onMouseDown={start} onMouseMove={draw} onMouseUp={end} onMouseLeave={end}
+            onTouchStart={start} onTouchMove={draw} onTouchEnd={end} />
+        </div>
+        <div style={{display:"flex",gap:8,marginTop:14,justifyContent:"flex-end"}}>
+          <button onClick={clear} style={{background:"#f3f4f6",color:"#111",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 16px",cursor:"pointer",fontSize:13,fontWeight:500}}>Limpiar</button>
+          <button onClick={onCancel} style={{background:"#f3f4f6",color:"#111",border:"1px solid #e5e7eb",borderRadius:8,padding:"8px 16px",cursor:"pointer",fontSize:13,fontWeight:500}}>Cancelar</button>
+          <button onClick={save} style={{background:"#10b981",color:"#fff",border:"none",borderRadius:8,padding:"8px 24px",cursor:"pointer",fontSize:13,fontWeight:600}}>Guardar firma</button>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ============================================================
 // ESTILOS (mismos que App.jsx)
@@ -73,26 +179,32 @@ function computeBreakdown(form) {
 
 const emptyForm = () => ({
   sale_date: todayStr(),
-  currency: "USD", // moneda global de la venta
+  currency: "USD",
+  sale_currency: "USD",
+  client_id_type: "fisica",
   client_name: "", client_cedula: "", client_phone1: "", client_phone2: "", client_email: "",
   client_address: "", client_workplace: "", client_occupation: "", client_civil_status: "",
+  client_has_activity: false, client_activity_code: "",
   vehicle_id: "", vehicle_plate: "", vehicle_brand: "", vehicle_model: "", vehicle_year: "",
   vehicle_color: "", vehicle_km: "", vehicle_engine: "", vehicle_drive: "", vehicle_fuel: "",
-  vehicle_cabys: "",
+  vehicle_cabys: "", vehicle_style: "", vehicle_engine_cc: "",
   has_tradein: false,
   tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "",
   tradein_color: "", tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "",
   tradein_value: "",
   sale_type: "propio",
   sale_price: "", sale_exchange_rate: "", tradein_amount: "", down_payment: "",
+  deposit_signal: 0,
   deposits: [{ bank: "", reference: "", date: "", amount: "" }],
   payment_method: "contado",
   financing_term_months: "", financing_interest_pct: "", financing_amount: "",
   transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
   transfer_amount: "",
   has_insurance: false, insurance_months: "",
+  iva_exceptional: false, iva_rate: 0,
   observations: "",
-  agent2_id: "", // agent1 siempre es el usuario logueado
+  agent2_id: "",
+  client_signature: null, signed_at: null,
 });
 
 // ============================================================
@@ -112,6 +224,8 @@ export default function AgentPanel() {
   const [vehicleFilter, setVehicleFilter] = useState("disponible");
   const [saleStatusFilter, setSaleStatusFilter] = useState("all");
   const [notif, setNotif] = useState(null); // { type, message } para toast
+  const [searchingClient, setSearchingClient] = useState(false);
+  const [showSignatureModal, setShowSignatureModal] = useState(false);
 
   // ============================================================
   // CARGAR DATOS
@@ -278,8 +392,8 @@ export default function AgentPanel() {
   }
 
   function openEditSaleForm(sale) {
-    if (sale.status !== "pendiente") {
-      alert("Solo podés editar ventas en estado pendiente.");
+    if (sale.status !== "pendiente" && sale.status !== "reservado") {
+      alert("Solo podés editar ventas en estado pendiente o reservado.");
       return;
     }
     const f = emptyForm();
@@ -287,6 +401,8 @@ export default function AgentPanel() {
     Object.keys(f).forEach(k => {
       if (sale[k] !== undefined && sale[k] !== null) f[k] = sale[k];
     });
+    // Guardar el status actual para logica condicional de botones
+    f.current_status = sale.status;
     // Deposits
     if (sale.deposits && sale.deposits.length > 0) {
       f.deposits = sale.deposits.map(d => ({
@@ -305,7 +421,70 @@ export default function AgentPanel() {
     setView("form");
   }
 
-  async function saveSale() {
+  // Busca cliente por cedula: primero en ventas anteriores, despues en Alegra
+  async function lookupClientByCedula(cedula) {
+    if (!cedula || cedula.trim().length < 3) return false;
+    const { data } = await supabase
+      .from('sales')
+      .select('client_id_type,client_name,client_phone1,client_phone2,client_email,client_address,client_workplace,client_occupation,client_civil_status,client_has_activity,client_activity_code')
+      .eq('client_cedula', cedula.trim())
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (data && data.length > 0) {
+      const c = data[0];
+      setSaleForm(prev => ({
+        ...prev,
+        client_id_type: c.client_id_type || prev.client_id_type || "fisica",
+        client_name: c.client_name || "",
+        client_phone1: c.client_phone1 || "",
+        client_phone2: c.client_phone2 || "",
+        client_email: c.client_email || "",
+        client_address: c.client_address || "",
+        client_workplace: c.client_workplace || "",
+        client_occupation: c.client_occupation || "",
+        client_civil_status: c.client_civil_status || "",
+        client_has_activity: c.client_has_activity || false,
+        client_activity_code: c.client_activity_code || "",
+      }));
+      return true;
+    }
+    return false;
+  }
+
+  async function searchClient() {
+    const cedula = (saleForm?.client_cedula || "").replace(/[\s-]/g, "").trim();
+    if (!cedula) { alert("Escribí la cédula primero."); return; }
+    setSearchingClient(true);
+    try {
+      const foundLocal = await lookupClientByCedula(cedula);
+      if (foundLocal) { alert("✓ Cliente encontrado en ventas anteriores."); return; }
+      const res = await fetch('/api/alegra-lookup-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cedula })
+      });
+      const data = await res.json();
+      if (!data.ok) { alert(`Error buscando en Alegra: ${data.error || 'desconocido'}`); return; }
+      if (!data.found) { alert("Cliente no encontrado en Alegra. Llená los datos manualmente."); return; }
+      const c = data.client;
+      setSaleForm(prev => ({
+        ...prev,
+        client_id_type: c.client_id_type || prev.client_id_type || "fisica",
+        client_name: c.name || "",
+        client_phone1: c.phone1 || "",
+        client_phone2: c.phone2 || "",
+        client_email: c.email || "",
+        client_address: c.address || "",
+      }));
+      alert("✓ Cliente importado de Alegra. Completá los campos restantes.");
+    } catch (e) {
+      alert(`Error de red: ${e.message}`);
+    } finally {
+      setSearchingClient(false);
+    }
+  }
+
+  async function saveSale(targetStatus = "pendiente") {
     if (!saleForm.client_name || !saleForm.client_cedula) {
       alert("Nombre y cédula del cliente son obligatorios.");
       return;
@@ -323,38 +502,41 @@ export default function AgentPanel() {
       return;
     }
 
-    // Calcular desglose completo
     const breakdown = computeBreakdown(saleForm);
     const { salePrice, transferExtra, tradein, down, depsTotal, balance } = breakdown;
 
-    // VALIDACIÓN DE SALDO
-    // Contado: debe llegar a 0 (permitimos pequeña tolerancia por redondeo)
-    // Financiamiento o mixto: puede quedar saldo (lo que financia el banco)
-    const isCash = (saleForm.payment_method || "contado") === "contado";
-    const tolerance = 0.01; // centavo de tolerancia por redondeo
+    // Validaciones diferentes segun target status
+    if (targetStatus === "reservado") {
+      // Reserva: solo requiere lo basico, no depositos ni saldo
+    } else {
+      // Pendiente (envio a aprobacion): validar depositos y saldo
+      const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
+      if (validDeposits.length === 0) {
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
+        return;
+      }
+      for (const d of validDeposits) {
+        if (!d.bank || !d.reference) { alert("Cada depósito debe tener banco y número de referencia."); return; }
+      }
 
-    if (isCash && Math.abs(balance) > tolerance) {
-      alert(
-        `El saldo debe ser 0 para ventas de contado.\n\n` +
-        `Saldo actual: ${balance.toFixed(2)}\n\n` +
-        `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
-      );
-      return;
-    }
-
-    // En financiamiento, el balance no puede ser NEGATIVO (el cliente estaría pagando de más)
-    if (!isCash && balance < -tolerance) {
-      alert(
-        `El saldo no puede ser negativo. El cliente está pagando más de la venta.\n\n` +
-        `Saldo actual: ${balance.toFixed(2)}`
-      );
-      return;
+      const isCash = (saleForm.payment_method || "contado") === "contado";
+      const tolerance = 0.01;
+      if (isCash && Math.abs(balance) > tolerance) {
+        alert(`El saldo debe ser 0 para ventas de contado.\n\nSaldo actual: ${balance.toFixed(2)}`);
+        return;
+      }
+      if (!isCash && balance < -tolerance) {
+        alert(`El saldo no puede ser negativo. Saldo actual: ${balance.toFixed(2)}`);
+        return;
+      }
     }
 
     const row = {
       sale_date: saleForm.sale_date,
-      status: "pendiente",
-      currency: saleForm.currency || "USD",
+      status: targetStatus,
+      currency: saleForm.currency || saleForm.sale_currency || "USD",
+      sale_currency: saleForm.sale_currency || saleForm.currency || "USD",
+      client_id_type: saleForm.client_id_type || "fisica",
       client_name: saleForm.client_name,
       client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1 || null,
@@ -364,6 +546,8 @@ export default function AgentPanel() {
       client_workplace: saleForm.client_workplace || null,
       client_occupation: saleForm.client_occupation || null,
       client_civil_status: saleForm.client_civil_status || null,
+      client_has_activity: !!saleForm.client_has_activity,
+      client_activity_code: saleForm.client_has_activity ? (saleForm.client_activity_code || null) : null,
       vehicle_id: saleForm.vehicle_id || null,
       vehicle_plate: saleForm.vehicle_plate,
       vehicle_brand: saleForm.vehicle_brand || null,
@@ -375,6 +559,8 @@ export default function AgentPanel() {
       vehicle_drive: saleForm.vehicle_drive || null,
       vehicle_fuel: saleForm.vehicle_fuel || null,
       vehicle_cabys: saleForm.vehicle_cabys || null,
+      vehicle_style: saleForm.vehicle_style || null,
+      vehicle_engine_cc: parseInt(saleForm.vehicle_engine_cc) || null,
       has_tradein: !!saleForm.has_tradein,
       tradein_plate: saleForm.tradein_plate || null,
       tradein_brand: saleForm.tradein_brand || null,
@@ -391,6 +577,7 @@ export default function AgentPanel() {
       sale_exchange_rate: parseFloat(saleForm.sale_exchange_rate) || null,
       tradein_amount: tradein || null,
       down_payment: down || null,
+      deposit_signal: parseFloat(saleForm.deposit_signal) || 0,
       total_balance: balance,
       deposits_total: depsTotal,
       payment_method: saleForm.payment_method || null,
@@ -403,41 +590,34 @@ export default function AgentPanel() {
       transfer_amount: parseFloat(saleForm.transfer_amount) || 0,
       has_insurance: !!saleForm.has_insurance,
       insurance_months: parseInt(saleForm.insurance_months) || null,
+      iva_exceptional: !!saleForm.iva_exceptional,
+      iva_rate: saleForm.iva_exceptional ? (parseFloat(saleForm.iva_rate) || 0) : 0,
       observations: saleForm.observations || null,
+      client_signature: saleForm.client_signature || null,
+      signed_at: saleForm.signed_at || null,
     };
 
     let saleId = editingSaleId;
 
     if (editingSaleId) {
-      // UPDATE
       const { error } = await supabase.from('sales').update(row).eq('id', editingSaleId);
       if (error) { alert("Error al actualizar: " + error.message); return; }
-      // Borrar deposits y agents anteriores, insertar de nuevo
       await supabase.from('sale_deposits').delete().eq('sale_id', editingSaleId);
       await supabase.from('sale_agents').delete().eq('sale_id', editingSaleId);
     } else {
-      // INSERT
       const { data, error } = await supabase.from('sales').insert(row).select().single();
       if (error) { alert("Error al crear: " + error.message); return; }
       saleId = data.id;
     }
 
-    // Insertar deposits
     const depRows = (saleForm.deposits || [])
       .filter(d => d.amount && parseFloat(d.amount) > 0)
-      .map(d => ({
-        sale_id: saleId,
-        bank: d.bank || null,
-        reference: d.reference || null,
-        deposit_date: d.date || null,
-        amount: parseFloat(d.amount) || 0,
-      }));
+      .map(d => ({ sale_id: saleId, bank: d.bank || null, reference: d.reference || null, deposit_date: d.date || null, amount: parseFloat(d.amount) || 0 }));
     if (depRows.length > 0) {
       const { error } = await supabase.from('sale_deposits').insert(depRows);
       if (error) { alert("Error guardando depósitos: " + error.message); return; }
     }
 
-    // Insertar sale_agents (agente 1 = usuario actual, agente 2 opcional)
     const agentRows = [];
     const saleTC = parseFloat(saleForm.sale_exchange_rate) || 0;
     const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== profile.agent_id;
@@ -447,28 +627,49 @@ export default function AgentPanel() {
 
     const myAgent = agentsList.find(a => a.id === profile.agent_id);
     agentRows.push({
-      sale_id: saleId,
-      agent_id: profile.agent_id,
+      sale_id: saleId, agent_id: profile.agent_id,
       agent_name: myAgent?.name || profile.full_name || "",
-      commission_pct: splitPct,
-      commission_amount: splitAmt,
-      commission_crc: splitCrc,
+      commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc,
     });
 
     if (hasAgent2) {
       const ag2 = agentsList.find(a => a.id === saleForm.agent2_id);
-      agentRows.push({
-        sale_id: saleId,
-        agent_id: saleForm.agent2_id,
-        agent_name: ag2?.name || "",
-        commission_pct: splitPct,
-        commission_amount: splitAmt,
-        commission_crc: splitCrc,
-      });
+      agentRows.push({ sale_id: saleId, agent_id: saleForm.agent2_id, agent_name: ag2?.name || "",
+        commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc });
     }
 
     const { error: agErr } = await supabase.from('sale_agents').insert(agentRows);
     if (agErr) { alert("Error guardando agentes: " + agErr.message); return; }
+
+    // Si se guardo como reserva, generar PDF
+    if (targetStatus === "reservado" && !editingSaleId) {
+      try {
+        const res = await fetch('/api/approve-sale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sale_id: saleId, mode: 'reserve' })
+        });
+        const pdfData = await res.json();
+        if (pdfData.ok && pdfData.pdf_url) {
+          alert(`📝 Reserva guardada.\n\nPDF subido a Drive: ${pdfData.file_name}`);
+        } else {
+          alert(`📝 Reserva guardada pero el PDF tuvo un problema: ${pdfData.error || 'desconocido'}`);
+        }
+      } catch (e) {
+        alert(`📝 Reserva guardada pero falló subir el PDF: ${e.message}`);
+      }
+    }
+
+    // Si es una reserva que se esta completando (editingSaleId + targetStatus "pendiente" desde reservado)
+    if (editingSaleId && saleForm.current_status === "reservado") {
+      try {
+        await fetch('/api/approve-sale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sale_id: editingSaleId, mode: 'update_reserve' })
+        });
+      } catch (e) { console.error('Error actualizando PDF:', e.message); }
+    }
 
     await loadSales();
     setView("list");
@@ -583,6 +784,10 @@ export default function AgentPanel() {
           agents={agentsList.filter(a => a.id !== profile.agent_id)}
           editingId={editingSaleId}
           onSave={saveSale}
+          onSearchClient={searchClient}
+          searching={searchingClient}
+          showSignatureModal={showSignatureModal}
+          setShowSignatureModal={setShowSignatureModal}
           onCancel={() => { setView("list"); setSaleForm(null); setEditingSaleId(null); }}
         />}
 
@@ -696,7 +901,7 @@ function VentasListView({ sales, filter, setFilter, onNew, onPick }) {
       </div>
 
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
-        {[["all", "Todas"], ["pendiente", "Pendientes"], ["aprobada", "Aprobadas"], ["rechazada", "Rechazadas"]].map(([v, l]) => (
+        {[["all", "Todas"], ["reservado", "Reservadas"], ["pendiente", "Pendientes"], ["aprobada", "Aprobadas"], ["rechazada", "Rechazadas"]].map(([v, l]) => (
           <button key={v} onClick={() => setFilter(v)} style={filter === v ? S.btn : S.btnGhost}>
             {l} ({sales.filter(s => v === "all" || s.status === v).length})
           </button>
@@ -740,7 +945,7 @@ function VentasListView({ sales, filter, setFilter, onNew, onPick }) {
 // ============================================================
 // SUBCOMPONENTE: FORMULARIO DE VENTA
 // ============================================================
-function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onCancel }) {
+function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onCancel, onSearchClient, searching, showSignatureModal, setShowSignatureModal }) {
   if (!form) return null;
 
   const upd = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
@@ -796,24 +1001,82 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
         <div style={S.cardTitle}>Datos del cliente</div>
         <div style={S.grid2}>
           <div>
-            <label style={S.label}>Nombre completo *</label>
-            <input style={S.input} value={form.client_name} onChange={e => upd("client_name", e.target.value)} />
+            <label style={S.label}>Tipo de identificación *</label>
+            <select style={S.sel} value={form.client_id_type || "fisica"} onChange={e => upd("client_id_type", e.target.value)}>
+              <option value="fisica">Cédula Física</option>
+              <option value="juridica">Cédula Jurídica</option>
+              <option value="dimex">DIMEX</option>
+              <option value="extranjero">Extranjero/Pasaporte</option>
+            </select>
           </div>
           <div>
-            <label style={S.label}>Cédula *</label>
-            <input style={S.input} value={form.client_cedula} onChange={e => upd("client_cedula", e.target.value)} />
+            <label style={S.label}>Número de identificación *</label>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                style={{ ...S.input, flex: 1 }}
+                value={form.client_cedula}
+                onChange={e => {
+                  const clean = e.target.value.replace(/[\s-]/g, "").toUpperCase();
+                  upd("client_cedula", clean);
+                }}
+                placeholder="Sin espacios ni guiones"
+              />
+              <button
+                type="button"
+                onClick={onSearchClient}
+                disabled={searching}
+                title="Buscar en Alegra"
+                style={{ ...S.btn, background: searching ? "#9ca3af" : "#4f8cff", whiteSpace: "nowrap", padding: "0.55rem 0.9rem" }}
+              >
+                {searching ? "⏳" : "🔍 Buscar"}
+              </button>
+            </div>
+          </div>
+          <div style={{ gridColumn: "span 2" }}>
+            <label style={S.label}>Nombre completo *</label>
+            <input
+              style={S.input}
+              value={form.client_name}
+              onChange={e => upd("client_name", e.target.value.toUpperCase())}
+            />
           </div>
           <div>
             <label style={S.label}>Teléfono 1</label>
-            <input style={S.input} value={form.client_phone1} onChange={e => upd("client_phone1", e.target.value)} />
+            <input
+              style={S.input}
+              value={form.client_phone1}
+              onChange={e => {
+                const digits = e.target.value.replace(/\D/g, "");
+                if (digits.length === 8 && !e.target.value.includes("-")) {
+                  upd("client_phone1", `${digits.slice(0,4)}-${digits.slice(4)}`);
+                } else {
+                  upd("client_phone1", e.target.value);
+                }
+              }}
+            />
           </div>
           <div>
             <label style={S.label}>Teléfono 2</label>
-            <input style={S.input} value={form.client_phone2} onChange={e => upd("client_phone2", e.target.value)} />
+            <input
+              style={S.input}
+              value={form.client_phone2}
+              onChange={e => {
+                const digits = e.target.value.replace(/\D/g, "");
+                if (digits.length === 8 && !e.target.value.includes("-")) {
+                  upd("client_phone2", `${digits.slice(0,4)}-${digits.slice(4)}`);
+                } else {
+                  upd("client_phone2", e.target.value);
+                }
+              }}
+            />
           </div>
           <div>
             <label style={S.label}>Email</label>
-            <input style={S.input} value={form.client_email} onChange={e => upd("client_email", e.target.value)} />
+            <input
+              style={S.input}
+              value={form.client_email}
+              onChange={e => upd("client_email", e.target.value.toLowerCase())}
+            />
           </div>
           <div>
             <label style={S.label}>Estado civil</label>
@@ -827,7 +1090,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             </select>
           </div>
           <div style={{ gridColumn: "span 2" }}>
-            <label style={S.label}>Dirección</label>
+            <label style={S.label}>Dirección exacta</label>
             <input style={S.input} value={form.client_address} onChange={e => upd("client_address", e.target.value)} />
           </div>
           <div>
@@ -837,6 +1100,34 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           <div>
             <label style={S.label}>Oficio / Profesión</label>
             <input style={S.input} value={form.client_occupation} onChange={e => upd("client_occupation", e.target.value)} />
+          </div>
+          {/* Actividad economica */}
+          <div style={{ gridColumn: "span 2", padding: "10px 12px", background: "#fafafa", borderRadius: 8, border: "1px solid #e4e4e7", marginTop: 8 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer", fontWeight: 500 }}>
+              <input
+                type="checkbox"
+                checked={!!form.client_has_activity}
+                onChange={e => {
+                  upd("client_has_activity", e.target.checked);
+                  if (!e.target.checked) upd("client_activity_code", "");
+                }}
+              />
+              ¿El cliente tiene actividad económica inscrita en Hacienda?
+            </label>
+            {form.client_has_activity && (
+              <div style={{ marginTop: 10 }}>
+                <label style={S.label}>Número de actividad económica (formato Hacienda, ej: 4510.0) *</label>
+                <input
+                  style={S.input}
+                  value={form.client_activity_code || ""}
+                  onChange={e => upd("client_activity_code", e.target.value)}
+                  placeholder="Ej: 4510.0"
+                />
+                <div style={{ fontSize: 11, color: "#71717a", marginTop: 4 }}>
+                  Si tiene actividad → se emite Factura. Si no → se emite Tiquete.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -856,12 +1147,55 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           </select>
         </div>
         {form.vehicle_plate && (
-          <div style={{ ...S.grid4, marginTop: "1rem" }}>
-            <div><label style={S.label}>Placa</label><input style={S.input} value={form.vehicle_plate} readOnly /></div>
-            <div><label style={S.label}>Marca</label><input style={S.input} value={form.vehicle_brand} readOnly /></div>
-            <div><label style={S.label}>Modelo</label><input style={S.input} value={form.vehicle_model} readOnly /></div>
-            <div><label style={S.label}>Año</label><input style={S.input} value={form.vehicle_year} readOnly /></div>
-          </div>
+          <>
+            <div style={{ ...S.grid4, marginTop: "1rem" }}>
+              <div><label style={S.label}>Placa</label><input style={S.input} value={form.vehicle_plate} readOnly /></div>
+              <div><label style={S.label}>Marca</label><input style={S.input} value={form.vehicle_brand} readOnly /></div>
+              <div><label style={S.label}>Modelo</label><input style={S.input} value={form.vehicle_model} readOnly /></div>
+              <div><label style={S.label}>Año</label><input style={S.input} value={form.vehicle_year} readOnly /></div>
+            </div>
+            <div style={{ ...S.grid3, marginTop: "0.75rem" }}>
+              <div>
+                <label style={S.label}>Estilo</label>
+                <select
+                  style={S.sel}
+                  value={form.vehicle_style || ""}
+                  onChange={e => {
+                    upd("vehicle_style", e.target.value);
+                    const sug = suggestCabys(e.target.value, form.vehicle_engine_cc);
+                    if (sug && !form.vehicle_cabys) upd("vehicle_cabys", sug);
+                  }}
+                >
+                  <option value="">Seleccionar</option>
+                  {["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>Cilindrada (CC)</label>
+                <input
+                  style={S.input}
+                  type="number"
+                  value={form.vehicle_engine_cc || ""}
+                  onChange={e => {
+                    upd("vehicle_engine_cc", e.target.value);
+                    const sug = suggestCabys(form.vehicle_style, e.target.value);
+                    if (sug && !form.vehicle_cabys) upd("vehicle_cabys", sug);
+                  }}
+                />
+              </div>
+              <div style={{ gridColumn: "span 1" }}>
+                <label style={S.label}>Código CABYS</label>
+                <select
+                  style={S.sel}
+                  value={form.vehicle_cabys || ""}
+                  onChange={e => upd("vehicle_cabys", e.target.value)}
+                >
+                  <option value="">Seleccionar</option>
+                  {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}
+                </select>
+              </div>
+            </div>
+          </>
         )}
       </div>
 
@@ -966,7 +1300,24 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
         </div>
         {(form.deposits || []).map((d, idx) => (
           <div key={idx} style={{ ...S.grid4, marginBottom: "0.5rem", alignItems: "end" }}>
-            <div><label style={S.label}>Banco</label><input style={S.input} value={d.bank} onChange={e => updDeposit(idx, "bank", e.target.value)} /></div>
+            <div>
+              <label style={S.label}>Cuenta / Método</label>
+              <select
+                style={S.sel}
+                value={d.bank || ""}
+                onChange={e => updDeposit(idx, "bank", e.target.value)}
+              >
+                <option value="">Seleccionar</option>
+                <option value="Banco BAC Dólares">Banco BAC Dólares</option>
+                <option value="Banco Nacional Dólares">Banco Nacional Dólares</option>
+                <option value="Banco de Costa Rica Dólares">Banco de Costa Rica Dólares</option>
+                <option value="Banco BAC Colones">Banco BAC Colones</option>
+                <option value="Banco Nacional de Costa Rica Colones">Banco Nacional de Costa Rica Colones</option>
+                <option value="Banco de Costa Rica Colones">Banco de Costa Rica Colones</option>
+                <option value="Efectivo">Efectivo</option>
+                <option value="Tarjeta">Tarjeta</option>
+              </select>
+            </div>
             <div><label style={S.label}>Referencia</label><input style={S.input} value={d.reference} onChange={e => updDeposit(idx, "reference", e.target.value)} /></div>
             <div><label style={S.label}>Fecha</label><input style={S.input} type="date" value={d.date} onChange={e => updDeposit(idx, "date", e.target.value)} /></div>
             <div style={{ display: "flex", gap: "0.25rem" }}>
@@ -988,17 +1339,17 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
         <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
           <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <input type="checkbox" checked={!!form.transfer_included} onChange={e => upd("transfer_included", e.target.checked)} />
-            Incluye traspaso
+            Traspaso por aparte
           </label>
           {form.transfer_included && (
             <div style={{ marginLeft: "1.5rem", display: "flex", flexDirection: "column", gap: "0.3rem" }}>
               <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                 <input type="checkbox" checked={!!form.transfer_in_price} onChange={e => upd("transfer_in_price", e.target.checked)} />
-                Traspaso incluido en precio
+                Traspaso incluido
               </label>
               <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                 <input type="checkbox" checked={!!form.transfer_in_financing} onChange={e => upd("transfer_in_financing", e.target.checked)} />
-                Traspaso incluido en financiamiento
+                En financiamiento
               </label>
               {!form.transfer_in_price && !form.transfer_in_financing && (
                 <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6 }}>
@@ -1066,11 +1417,127 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
         />
       </div>
 
-      {/* BOTONES FINAL */}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem" }}>
-        <button onClick={onCancel} style={S.btnGhost}>Cancelar</button>
-        <button onClick={onSave} style={S.btn}>Guardar plan de venta</button>
+      {/* IVA EXCEPCIONAL */}
+      <div style={S.card}>
+        <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: 14, fontWeight: 500, cursor: "pointer", marginBottom: form.iva_exceptional ? 10 : 0 }}>
+          <input
+            type="checkbox"
+            checked={!!form.iva_exceptional}
+            onChange={e => {
+              upd("iva_exceptional", e.target.checked);
+              if (!e.target.checked) upd("iva_rate", 0);
+            }}
+          />
+          Caso de IVA excepcional
+        </label>
+        {form.iva_exceptional && (
+          <div>
+            <label style={S.label}>% IVA a aplicar en la factura</label>
+            <input
+              type="number" step="0.01"
+              style={{ ...S.input, width: 120 }}
+              value={form.iva_rate || ""}
+              onChange={e => upd("iva_rate", e.target.value)}
+              placeholder="Ej: 13"
+            />
+            <div style={{ fontSize: 11, color: "#71717a", marginTop: 4 }}>
+              Por defecto IVA exento (0%). Activá esto solo para casos especiales (carros nuevos sin inscribir, eléctricos, etc.).
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* FIRMA DEL CLIENTE */}
+      <div style={S.card}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
+          <div style={S.cardTitle}>Firma del Cliente (opcional)</div>
+          {form.client_signature && (
+            <span style={S.badge("#10b981")}>✓ Firmado</span>
+          )}
+        </div>
+        {form.client_signature ? (
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <div style={{ background: "#fff", borderRadius: 8, padding: 8, border: "1px solid #e4e4e7" }}>
+              <img src={form.client_signature} alt="Firma" style={{ height: 80, display: "block" }} />
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <button type="button" onClick={() => setShowSignatureModal(true)} style={{ ...S.btnGhost, fontSize: 12 }}>
+                ✍️ Volver a firmar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (window.confirm("¿Borrar la firma actual?")) {
+                    upd("client_signature", null);
+                    upd("signed_at", null);
+                  }
+                }}
+                style={{ ...S.btnDanger, fontSize: 12, background: "transparent", color: "#e11d48", border: "1px solid #e11d48" }}
+              >
+                Borrar firma
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <p style={{ fontSize: 13, color: "#71717a", marginBottom: 10 }}>
+              Pedile al cliente que firme para dejar constancia de que aceptó el plan.
+            </p>
+            <button type="button" onClick={() => setShowSignatureModal(true)} style={{ ...S.btn, background: "#10b981" }}>
+              ✍️ Capturar firma del cliente
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* BOTONES FINAL - dinamicos segun estado */}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
+        <button onClick={onCancel} style={S.btnGhost}>Cancelar</button>
+
+        {!editingId && (
+          <>
+            <button onClick={() => onSave("reservado")} style={{ ...S.btn, background: "#f59e0b" }}>
+              📝 Guardar como Reserva
+            </button>
+            <button onClick={() => onSave("pendiente")} style={S.btn}>
+              ✓ Enviar para Aprobación
+            </button>
+          </>
+        )}
+
+        {editingId && form.current_status === "reservado" && (
+          <>
+            <button onClick={() => onSave("reservado")} style={{ ...S.btn, background: "#f59e0b" }}>
+              📝 Actualizar Reserva
+            </button>
+            <button onClick={() => onSave("pendiente")} style={S.btn}>
+              ✓ Completar y Enviar a Aprobación
+            </button>
+          </>
+        )}
+
+        {editingId && form.current_status !== "reservado" && (
+          <button onClick={() => onSave("pendiente")} style={S.btn}>
+            Guardar Correcciones
+          </button>
+        )}
+      </div>
+
+      {/* Modal firma */}
+      {showSignatureModal && (
+        <SignaturePad
+          existingSignature={form.client_signature}
+          onCancel={() => setShowSignatureModal(false)}
+          onSave={(dataURL) => {
+            setForm(prev => ({
+              ...prev,
+              client_signature: dataURL,
+              signed_at: new Date().toISOString(),
+            }));
+            setShowSignatureModal(false);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1080,8 +1547,9 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
 // ============================================================
 function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
   const isPendiente = sale.status === "pendiente";
+  const isReservado = sale.status === "reservado";
   const statusColor = sale.status === "aprobada" ? "#10b981" : sale.status === "rechazada" ? "#e11d48" : "#f59e0b";
-  const statusLabel = sale.status === "aprobada" ? "Aprobada" : sale.status === "rechazada" ? "Rechazada" : "Pendiente";
+  const statusLabel = sale.status === "aprobada" ? "Aprobada" : sale.status === "rechazada" ? "Rechazada" : sale.status === "reservado" ? "📝 Reservada" : "Pendiente";
 
   return (
     <div>
