@@ -29,17 +29,35 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, result });
     }
 
-    // BUSCAR EL NISSAN KICKS (CM-75, RIVERA CHACON, 11 febrero 2026)
-    // Filtrar por rango de fechas febrero 2026
-    const febList = await doFetch(`${ALEGRA_BASE}/bills?limit=30&order_direction=DESC&start_date=2026-02-10&end_date=2026-02-15`);
+    // Buscar bills trayendo mas cantidad
+    const all = await doFetch(`${ALEGRA_BASE}/bills?limit=100&order_direction=DESC`);
 
-    // Tambien buscar por texto "kicks" o "rivera"
-    const textSearch = await doFetch(`${ALEGRA_BASE}/bills?query=kicks&limit=5`);
+    if (!Array.isArray(all)) {
+      return res.status(200).json({ ok: false, raw: all });
+    }
+
+    // Buscar el del 11 de febrero 2026 (CM-75 Nissan Kicks)
+    const feb11 = all.filter(b => b.date === '2026-02-11');
+
+    // Tambien listado compacto completo
+    const compact = all.map(b => ({
+      id: b.id,
+      number: b.numberTemplate?.number,
+      provider_name: b.provider?.name,
+      provider_id: b.provider?.id,
+      total: b.total,
+      date: b.date,
+    }));
 
     return res.status(200).json({
       ok: true,
-      febList: Array.isArray(febList) ? febList.slice(0, 10) : febList,
-      textSearch: Array.isArray(textSearch) ? textSearch : textSearch,
+      total_scanned: all.length,
+      date_range: all.length > 0 ? {
+        most_recent: all[0].date,
+        oldest: all[all.length-1].date,
+      } : null,
+      feb_11_2026_matches: feb11,
+      compact_summary: compact.slice(0, 50), // primeros 50 para no saturar
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
