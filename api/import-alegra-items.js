@@ -38,9 +38,9 @@ function extractMatch(text, patterns) {
 
 // Parsea el nombre y descripcion para sacar datos estructurados
 function parseVehicleData(alegraItem) {
-  const name = (alegraItem.name || '').toUpperCase();
-  const desc = (alegraItem.description || '').toUpperCase();
-  const ref = (alegraItem.reference || '').toUpperCase();
+  const name = String(alegraItem.name || '').toUpperCase();
+  const desc = String(alegraItem.description || '').toUpperCase();
+  const ref = String(alegraItem.reference || '').toUpperCase();
   const combo = `${name} ${desc}`;
 
   // Placa: priorizar reference, luego buscar en nombre
