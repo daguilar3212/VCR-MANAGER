@@ -1,3 +1,9 @@
 {
-  "framework": "vite"
+  "framework": "vite",
+  "crons": [
+    {
+      "path": "/api/cron-sync-alegra-vehicles",
+      "schedule": "0 6 * * *"
+    }
+  ]
 }
