@@ -125,7 +125,7 @@ export default async function handler(req, res) {
       },
       tax: [{ id: 2 }], // IVA exento
       productKey: vehicle.cabys_code || '4911404000000',
-      reference: { reference: plateFormatted },
+      type: 'product',
     };
 
     // 5. Crear en Alegra
