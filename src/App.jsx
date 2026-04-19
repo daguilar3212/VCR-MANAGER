@@ -1090,6 +1090,8 @@ export default function App() {
     observations: "",
     agent1_id: "", agent2_id: "",
     client_signature: null, signed_at: null,
+    client_has_activity: false, client_activity_code: "",
+    iva_exceptional: false, iva_rate: 0,
   });
 
   const selectVehicleForSale = (plate) => {
@@ -1371,6 +1373,10 @@ export default function App() {
       observations: saleForm.observations || generateObservations(saleForm),
       client_signature: saleForm.client_signature || null,
       signed_at: saleForm.signed_at || null,
+      client_has_activity: !!saleForm.client_has_activity,
+      client_activity_code: saleForm.client_has_activity ? (saleForm.client_activity_code || null) : null,
+      iva_exceptional: !!saleForm.iva_exceptional,
+      iva_rate: saleForm.iva_exceptional ? (parseFloat(saleForm.iva_rate) || 0) : 0,
     };
 
     const { data, error } = await supabase.from('sales').insert(row).select().single();
@@ -1440,7 +1446,29 @@ export default function App() {
       const data = await res.json();
 
       if (data.ok && data.pdf_url) {
-        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.`);
+        // Intentar emitir factura en Alegra (borrador)
+        let alegraMsg = "";
+        try {
+          const alegraRes = await fetch('/api/emit-alegra-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sale_id: id })
+          });
+          const alegraData = await alegraRes.json();
+          if (alegraData.ok) {
+            if (alegraData.already_emitted) {
+              alegraMsg = `\n🧾 Ya tenía factura Alegra: ${alegraData.alegra_invoice_id}`;
+            } else {
+              const tipoDoc = alegraData.document_type === 'ticket' ? 'Tiquete' : 'Factura';
+              alegraMsg = `\n🧾 ${tipoDoc} creado como BORRADOR en Alegra.\nRevisá y timbrá desde Alegra.`;
+            }
+          } else {
+            alegraMsg = `\n⚠ No se pudo crear en Alegra: ${alegraData.error || 'error'}`;
+          }
+        } catch (e) {
+          alegraMsg = `\n⚠ No se pudo conectar con Alegra: ${e.message}`;
+        }
+        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.${alegraMsg}`);
       } else if (data.ok && data.approved) {
         // Aprobada pero el PDF o Drive falló
         const warn = data.error || 'El PDF no se pudo procesar completamente.';
@@ -1500,6 +1528,10 @@ export default function App() {
       client_signature: sale.client_signature || null,
       signed_at: sale.signed_at || null,
       current_status: sale.status || null,
+      client_has_activity: sale.client_has_activity || false,
+      client_activity_code: sale.client_activity_code || "",
+      iva_exceptional: sale.iva_exceptional || false,
+      iva_rate: sale.iva_rate || 0,
     });
     setPickedSale(null);
     setSalesView("form");
@@ -1589,6 +1621,10 @@ export default function App() {
       observations: saleForm.observations || generateObservations(saleForm),
       client_signature: saleForm.client_signature || null,
       signed_at: saleForm.signed_at || null,
+      client_has_activity: !!saleForm.client_has_activity,
+      client_activity_code: saleForm.client_has_activity ? (saleForm.client_activity_code || null) : null,
+      iva_exceptional: !!saleForm.iva_exceptional,
+      iva_rate: saleForm.iva_exceptional ? (parseFloat(saleForm.iva_rate) || 0) : 0,
     };
     const { error } = await supabase.from('sales').update(row).eq('id', editingSaleId);
     if (error) { alert("Error: " + error.message); return; }
@@ -3513,6 +3549,35 @@ export default function App() {
               {fld("Oficio", "client_occupation")}
               {fld("Estado civil", "client_civil_status", { type: "select", options: [{ v: "Soltero/a", l: "Soltero/a" }, { v: "Casado/a", l: "Casado/a" }, { v: "Divorciado/a", l: "Divorciado/a" }, { v: "Viudo/a", l: "Viudo/a" }, { v: "Unión libre", l: "Unión libre" }] })}
               {fld("Dirección exacta", "client_address", { full: true })}
+
+              {/* Actividad económica para facturación Alegra */}
+              <div style={{ gridColumn: "1/3", marginBottom: 10, padding: "10px 12px", background: "#1e2130", borderRadius: 8, border: "1px solid #2a2d3d" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#e8eaf0", cursor: "pointer", marginBottom: F.client_has_activity ? 10 : 0 }}>
+                  <input
+                    type="checkbox"
+                    checked={!!F.client_has_activity}
+                    onChange={e => {
+                      uf("client_has_activity", e.target.checked);
+                      if (!e.target.checked) uf("client_activity_code", "");
+                    }}
+                  />
+                  ¿El cliente tiene actividad económica inscrita en Hacienda?
+                </label>
+                {F.client_has_activity && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Número de actividad económica (formato Hacienda, ej. 4510.0) *</div>
+                    <input
+                      value={F.client_activity_code || ""}
+                      onChange={e => uf("client_activity_code", e.target.value)}
+                      placeholder="Ej: 4510.0"
+                      style={{ ...S.inp, width: "100%" }}
+                    />
+                    <div style={{ fontSize: 10, color: "#8b8fa4", marginTop: 4 }}>
+                      Si tiene actividad económica → se emite Factura. Si no → se emite Tiquete.
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -3712,6 +3777,37 @@ export default function App() {
                 </>
               );
             })()}
+
+            {/* IVA excepcional */}
+            <div style={{ marginTop: 12, padding: "10px 12px", background: "#1e2130", borderRadius: 8, border: "1px solid #2a2d3d" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#e8eaf0", cursor: "pointer", marginBottom: F.iva_exceptional ? 10 : 0 }}>
+                <input
+                  type="checkbox"
+                  checked={!!F.iva_exceptional}
+                  onChange={e => {
+                    uf("iva_exceptional", e.target.checked);
+                    if (!e.target.checked) uf("iva_rate", 0);
+                  }}
+                />
+                Caso de IVA excepcional
+              </label>
+              {F.iva_exceptional && (
+                <div>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>% IVA a aplicar en la factura</div>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={F.iva_rate || ""}
+                    onChange={e => uf("iva_rate", e.target.value)}
+                    placeholder="Ej: 13"
+                    style={{ ...S.inp, width: 120 }}
+                  />
+                  <div style={{ fontSize: 10, color: "#8b8fa4", marginTop: 4 }}>
+                    Por defecto las ventas van como IVA exento (0%). Activá esto solo para casos especiales (carros nuevos sin inscribir, eléctricos, etc.).
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* PAYMENT + DEPOSITS */}
