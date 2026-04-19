@@ -15,31 +15,43 @@ const formatPlate = (val) => {
 };
 
 // ============================================================
-// CATALOGO CABYS DE VEHICULOS
+// CATALOGO CABYS DE VEHICULOS (Hacienda v4.4, 13 dígitos)
+// Las 12 categorías que realmente vende VCR
 // ============================================================
 const CABYS_VEHICLES = [
-  { code: "4911700100", label: "Automóvil gasolina hasta 2000cc" },
-  { code: "4911700200", label: "Automóvil gasolina más de 2000cc" },
-  { code: "4911800100", label: "Automóvil diésel hasta 2000cc" },
-  { code: "4911800200", label: "Automóvil diésel más de 2000cc" },
-  { code: "4911900100", label: "Automóvil híbrido/eléctrico" },
-  { code: "4912100000", label: "Microbús / Busetas" },
-  { code: "4912200000", label: "Pick Up / Camioneta" },
-  { code: "4912300000", label: "Camión de carga" },
-  { code: "4912400000", label: "Vehículo todo terreno" },
+  { code: "4911306020100", label: "SUV 4 puertas <= 2000cc" },
+  { code: "4911306020200", label: "SUV 4 puertas > 2000cc" },
+  { code: "4911307020100", label: "Todoterreno 4 puertas <= 2000cc" },
+  { code: "4911307020200", label: "Todoterreno 4 puertas > 2000cc" },
+  { code: "4911308050100", label: "Sedán 4 puertas <= 2000cc" },
+  { code: "4911308050200", label: "Sedán 4 puertas > 2000cc" },
+  { code: "4911308040100", label: "Sedán hatchback 3p <= 2000cc" },
+  { code: "4911308040200", label: "Sedán hatchback 3p > 2000cc" },
+  { code: "4911404000000", label: "Pick Up (hasta 5t)" },
+  { code: "4911200000100", label: "Microbús" },
+  { code: "4911315000000", label: "Vehículo eléctrico" },
+  { code: "4911316000000", label: "Vehículo híbrido" },
 ];
 
-// Sugerir CABYS segun estilo y CC
-const suggestCabys = (style, engineCc) => {
+// Auto-sugerir CABYS segun estilo, CC y combustible
+const suggestCabys = (style, cc, fuel) => {
+  // Combustible primero: electrico/hibrido ganan siempre
+  if (fuel) {
+    const f = String(fuel).toLowerCase();
+    if (f.includes("electri")) return "4911315000000";
+    if (f.includes("hibrido") || f.includes("híbrido") || f.includes("hybrid")) return "4911316000000";
+  }
   if (!style) return null;
   const s = String(style).toUpperCase();
-  if (s.includes("PICK") || s.includes("CAMIONETA")) return "4912200000";
-  if (s.includes("MICROBUS") || s.includes("BUSETA")) return "4912100000";
-  if (s.includes("TODO") || s.includes("TERRENO")) return "4912400000";
-  if (s.includes("HIBRIDO") || s.includes("ELECTRICO")) return "4911900100";
-  const cc = parseInt(engineCc) || 0;
-  if (cc > 0 && cc <= 2000) return "4911700100";
-  if (cc > 2000) return "4911700200";
+  const ccNum = parseInt(cc, 10);
+  const isSmall = !isNaN(ccNum) && ccNum > 0 && ccNum <= 2000;
+
+  if (s.includes("PICK") || s.includes("CAMIONETA")) return "4911404000000";
+  if (s.includes("MICROBUS") || s.includes("BUSETA") || s.includes("VAN")) return "4911200000100";
+  if (s.includes("SUV")) return isSmall ? "4911306020100" : "4911306020200";
+  if (s.includes("TODO") || s.includes("TERRENO")) return isSmall ? "4911307020100" : "4911307020200";
+  if (s.includes("HATCHBACK")) return isSmall ? "4911308040100" : "4911308040200";
+  if (s.includes("SEDAN") || s.includes("SEDÁN")) return isSmall ? "4911308050100" : "4911308050200";
   return null;
 };
 
@@ -382,7 +394,10 @@ export default function AgentPanel() {
       f.vehicle_engine = vehicle.engine || "";
       f.vehicle_drive = vehicle.drivetrain || "";
       f.vehicle_fuel = vehicle.fuel || "";
-      f.vehicle_cabys = vehicle.cabys_code || "";
+      f.vehicle_style = vehicle.style || "";
+      f.vehicle_engine_cc = vehicle.engine_cc || "";
+      // Si el vehiculo ya tiene CABYS, usarlo; si no, intentar sugerirlo
+      f.vehicle_cabys = vehicle.cabys_code || suggestCabys(vehicle.style, vehicle.engine_cc, vehicle.fuel) || "";
 
       // Detectar moneda automaticamente segun el precio del vehiculo
       const vUsd = parseFloat(vehicle.price_usd) || 0;
@@ -1217,12 +1232,12 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                   value={form.vehicle_style || ""}
                   onChange={e => {
                     upd("vehicle_style", e.target.value);
-                    const sug = suggestCabys(e.target.value, form.vehicle_engine_cc);
+                    const sug = suggestCabys(e.target.value, form.vehicle_engine_cc, form.vehicle_fuel);
                     if (sug && !form.vehicle_cabys) upd("vehicle_cabys", sug);
                   }}
                 >
                   <option value="">Seleccionar</option>
-                  {["SUV","SEDAN","PICK UP","HATCHBACK","COUPE","FAMILIAR","TODOTERRENO","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
+                  {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
@@ -1233,7 +1248,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                   value={form.vehicle_engine_cc || ""}
                   onChange={e => {
                     upd("vehicle_engine_cc", e.target.value);
-                    const sug = suggestCabys(form.vehicle_style, e.target.value);
+                    const sug = suggestCabys(form.vehicle_style, e.target.value, form.vehicle_fuel);
                     if (sug && !form.vehicle_cabys) upd("vehicle_cabys", sug);
                   }}
                 />
