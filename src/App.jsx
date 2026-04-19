@@ -652,7 +652,7 @@ export default function App() {
 
     // Paso 2: enviar pago a Alegra
     try {
-      const res = await fetch('/api/alegra-sync-payment', {
+      const res = await fetch('/api/alegra-sync?type=payment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invoice_id: inv.dbId })
@@ -699,7 +699,7 @@ export default function App() {
     setInvoices(prev => prev.map(x => x.dbId === dbId ? { ...x, alegraSyncStatus: 'syncing' } : x));
 
     try {
-      const res = await fetch('/api/alegra-sync-bill', {
+      const res = await fetch('/api/alegra-sync?type=bill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ invoice_id: dbId })
