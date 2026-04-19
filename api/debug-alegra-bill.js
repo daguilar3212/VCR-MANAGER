@@ -29,28 +29,17 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, result });
     }
 
-    // Default: traer los ultimos 5 bills CON DETALLE completo
-    const list = await doFetch(`${ALEGRA_BASE}/bills?limit=5&order_direction=DESC`);
+    // BUSCAR EL NISSAN KICKS (CM-75, RIVERA CHACON, 11 febrero 2026)
+    // Filtrar por rango de fechas febrero 2026
+    const febList = await doFetch(`${ALEGRA_BASE}/bills?limit=30&order_direction=DESC&start_date=2026-02-10&end_date=2026-02-15`);
 
-    if (!Array.isArray(list)) {
-      return res.status(200).json({
-        ok: false,
-        error: 'Respuesta inesperada',
-        raw: list,
-      });
-    }
-
-    // Traer detalle completo de cada uno
-    const details = [];
-    for (const b of list) {
-      const full = await doFetch(`${ALEGRA_BASE}/bills/${b.id}`);
-      details.push(full);
-    }
+    // Tambien buscar por texto "kicks" o "rivera"
+    const textSearch = await doFetch(`${ALEGRA_BASE}/bills?query=kicks&limit=5`);
 
     return res.status(200).json({
       ok: true,
-      count: details.length,
-      bills: details,
+      febList: Array.isArray(febList) ? febList.slice(0, 10) : febList,
+      textSearch: Array.isArray(textSearch) ? textSearch : textSearch,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
