@@ -16,6 +16,12 @@ import { createClient } from '@supabase/supabase-js';
 const ALEGRA_BASE = 'https://api.alegra.com/api/v1';
 const VCR_ACTIVITY_CODE = '4510.0'; // Actividad economica VCR
 
+// Numeraciones en Alegra (vistos desde facturas reales)
+// 14 = Factura electronica (para clientes con actividad economica)
+// 17 = Tiquete electronico (para clientes sin actividad economica)
+const NUMBER_TEMPLATE_INVOICE = '14'; // Factura de venta
+const NUMBER_TEMPLATE_TICKET = '17';  // Tiquete
+
 // Tax IDs de Alegra CR:
 // 1 = IVA 13%
 // 2 = IVA exento (0%)
@@ -183,7 +189,8 @@ export default async function handler(req, res) {
       });
     }
 
-    // Los depositos se manejan manualmente en Alegra despues de crear el borrador
+    // Cargar depositos para construir notas/anotacion
+    const { data: deposits } = await supabase.from('sale_deposits').select('*').eq('sale_id', sale_id).order('deposit_date');
 
     // 2. Cliente en Alegra
     let clientAlegraId;
@@ -237,26 +244,91 @@ export default async function handler(req, res) {
 
     const price = parseFloat(sale.sale_price) || 0;
 
-    // 5. Payload factura - SOLO los campos obligatorios segun doc oficial Alegra
-    // https://developer.alegra.com/reference/post_invoices
-    // Campos obligatorios: date, dueDate, client, items[]
-    // status: 'draft' = borrador (no timbrar)
+    // Construir texto de notas con desglose de depositos
+    // Formato similar al tiquete manual:
+    // "VENTA DE CONTADO. DEPOSITO EN BANCO X NUMERO Y POR Z. SEÑAL DE TRATO W."
+    const curSymbol = sale.sale_currency === 'USD' ? '$' : '₡';
+    const fmtMoney = (n) => {
+      const v = parseFloat(n) || 0;
+      return curSymbol + v.toLocaleString('es-CR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    const notasParts = [];
+    notasParts.push(isCredit ? 'VENTA EN FINANCIAMIENTO.' : 'VENTA DE CONTADO.');
+
+    if (deposits && deposits.length > 0) {
+      for (const d of deposits) {
+        if (!d.amount) continue;
+        const bankPart = d.bank ? ` EN ${String(d.bank).toUpperCase()}` : '';
+        const refPart = d.reference ? ` NUMERO ${d.reference}` : '';
+        notasParts.push(`DEPOSITO${bankPart}${refPart} POR ${fmtMoney(d.amount)}.`);
+      }
+    }
+
+    if (sale.deposit_signal && parseFloat(sale.deposit_signal) > 0) {
+      notasParts.push(`SEÑAL DE TRATO POR ${fmtMoney(sale.deposit_signal)}.`);
+    }
+
+    if (sale.down_payment && parseFloat(sale.down_payment) > 0 && isCredit) {
+      notasParts.push(`PRIMA ${fmtMoney(sale.down_payment)}.`);
+    }
+
+    if (sale.has_tradein && sale.tradein_value) {
+      const tradeinInfo = [];
+      if (sale.tradein_brand) tradeinInfo.push(sale.tradein_brand);
+      if (sale.tradein_model) tradeinInfo.push(sale.tradein_model);
+      if (sale.tradein_year) tradeinInfo.push(sale.tradein_year);
+      if (sale.tradein_plate) tradeinInfo.push(`PLACA ${sale.tradein_plate}`);
+      notasParts.push(`TRADE-IN: ${tradeinInfo.join(' ')} POR ${fmtMoney(sale.tradein_value)}.`);
+    }
+
+    if (sale.observations) {
+      notasParts.push(String(sale.observations));
+    }
+
+    const notasFinal = notasParts.join(' ').slice(0, 500);
+
+    // 5. Payload factura con los campos CORRECTOS de Alegra Costa Rica
+    // Nombres y valores verificados contra facturas reales timbradas
     const invoicePayload = {
       date: toISODate(today),
       dueDate: toISODate(dueDate),
       client: clientAlegraId,
       status: 'draft',
+      // Numeracion: 14 = factura, 17 = tiquete
+      numberTemplate: {
+        id: sale.client_has_activity ? NUMBER_TEMPLATE_INVOICE : NUMBER_TEMPLATE_TICKET,
+      },
       items: [{
         id: itemAlegraId,
         price,
         quantity: 1,
         description: sale.vehicle_plate ? `Placa: ${sale.vehicle_plate}` : undefined,
+        // Tax IVA exento (vehiculos son exentos)
+        tax: [{ id: 2 }],
       }],
+      // Condicion de venta: CASH o CREDIT (MAYUSCULAS)
+      saleCondition: isCredit ? 'CREDIT' : 'CASH',
+      // Actividad economica de VCR
+      economicActivity: VCR_ACTIVITY_CODE,
     };
 
-    // Anotacion opcional
-    if (sale.observations) {
-      invoicePayload.anotation = String(sale.observations).slice(0, 500);
+    // Medio de pago - segun el primer deposito / banco (MAYUSCULAS)
+    // Valores validos vistos en facturas reales: TRANSFER, CASH, CARD, CHECK
+    const firstDeposit = (deposits && deposits.length > 0) ? deposits[0] : null;
+    if (firstDeposit && firstDeposit.bank) {
+      const b = String(firstDeposit.bank).toLowerCase();
+      if (b.includes('efectivo')) invoicePayload.paymentMethod = 'CASH';
+      else if (b.includes('tarjeta')) invoicePayload.paymentMethod = 'CARD';
+      else if (b.includes('cheque')) invoicePayload.paymentMethod = 'CHECK';
+      else invoicePayload.paymentMethod = 'TRANSFER';
+    } else {
+      invoicePayload.paymentMethod = 'TRANSFER';
+    }
+
+    // Notas (visibles en PDF)
+    if (notasFinal) {
+      invoicePayload.anotation = notasFinal;
     }
 
     // Moneda
