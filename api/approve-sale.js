@@ -29,10 +29,12 @@ const COLOR_MUTED = rgb(0.55, 0.56, 0.64);     // gris
 const COLOR_SEP = rgb(0.9, 0.9, 0.92);         // gris claro separador
 
 // === HELPERS ===
+// NOTA: Helvetica (WinAnsi) no soporta el simbolo "₡" (0x20a1).
+// Usamos "CRC " en su lugar para CRC, y "$" para USD.
 const fmt = (n, cur) => {
   const num = parseFloat(n) || 0;
-  const sym = cur === 'USD' ? '$' : '₡';
-  return `${sym}${num.toLocaleString('es-CR', { maximumFractionDigits: 0 })}`;
+  if (cur === 'USD') return `$${num.toLocaleString('es-CR', { maximumFractionDigits: 0 })}`;
+  return `CRC ${num.toLocaleString('es-CR', { maximumFractionDigits: 0 })}`;
 };
 
 const idTypeLabel = (t) => {
@@ -296,11 +298,11 @@ async function generatePDF(sale, deposits, agents) {
 
   drawRow([
     ['Tipo de venta', saleTypeLabel],
-    ['Moneda', sale.sale_currency === 'CRC' ? 'Colones (₡)' : 'Dólares ($)'],
+    ['Moneda', sale.sale_currency === 'CRC' ? 'Colones (CRC)' : 'Dólares (USD)'],
   ]);
   drawRow([
     ['Precio de venta', fmt(sale.sale_price, sale.sale_currency)],
-    ['Tipo de cambio (ref.)', sale.sale_exchange_rate ? `₡${sale.sale_exchange_rate}` : '-'],
+    ['Tipo de cambio (ref.)', sale.sale_exchange_rate ? `CRC ${sale.sale_exchange_rate}` : '-'],
   ]);
   drawRow([
     ['Vehículo recibido', fmt(sale.tradein_amount, sale.sale_currency)],
