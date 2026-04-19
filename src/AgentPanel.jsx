@@ -538,7 +538,7 @@ export default function AgentPanel() {
     const row = {
       sale_date: saleForm.sale_date,
       status: targetStatus,
-      currency: saleForm.currency || saleForm.sale_currency || "USD",
+      currency: saleForm.sale_currency || saleForm.currency || "USD",
       sale_currency: saleForm.sale_currency || saleForm.currency || "USD",
       client_id_type: saleForm.client_id_type || "fisica",
       client_name: saleForm.client_name,
@@ -1226,7 +1226,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Motor</label><input style={S.input} value={form.tradein_engine} onChange={e => upd("tradein_engine", e.target.value)} /></div>
             <div><label style={S.label}>Tracción</label><input style={S.input} value={form.tradein_drive} onChange={e => upd("tradein_drive", e.target.value)} /></div>
             <div><label style={S.label}>Combustible</label><input style={S.input} value={form.tradein_fuel} onChange={e => upd("tradein_fuel", e.target.value)} /></div>
-            <div><label style={S.label}>Valor acordado ({form.currency || "USD"})</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => upd("tradein_value", e.target.value)} /></div>
+            <div><label style={S.label}>Valor acordado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => upd("tradein_value", e.target.value)} /></div>
           </div>
         )}
       </div>
@@ -1243,14 +1243,31 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
             <select
               style={{ ...S.sel, maxWidth: 200 }}
-              value={form.currency || "USD"}
-              onChange={e => upd("currency", e.target.value)}
+              value={form.sale_currency || "USD"}
+              onChange={e => {
+                const newCur = e.target.value;
+                const oldCur = form.sale_currency || "USD";
+                if (newCur !== oldCur && (form.sale_price || form.tradein_value || form.down_payment)) {
+                  if (!window.confirm("Al cambiar la moneda se van a limpiar los montos ingresados. ¿Continuar?")) return;
+                  setForm(prev => ({
+                    ...prev,
+                    sale_currency: newCur,
+                    currency: newCur,
+                    sale_price: "", tradein_value: "", tradein_amount: "",
+                    down_payment: "", financing_amount: "", transfer_amount: "",
+                    deposits: (prev.deposits || []).map(d => ({ ...d, amount: "" })),
+                  }));
+                } else {
+                  upd("sale_currency", newCur);
+                  upd("currency", newCur);
+                }
+              }}
             >
               <option value="USD">USD (dólares)</option>
               <option value="CRC">CRC (colones)</option>
             </select>
             <span style={{ fontSize: "0.85rem", color: "#52525b" }}>
-              Todos los montos de esta venta se expresan en {form.currency === "CRC" ? "colones" : "dólares"}.
+              Todos los montos de esta venta se expresan en {form.sale_currency === "CRC" ? "colones" : "dólares"}.
             </span>
           </div>
         </div>
@@ -1265,7 +1282,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             </select>
           </div>
           <div>
-            <label style={S.label}>Precio de venta ({form.currency || "USD"}) *</label>
+            <label style={S.label}>Precio de venta ({form.sale_currency || "USD"}) *</label>
             <input style={S.input} type="number" value={form.sale_price} onChange={e => upd("sale_price", e.target.value)} />
           </div>
           <div>
@@ -1276,11 +1293,11 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             </div>
           </div>
           <div>
-            <label style={S.label}>Trade-in ({form.currency || "USD"})</label>
+            <label style={S.label}>Trade-in ({form.sale_currency || "USD"})</label>
             <input style={S.input} type="number" value={form.tradein_amount} onChange={e => upd("tradein_amount", e.target.value)} />
           </div>
           <div>
-            <label style={S.label}>Prima / Down payment ({form.currency || "USD"})</label>
+            <label style={S.label}>Prima / Down payment ({form.sale_currency || "USD"})</label>
             <input style={S.input} type="number" value={form.down_payment} onChange={e => upd("down_payment", e.target.value)} />
           </div>
           <div>
@@ -1297,7 +1314,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           <div style={{ ...S.grid3, marginTop: "1rem" }}>
             <div><label style={S.label}>Plazo (meses)</label><input style={S.input} type="number" value={form.financing_term_months} onChange={e => upd("financing_term_months", e.target.value)} /></div>
             <div><label style={S.label}>Interés %</label><input style={S.input} type="number" step="0.01" value={form.financing_interest_pct} onChange={e => upd("financing_interest_pct", e.target.value)} /></div>
-            <div><label style={S.label}>Monto financiado ({form.currency || "USD"})</label><input style={S.input} type="number" value={form.financing_amount} onChange={e => upd("financing_amount", e.target.value)} /></div>
+            <div><label style={S.label}>Monto financiado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.financing_amount} onChange={e => upd("financing_amount", e.target.value)} /></div>
           </div>
         )}
       </div>
@@ -1332,7 +1349,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Fecha</label><input style={S.input} type="date" value={d.date} onChange={e => updDeposit(idx, "date", e.target.value)} /></div>
             <div style={{ display: "flex", gap: "0.25rem" }}>
               <div style={{ flex: 1 }}>
-                <label style={S.label}>Monto ({form.currency || "USD"})</label>
+                <label style={S.label}>Monto ({form.sale_currency || "USD"})</label>
                 <input style={S.input} type="number" value={d.amount} onChange={e => updDeposit(idx, "amount", e.target.value)} />
               </div>
               {(form.deposits || []).length > 1 && (
@@ -1363,7 +1380,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
               </label>
               {!form.transfer_in_price && !form.transfer_in_financing && (
                 <div style={{ marginTop: "0.5rem", padding: "0.75rem", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6 }}>
-                  <label style={S.label}>Monto del traspaso ({form.currency || "USD"}) *</label>
+                  <label style={S.label}>Monto del traspaso ({form.sale_currency || "USD"}) *</label>
                   <input
                     style={S.input}
                     type="number"
@@ -1562,7 +1579,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
           <h2 style={{ margin: 0 }}>Plan de venta #{sale.sale_number}</h2>
           <span style={S.badge(statusColor)}>{statusLabel}</span>
         </div>
-        {isPendiente && (
+        {(isPendiente || isReservado) && (
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button onClick={onEdit} style={S.btn}>Editar</button>
             <button onClick={onDelete} style={S.btnDanger}>Borrar</button>
@@ -1658,7 +1675,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
 // SUBCOMPONENTE: DESGLOSE EN VIVO
 // ============================================================
 function BreakdownCard({ form }) {
-  const currency = form.currency || "USD";
+  const currency = form.sale_currency || "USD";
   const isCash = (form.payment_method || "contado") === "contado";
   const { salePrice, transferExtra, transferApart, tradein, down, depsTotal, balance } = computeBreakdown(form);
 
