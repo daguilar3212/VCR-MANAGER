@@ -83,17 +83,18 @@ const COMMON_BRANDS = [
 ];
 
 // Formatea placa: MAYUSCULAS + guion entre letras y numeros
-// "dgh123" -> "DGH-123", "cl 5136416" -> "CL-5136416"
-// Si ya tiene el formato correcto o no lo reconoce, devuelve en mayuscula
+// Formatea placas costarricenses:
+// - Default: MAYUSCULA sin guion (BSS530, BXR237, 353821)
+// - Excepcion: CL lleva guion (CL-5136416)
 const formatPlate = (val) => {
   if (!val) return "";
-  // Quitar espacios, guiones existentes, y poner en mayuscula
+  // Quitar espacios y guiones existentes, poner en mayuscula
   const clean = String(val).toUpperCase().replace(/[\s-]/g, "");
   if (!clean) return "";
-  // Detectar patron letras + numeros
-  const match = clean.match(/^([A-Z]+)(\d+)$/);
-  if (match) return `${match[1]}-${match[2]}`;
-  // Patron mixto raro (ej: ABC123XYZ): no tocar, devolver en mayuscula sin guiones
+  // Si empieza con CL, agregar guion despues de CL
+  const clMatch = clean.match(/^CL(\d+)$/);
+  if (clMatch) return `CL-${clMatch[1]}`;
+  // Todo lo demas: dejar pegado
   return clean;
 };
 
@@ -588,6 +589,7 @@ export default function App() {
           sale_date: v.sale_date, sale_invoice_number: v.sale_invoice_number,
           sale_client: sl ? { name: sl.client_name, cedula: sl.client_cedula, phone: sl.client_phone1, email: sl.client_email, address: sl.client_address } : null,
           notes: v.notes, created_at: v.created_at,
+          alegra_item_id: v.alegra_item_id || null,
         };
       }));
     }
