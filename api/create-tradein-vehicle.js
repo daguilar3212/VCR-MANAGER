@@ -1,18 +1,15 @@
 // create-tradein-vehicle.js
-// Crea automaticamente un vehiculo en el inventario cuando se recibe un trade-in
+// Crea automaticamente un vehiculo cuando se recibe un trade-in
+// MODO ESPEJO: crea en Supabase + en Alegra
 //
 // POST /api/create-tradein-vehicle
 // Body: { sale_id: "uuid" }
-//
-// Flujo:
-// 1. Trae la venta de Supabase
-// 2. Si tiene trade-in (has_tradein=true), crea un vehiculo en tabla vehicles
-// 3. Si ya existe un vehiculo con esa placa, lo actualiza (evita duplicados)
-// 4. Devuelve el vehicle_id creado
 
 import { createClient } from '@supabase/supabase-js';
 
-// Normalizar placa a formato estandar VCR (igual que formatPlate en frontend)
+const ALEGRA_BASE = 'https://api.alegra.com/api/v1';
+
+// Normalizar placa a formato estandar VCR
 function formatPlate(plate) {
   if (!plate) return '';
   const cleaned = String(plate).trim().toUpperCase().replace(/[-\s]/g, '');
@@ -21,6 +18,69 @@ function formatPlate(plate) {
     return `CL-${num}`;
   }
   return cleaned;
+}
+
+async function alegraFetch(endpoint, method = 'GET', body = null) {
+  const email = process.env.ALEGRA_EMAIL;
+  const token = process.env.ALEGRA_TOKEN;
+  const auth = Buffer.from(`${email}:${token}`).toString('base64');
+
+  const opts = {
+    method,
+    headers: {
+      'Authorization': `Basic ${auth}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+
+  const res = await fetch(`${ALEGRA_BASE}${endpoint}`, opts);
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(`Alegra ${endpoint}: ${JSON.stringify(data)}`);
+  }
+  return data;
+}
+
+// Crear item en Alegra con datos del trade-in
+async function createAlegraItem(vehicle, priceUSD) {
+  const marca = (vehicle.brand || '').toUpperCase();
+  const modelo = (vehicle.model || '').toUpperCase();
+  const anio = vehicle.year || '';
+  const placa = (vehicle.plate || '').toUpperCase();
+
+  const itemName = `${marca} ${modelo} ${anio} ${placa}`.trim().replace(/\s+/g, ' ');
+
+  const parts = [];
+  if (vehicle.brand && vehicle.model) parts.push(`${vehicle.brand} ${vehicle.model}`);
+  if (vehicle.style) parts.push(vehicle.style);
+  if (vehicle.year) parts.push(`AÑO ${vehicle.year}`);
+  if (vehicle.color) parts.push(`COLOR ${vehicle.color}`);
+  if (vehicle.engine_cc) parts.push(`${vehicle.engine_cc} CC`);
+  if (vehicle.drivetrain) parts.push(vehicle.drivetrain);
+  if (vehicle.fuel) parts.push(vehicle.fuel);
+  if (vehicle.plate) parts.push(`PLACA ${vehicle.plate}`);
+  if (vehicle.chassis) parts.push(`SERIE ${vehicle.chassis}`);
+  if (vehicle.km) parts.push(`${Number(vehicle.km).toLocaleString('es-CR')} KM`);
+  const description = parts.join(', ');
+
+  const payload = {
+    name: itemName,
+    description,
+    price: [{ idPriceList: 1, price: priceUSD }],
+    inventory: {
+      unit: 'unit',
+      unitCost: priceUSD,
+      initialQuantity: 1,
+    },
+    tax: [{ id: 2 }], // IVA exento (vehiculos)
+    productKey: vehicle.cabys_code || undefined,
+    reference: placa,
+  };
+
+  const created = await alegraFetch('/items', 'POST', payload);
+  return created.id;
 }
 
 export default async function handler(req, res) {
@@ -61,10 +121,10 @@ export default async function handler(req, res) {
 
     const plateFormatted = formatPlate(sale.tradein_plate);
 
-    // 3. Verificar si ya existe en el inventario
+    // 3. Verificar si ya existe en Supabase
     const { data: existing } = await supabase
       .from('vehicles')
-      .select('id, plate')
+      .select('id, plate, alegra_item_id')
       .eq('plate', plateFormatted)
       .maybeSingle();
 
@@ -74,15 +134,28 @@ export default async function handler(req, res) {
         already_exists: true,
         vehicle_id: existing.id,
         plate: plateFormatted,
+        alegra_item_id: existing.alegra_item_id,
         message: 'Ya existe un vehiculo con esa placa en inventario',
       });
     }
 
-    // 4. Construir el payload del nuevo vehiculo
-    // price_currency hereda de la moneda de la venta donde se recibio
+    // 4. Calcular costos en ambas monedas
     const priceCurrency = sale.sale_currency || 'USD';
+    let purchaseCostCRC = parseFloat(sale.tradein_value) || 0;
+    const tcVenta = parseFloat(sale.sale_exchange_rate) || 0;
 
-    // Generar notas descriptivas
+    if (sale.sale_currency === 'USD' && tcVenta > 0) {
+      purchaseCostCRC = purchaseCostCRC * tcVenta;
+    }
+    purchaseCostCRC = Math.round(purchaseCostCRC);
+
+    // Precio inicial en USD para Alegra
+    let priceForAlegra = parseFloat(sale.tradein_value) || 0;
+    if (sale.sale_currency === 'CRC' && tcVenta > 0) {
+      priceForAlegra = priceForAlegra / tcVenta;
+    }
+
+    // 5. Notas descriptivas
     const notesParts = [];
     if (sale.tradein_brand) notesParts.push(String(sale.tradein_brand).toUpperCase());
     if (sale.tradein_model) notesParts.push(String(sale.tradein_model).toUpperCase());
@@ -100,7 +173,8 @@ export default async function handler(req, res) {
     const clientRef = sale.client_name ? ` - ${sale.client_name}` : '';
     const notes = `${notesDesc}. Recibido como trade-in en ${saleRef}${clientRef}.`;
 
-    const vehiclePayload = {
+    // 6. Datos del vehiculo
+    const vehicleData = {
       plate: plateFormatted,
       brand: sale.tradein_brand ? String(sale.tradein_brand).toUpperCase() : null,
       model: sale.tradein_model ? String(sale.tradein_model).toUpperCase() : null,
@@ -114,7 +188,7 @@ export default async function handler(req, res) {
       style: sale.tradein_style || null,
       chassis: sale.tradein_chassis ? String(sale.tradein_chassis).toUpperCase() : null,
       cabys_code: sale.tradein_cabys || null,
-      purchase_cost: parseFloat(sale.tradein_value) || null,
+      purchase_cost: purchaseCostCRC || null,
       price_usd: 0,
       price_crc: 0,
       price_currency: priceCurrency,
@@ -122,19 +196,31 @@ export default async function handler(req, res) {
       notes: notes.slice(0, 500),
     };
 
-    // 5. Insertar
+    // 7. Crear en Alegra
+    let alegraItemId = null;
+    let alegraError = null;
+    try {
+      alegraItemId = await createAlegraItem(vehicleData, priceForAlegra);
+      vehicleData.alegra_item_id = String(alegraItemId);
+    } catch (e) {
+      alegraError = e.message;
+      // No fallar, continuamos con Supabase
+    }
+
+    // 8. Insertar en Supabase
     const { data: inserted, error: insertErr } = await supabase
       .from('vehicles')
-      .insert(vehiclePayload)
+      .insert(vehicleData)
       .select()
       .single();
 
     if (insertErr) {
       return res.status(500).json({
         ok: false,
-        error: 'Error al crear vehiculo en inventario',
+        error: 'Error al crear vehiculo en Supabase',
         details: insertErr.message,
-        payload: vehiclePayload,
+        alegra_item_id: alegraItemId,
+        alegra_error: alegraError,
       });
     }
 
@@ -143,7 +229,11 @@ export default async function handler(req, res) {
       vehicle_id: inserted.id,
       plate: inserted.plate,
       purchase_cost: inserted.purchase_cost,
-      message: 'Vehiculo agregado al inventario exitosamente',
+      alegra_item_id: alegraItemId,
+      alegra_error: alegraError,
+      message: alegraError
+        ? 'Creado en inventario local. Fallo en Alegra (se puede sincronizar despues)'
+        : 'Creado en inventario local Y en Alegra',
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
