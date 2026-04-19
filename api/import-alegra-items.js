@@ -166,16 +166,48 @@ export default async function handler(req, res) {
     }
 
     // 2. Parsear e insertar
-    const results = { total: allItems.length, inserted: 0, failed: 0, warnings: [] };
+    const results = { total: allItems.length, inserted: 0, skipped: 0, failed: 0, warnings: [] };
     const rows = [];
+    const seenPlates = new Set();
 
     for (const item of allItems) {
+      const itemName = String(item.name || '').toUpperCase();
+
+      // Filtrar lo que claramente NO es un vehiculo con placa CR
+      const nonVehicleKeywords = ['CARRITO DE GOLF', 'INTERESES', 'SERVICIO', 'COMISIÓN', 'COMISION', 'GASTOS', 'MANTENIMIENTO'];
+      const isNonVehicle = nonVehicleKeywords.some(kw => itemName.includes(kw));
+      if (isNonVehicle) {
+        results.skipped++;
+        continue;
+      }
+
       const parsed = parseVehicleData(item);
+
+      // Si no tiene placa detectable, saltar (no es vehiculo facturable estandar)
+      if (!parsed.plate) {
+        results.skipped++;
+        results.warnings.push(`Saltado "${item.name}" (sin placa detectable)`);
+        continue;
+      }
+
+      // Normalizar placa con la misma regla del app
+      const plateClean = String(parsed.plate).toUpperCase().replace(/[\s-]/g, '');
+      const clMatch = plateClean.match(/^CL(\d+)$/);
+      const normalizedPlate = clMatch ? `CL-${clMatch[1]}` : plateClean;
+
+      // Evitar duplicados
+      if (seenPlates.has(normalizedPlate)) {
+        results.skipped++;
+        results.warnings.push(`Saltado "${item.name}" (placa duplicada: ${normalizedPlate})`);
+        continue;
+      }
+      seenPlates.add(normalizedPlate);
+
       const price = Array.isArray(item.price) && item.price[0] ? parseFloat(item.price[0].price) : 0;
 
       const row = {
         alegra_item_id: String(item.id),
-        plate: parsed.plate,
+        plate: normalizedPlate,
         brand: parsed.brand,
         model: parsed.model,
         year: parsed.year,
@@ -193,9 +225,8 @@ export default async function handler(req, res) {
 
       rows.push(row);
 
-      // Warnings
-      if (!parsed.plate) results.warnings.push(`Item "${item.name}" sin placa detectable`);
-      if (!parsed.year) results.warnings.push(`Item "${item.name}" sin año detectable`);
+      // Warnings no bloqueantes
+      if (!parsed.year) results.warnings.push(`"${item.name}" sin año detectable`);
     }
 
     // 3. Insertar en batches
@@ -221,7 +252,8 @@ export default async function handler(req, res) {
         <table style="border-collapse:collapse;margin:20px 0">
           <tr><td style="padding:6px 12px;border:1px solid #ddd">Total de ítems en Alegra</td><td style="padding:6px 12px;border:1px solid #ddd"><strong>${results.total}</strong></td></tr>
           <tr><td style="padding:6px 12px;border:1px solid #ddd">Insertados en VCR</td><td style="padding:6px 12px;border:1px solid #ddd;color:#10b981"><strong>${results.inserted}</strong></td></tr>
-          <tr><td style="padding:6px 12px;border:1px solid #ddd">Fallidos</td><td style="padding:6px 12px;border:1px solid #ddd;color:${results.failed > 0 ? '#e11d48' : '#888'}"><strong>${results.failed}</strong></td></tr>
+          <tr><td style="padding:6px 12px;border:1px solid #ddd">Saltados (no-vehículos, sin placa, duplicados)</td><td style="padding:6px 12px;border:1px solid #ddd;color:#f59e0b"><strong>${results.skipped}</strong></td></tr>
+          <tr><td style="padding:6px 12px;border:1px solid #ddd">Fallidos (error de DB)</td><td style="padding:6px 12px;border:1px solid #ddd;color:${results.failed > 0 ? '#e11d48' : '#888'}"><strong>${results.failed}</strong></td></tr>
         </table>
         ${results.warnings.length > 0 ? `
           <h3>Warnings (${results.warnings.length}):</h3>
