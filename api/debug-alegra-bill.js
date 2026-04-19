@@ -29,8 +29,8 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, result });
     }
 
-    // Buscar bills trayendo mas cantidad
-    const all = await doFetch(`${ALEGRA_BASE}/bills?limit=100&order_direction=DESC`);
+    // Traer ultimos 30 bills (limite maximo de Alegra)
+    const all = await doFetch(`${ALEGRA_BASE}/bills?limit=30&order_direction=DESC`);
 
     if (!Array.isArray(all)) {
       return res.status(200).json({ ok: false, raw: all });
