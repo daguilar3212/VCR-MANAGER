@@ -1389,10 +1389,31 @@ export default function App() {
   };
 
   const approveSale = async (id) => {
-    await supabase.from('sales').update({ status: "aprobada", approved_by: "admin", approved_at: new Date().toISOString() }).eq('id', id);
-    await loadSales();
-    setPickedSale(prev => prev ? { ...prev, status: "aprobada" } : null);
-    setConfirmApprove(null);
+    try {
+      const res = await fetch('/api/approve-sale', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sale_id: id })
+      });
+      const data = await res.json();
+
+      if (data.ok && data.pdf_url) {
+        alert(`✓ Venta aprobada y PDF generado.\n\nArchivo: ${data.file_name}\nSe subió a la carpeta "PLAN DE VENTAS DIGITAL" en Google Drive.`);
+      } else if (data.ok && data.approved) {
+        // Aprobada pero el PDF o Drive falló
+        const warn = data.error || 'El PDF no se pudo procesar completamente.';
+        alert(`⚠ Venta aprobada, pero: ${warn}\n\nPuedes reintentar más tarde.`);
+      } else {
+        alert(`Error: ${data.error || 'No se pudo aprobar'}`);
+        return;
+      }
+
+      await loadSales();
+      setPickedSale(prev => prev ? { ...prev, status: "aprobada" } : null);
+      setConfirmApprove(null);
+    } catch (e) {
+      alert(`Error de red: ${e.message}`);
+    }
   };
 
   const rejectSale = async (id, reason) => {
@@ -4486,6 +4507,16 @@ export default function App() {
                     <span style={S.badge(pickedSale.status === "aprobada" ? "#10b981" : pickedSale.status === "rechazada" ? "#e11d48" : "#f59e0b")}>
                       {pickedSale.status === "aprobada" ? "Aprobada" : pickedSale.status === "rechazada" ? "Rechazada" : "Pendiente"}
                     </span>
+                    {pickedSale.pdf_url && (
+                      <a
+                        href={pickedSale.pdf_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ ...S.sel, background: "#10b98118", color: "#10b981", fontWeight: 600, fontSize: 12, padding: "6px 12px", textDecoration: "none" }}
+                      >
+                        📄 Ver PDF
+                      </a>
+                    )}
                     <button onClick={() => setPickedSale(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: 18 }}>✕</button>
                   </div>
                 </div>
