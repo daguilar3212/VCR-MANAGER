@@ -20,6 +20,24 @@ function formatPlate(plate) {
   return cleaned;
 }
 
+// Obtener TC del BCCR (venta = TC que Alegra usa para facturar)
+// Fuente: tipodecambio.paginasweb.cr (API publica sin auth)
+async function getTipoCambio() {
+  try {
+    const response = await fetch('https://tipodecambio.paginasweb.cr/api', {
+      headers: { 'Accept': 'application/json' },
+    });
+    const data = await response.json();
+    // Respuesta: { venta: "640.50", compra: "632.00", fecha: "..." }
+    const venta = parseFloat(data.venta);
+    if (venta && venta > 0) return venta;
+    throw new Error('TC invalido');
+  } catch (err) {
+    console.error('Error obteniendo TC:', err.message);
+    return null; // Si falla, retorna null y usaremos fallback
+  }
+}
+
 async function alegraFetch(endpoint, method = 'GET', body = null) {
   const email = process.env.ALEGRA_EMAIL;
   const token = process.env.ALEGRA_TOKEN;
@@ -149,13 +167,19 @@ export default async function handler(req, res) {
       });
     }
 
-    // 4. Calcular costos en ambas monedas
+    // 4. Obtener TC del BCCR (el mismo que usa Alegra al timbrar)
+    // Si la API del BCCR falla, caemos al TC del plan de ventas
+    let tcFinal = await getTipoCambio();
+    if (!tcFinal) {
+      tcFinal = parseFloat(sale.sale_exchange_rate) || 0;
+    }
+
+    // 5. Calcular costos en colones usando el TC del BCCR
     const priceCurrency = sale.sale_currency || 'USD';
     let purchaseCostCRC = parseFloat(sale.tradein_value) || 0;
-    const tcVenta = parseFloat(sale.sale_exchange_rate) || 0;
 
-    if (sale.sale_currency === 'USD' && tcVenta > 0) {
-      purchaseCostCRC = purchaseCostCRC * tcVenta;
+    if (sale.sale_currency === 'USD' && tcFinal > 0) {
+      purchaseCostCRC = purchaseCostCRC * tcFinal;
     }
     purchaseCostCRC = Math.round(purchaseCostCRC);
 
