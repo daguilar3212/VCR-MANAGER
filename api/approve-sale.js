@@ -128,8 +128,39 @@ async function uploadToDrive(accessToken, folderId, fileName, pdfBytes) {
   return data;
 }
 
+// Actualiza el contenido (y nombre) de un archivo existente en Drive, manteniendo el mismo file_id y URL
+async function updateDriveFile(accessToken, fileId, fileName, pdfBytes) {
+  // Primero actualizar el nombre si cambio
+  const nameResp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ name: fileName }),
+  });
+  if (!nameResp.ok) {
+    const err = await nameResp.json().catch(() => ({}));
+    throw new Error('No se pudo renombrar PDF en Drive: ' + JSON.stringify(err));
+  }
+
+  // Despues actualizar el contenido con PUT (reemplaza el file binario)
+  const resp = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media&fields=id,webViewLink`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/pdf',
+    },
+    body: pdfBytes,
+  });
+
+  const data = await resp.json();
+  if (!data.id) throw new Error('Error actualizando PDF en Drive: ' + JSON.stringify(data));
+  return data;
+}
+
 // === GENERAR PDF ===
-async function generatePDF(sale, deposits, agents) {
+async function generatePDF(sale, deposits, agents, mode = 'approve') {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
@@ -173,10 +204,18 @@ async function generatePDF(sale, deposits, agents) {
   y -= 20;
 
   // === TITULO ===
-  page.drawText('PLAN DE VENTAS', {
+  const isReserve = (mode === 'reserve' || mode === 'update_reserve');
+  page.drawText(isReserve ? 'PLAN DE VENTAS - RESERVA' : 'PLAN DE VENTAS', {
     x: 40, y, size: 20, font: fontBold, color: COLOR_TEXT,
   });
   y -= 30;
+  // Si es reserva, agregar subtitulo explicativo
+  if (isReserve) {
+    page.drawText('Documento preliminar. La venta queda formalizada al completar depósitos y aprobar.', {
+      x: 40, y, size: 9, font, color: COLOR_MUTED,
+    });
+    y -= 20;
+  }
 
   // === Helper para seccion ===
   const drawSectionTitle = (text) => {
@@ -426,26 +465,46 @@ async function generatePDF(sale, deposits, agents) {
   return await pdfDoc.save();
 }
 
+// === TITULO PARA EL PDF SEGUN MODO ===
+function getPdfTitle(mode, sale) {
+  if (mode === 'reserve' || mode === 'update_reserve') return 'PLAN DE VENTAS - RESERVA';
+  return 'PLAN DE VENTAS';
+}
+
 // === HANDLER ===
+// Modos:
+// - "approve": marca como aprobada + genera PDF completo + sube a Drive (o actualiza si ya existía el PDF de reserva)
+// - "reserve": marca como reservada + genera PDF parcial + sube a Drive
+// - "update_reserve": actualiza un plan reservado existente (sobrescribe el PDF manteniendo el mismo link)
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  const { sale_id } = req.body || {};
+  const { sale_id, mode = 'approve' } = req.body || {};
   if (!sale_id) return res.status(400).json({ ok: false, error: 'Falta sale_id' });
+  if (!['approve', 'reserve', 'update_reserve'].includes(mode)) {
+    return res.status(400).json({ ok: false, error: 'Modo inválido' });
+  }
 
   const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
   try {
-    // 1. Marcar aprobada
-    const { error: updErr } = await supabase.from('sales').update({
-      status: 'aprobada',
-      approved_by: 'admin',
-      approved_at: new Date().toISOString(),
-    }).eq('id', sale_id);
+    // 1. Actualizar status segun modo
+    const statusUpdate = {};
+    if (mode === 'approve') {
+      statusUpdate.status = 'aprobada';
+      statusUpdate.approved_by = 'admin';
+      statusUpdate.approved_at = new Date().toISOString();
+    } else if (mode === 'reserve') {
+      statusUpdate.status = 'reservado';
+    }
+    // update_reserve: no cambia status (ya es reservado), solo refresca el PDF
 
-    if (updErr) return res.status(500).json({ ok: false, step: 'approve', error: updErr.message });
+    if (Object.keys(statusUpdate).length > 0) {
+      const { error: updErr } = await supabase.from('sales').update(statusUpdate).eq('id', sale_id);
+      if (updErr) return res.status(500).json({ ok: false, step: 'status_update', error: updErr.message });
+    }
 
     // 2. Traer datos completos
     const { data: sale, error: saleErr } = await supabase.from('sales').select('*').eq('id', sale_id).single();
@@ -454,31 +513,44 @@ export default async function handler(req, res) {
     const { data: deposits } = await supabase.from('sale_deposits').select('*').eq('sale_id', sale_id).order('deposit_date');
     const { data: saleAgents } = await supabase.from('sale_agents').select('*').eq('sale_id', sale_id);
 
-    // 3. Generar PDF
+    // 3. Generar PDF (pasar el modo para el titulo)
     let pdfBytes;
     try {
-      pdfBytes = await generatePDF(sale, deposits || [], saleAgents || []);
+      pdfBytes = await generatePDF(sale, deposits || [], saleAgents || [], mode);
     } catch (e) {
       return res.status(200).json({
         ok: true,
-        approved: true,
+        status_updated: true,
         pdf_generated: false,
-        error: 'Venta aprobada pero el PDF falló: ' + e.message,
+        error: 'Status actualizado pero el PDF falló: ' + e.message,
       });
     }
 
-    // 4. Subir a Drive (si falla, la venta queda aprobada igual)
+    // 4. Subir o actualizar en Drive
     try {
       const accessToken = await getDriveAccessToken();
       const folderId = await getOrCreateFolder(accessToken);
 
-      // Nombre del archivo: Plan #NNNN - NOMBRE CLIENTE - YYYY-MM-DD.pdf
+      // Nombre del archivo: Plan #NNNN - NOMBRE CLIENTE - YYYY-MM-DD.pdf (si reserva agrega "RESERVA")
       const cleanName = (sale.client_name || 'CLIENTE').toUpperCase().replace(/[^\w\s-]/g, '').trim();
       const planNum = sale.sale_number ? `#${String(sale.sale_number).padStart(4, '0')}` : `#${sale_id.slice(0, 8).toUpperCase()}`;
       const dateStr = new Date().toISOString().slice(0, 10);
-      const fileName = `Plan ${planNum} - ${cleanName} - ${dateStr}.pdf`;
+      const prefix = (mode === 'reserve' || mode === 'update_reserve') ? 'Reserva' : 'Plan';
+      const fileName = `${prefix} ${planNum} - ${cleanName} - ${dateStr}.pdf`;
 
-      const uploadData = await uploadToDrive(accessToken, folderId, fileName, pdfBytes);
+      let uploadData;
+      // Si ya hay pdf_drive_file_id, actualizamos el archivo existente (sobrescribir)
+      if (sale.pdf_drive_file_id) {
+        try {
+          uploadData = await updateDriveFile(accessToken, sale.pdf_drive_file_id, fileName, pdfBytes);
+        } catch (e) {
+          // Si falla (quizás el archivo fue borrado), crear uno nuevo
+          console.error('Update falló, creando nuevo:', e.message);
+          uploadData = await uploadToDrive(accessToken, folderId, fileName, pdfBytes);
+        }
+      } else {
+        uploadData = await uploadToDrive(accessToken, folderId, fileName, pdfBytes);
+      }
 
       // 5. Guardar URL en Supabase
       await supabase.from('sales').update({
@@ -488,18 +560,19 @@ export default async function handler(req, res) {
 
       return res.status(200).json({
         ok: true,
-        approved: true,
+        status_updated: true,
         pdf_generated: true,
         pdf_url: uploadData.webViewLink,
         file_name: fileName,
+        mode,
       });
     } catch (e) {
       return res.status(200).json({
         ok: true,
-        approved: true,
+        status_updated: true,
         pdf_generated: true,
         pdf_uploaded: false,
-        error: 'Venta aprobada y PDF generado pero upload a Drive falló: ' + e.message,
+        error: 'PDF generado pero upload a Drive falló: ' + e.message,
       });
     }
   } catch (err) {
