@@ -383,7 +383,24 @@ export default function AgentPanel() {
       f.vehicle_drive = vehicle.drivetrain || "";
       f.vehicle_fuel = vehicle.fuel || "";
       f.vehicle_cabys = vehicle.cabys_code || "";
-      f.sale_price = vehicle.price_usd || "";
+
+      // Detectar moneda automaticamente segun el precio del vehiculo
+      const vUsd = parseFloat(vehicle.price_usd) || 0;
+      const vCrc = parseFloat(vehicle.price_crc) || 0;
+      const vPrice = vUsd || vCrc;
+      if (vehicle.price_currency === "CRC" || (!vehicle.price_currency && vPrice > 100000)) {
+        f.sale_price = vPrice || "";
+        f.sale_currency = "CRC";
+        f.currency = "CRC";
+      } else if (vehicle.price_currency === "USD") {
+        f.sale_price = vUsd || "";
+        f.sale_currency = "USD";
+        f.currency = "USD";
+      } else {
+        f.sale_price = vPrice || "";
+        f.sale_currency = "USD";
+        f.currency = "USD";
+      }
     }
     setEditingSaleId(null);
     setSaleForm(f);
@@ -861,17 +878,22 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
                   <td style={S.td}>{v.fuel || "-"}</td>
                   <td style={S.td}>
                     {(() => {
-                      // Detectar moneda inteligentemente
+                      // Deteccion robusta de moneda:
+                      // - Si price_currency esta explicitamente seteado, respetarlo
+                      // - Si no, usar regla: valor > 100,000 = colones (sin excepcion)
                       const usdVal = parseFloat(v.price_usd) || 0;
                       const crcVal = parseFloat(v.price_crc) || 0;
-                      // Si price_currency está seteado, respetarlo
-                      if (v.price_currency === "USD" && usdVal > 0) return fmt(usdVal, "USD");
-                      if (v.price_currency === "CRC" && crcVal > 0) return fmt(crcVal, "CRC");
-                      // Si no está seteado: el valor > 100,000 casi seguro son colones
-                      if (usdVal > 100000) return fmt(usdVal, "CRC");
-                      if (crcVal > 0) return fmt(crcVal, "CRC");
-                      if (usdVal > 0) return fmt(usdVal, "USD");
-                      return "-";
+                      const explicitCur = v.price_currency;
+
+                      if (explicitCur === "USD" && usdVal > 0) return fmt(usdVal, "USD");
+                      if (explicitCur === "CRC" && crcVal > 0) return fmt(crcVal, "CRC");
+
+                      // Sin moneda explicita: el valor mas alto gana, pero con regla de monto
+                      const val = usdVal || crcVal;
+                      if (val === 0) return "-";
+                      // Cualquier precio > 100,000 es colones (ningun carro usado cuesta $100K USD)
+                      if (val > 100000) return fmt(val, "CRC");
+                      return fmt(val, "USD");
                     })()}
                   </td>
                   <td style={S.td}>
@@ -978,21 +1000,44 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
   const onPickVehicle = (id) => {
     const v = vehicles.find(x => x.id === id);
     if (!v) return;
-    setForm(prev => ({
-      ...prev,
-      vehicle_id: v.id,
-      vehicle_plate: v.plate || "",
-      vehicle_brand: v.brand || "",
-      vehicle_model: v.model || "",
-      vehicle_year: v.year || "",
-      vehicle_color: v.color || "",
-      vehicle_km: v.km || "",
-      vehicle_engine: v.engine || "",
-      vehicle_drive: v.drivetrain || "",
-      vehicle_fuel: v.fuel || "",
-      vehicle_cabys: v.cabys_code || "",
-      sale_price: prev.sale_price || v.price_usd || "",
-    }));
+    setForm(prev => {
+      // Detectar moneda automaticamente segun el precio del vehiculo
+      const vUsd = parseFloat(v.price_usd) || 0;
+      const vCrc = parseFloat(v.price_crc) || 0;
+      const vPrice = vUsd || vCrc;
+      let newCurrency = prev.sale_currency || "USD";
+      let newPrice = prev.sale_price;
+      if (!prev.sale_price) {
+        // Solo auto-setear si el usuario no habia escrito nada
+        if (v.price_currency === "CRC" || (!v.price_currency && vPrice > 100000)) {
+          newCurrency = "CRC";
+          newPrice = vPrice || "";
+        } else if (v.price_currency === "USD") {
+          newCurrency = "USD";
+          newPrice = vUsd || "";
+        } else {
+          newCurrency = "USD";
+          newPrice = vPrice || "";
+        }
+      }
+      return {
+        ...prev,
+        vehicle_id: v.id,
+        vehicle_plate: v.plate || "",
+        vehicle_brand: v.brand || "",
+        vehicle_model: v.model || "",
+        vehicle_year: v.year || "",
+        vehicle_color: v.color || "",
+        vehicle_km: v.km || "",
+        vehicle_engine: v.engine || "",
+        vehicle_drive: v.drivetrain || "",
+        vehicle_fuel: v.fuel || "",
+        vehicle_cabys: v.cabys_code || "",
+        sale_price: newPrice,
+        sale_currency: newCurrency,
+        currency: newCurrency,
+      };
+    });
   };
 
   const salePrice = parseFloat(form.sale_price) || 0;
