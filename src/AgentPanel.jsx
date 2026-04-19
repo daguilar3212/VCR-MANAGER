@@ -485,6 +485,10 @@ export default function AgentPanel() {
   }
 
   async function saveSale(targetStatus = "pendiente") {
+    // Proteccion: si targetStatus no es string valido (ej: evento pasado por error), defaultear a pendiente
+    if (typeof targetStatus !== "string" || !["pendiente", "reservado", "aprobada", "rechazada"].includes(targetStatus)) {
+      targetStatus = "pendiente";
+    }
     if (!saleForm.client_name || !saleForm.client_cedula) {
       alert("Nombre y cédula del cliente son obligatorios.");
       return;
@@ -929,7 +933,7 @@ function VentasListView({ sales, filter, setFilter, onNew, onPick }) {
                 <td style={S.td}>{s.sale_date || "-"}</td>
                 <td style={S.td}>{s.client_name}</td>
                 <td style={S.td}>{s.vehicle_brand} {s.vehicle_model} {s.vehicle_year}</td>
-                <td style={S.td}>{fmt(s.sale_price, "USD")}</td>
+                <td style={S.td}>{fmt(s.sale_price, s.sale_currency || s.currency || "USD")}</td>
                 <td style={S.td}>
                   <span style={S.badge(statusColor(s.status))}>{statusLabel(s.status)}</span>
                 </td>
@@ -990,10 +994,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
         <h2 style={{ margin: 0 }}>{editingId ? "Editar plan de venta" : "Nuevo plan de venta"}</h2>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button onClick={onCancel} style={S.btnGhost}>Cancelar</button>
-          <button onClick={onSave} style={S.btn}>Guardar</button>
-        </div>
+        <button onClick={onCancel} style={S.btnGhost}>Cancelar</button>
       </div>
 
       {/* CLIENTE */}
@@ -1384,11 +1385,11 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
       {/* DESGLOSE EN VIVO */}
       <BreakdownCard form={form} />
 
-      {/* AGENTES Y COMISION */}
+      {/* AGENTES */}
       <div style={S.card}>
         <div style={S.cardTitle}>Vendedores</div>
         <div style={{ marginBottom: "0.75rem", color: "#71717a", fontSize: "0.9rem" }}>
-          Vos ya estás asociado como vendedor principal. Si otro vendedor te ayudó, podés agregarlo acá para que se divida la comisión 50/50.
+          Vos ya estás asociado como vendedor principal. Si otro vendedor te ayudó, podés agregarlo acá.
         </div>
         <div>
           <label style={S.label}>Segundo vendedor (opcional)</label>
@@ -1396,13 +1397,6 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <option value="">-- Ninguno --</option>
             {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
-        </div>
-
-        <div style={{ marginTop: "1rem", padding: "0.75rem", background: "#f9fafb", borderRadius: 6, fontSize: "0.9rem" }}>
-          <div><strong>Comisión preview:</strong></div>
-          <div>Porcentaje: {(splitPct * 100).toFixed(1)}% del 1% ({hasAgent2 ? "dividida entre 2" : "completa"})</div>
-          <div>USD: {fmt(commUsd, "USD")}</div>
-          <div>CRC: {fmt(commCrc, "CRC")} (usando TC {saleTC || "?"})</div>
         </div>
       </div>
 
@@ -1597,14 +1591,21 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
       <div style={S.card}>
         <div style={S.cardTitle}>Precios</div>
         <div style={S.grid2}>
-          <div><strong>Precio de venta:</strong> {fmt(sale.sale_price, "USD")}</div>
-          <div><strong>Tipo de cambio:</strong> {sale.sale_exchange_rate || "-"}</div>
-          <div><strong>Trade-in:</strong> {fmt(sale.tradein_amount, "USD")}</div>
-          <div><strong>Prima:</strong> {fmt(sale.down_payment, "USD")}</div>
-          <div><strong>Depósitos totales:</strong> {fmt(sale.deposits_total, "USD")}</div>
-          <div><strong>Saldo:</strong> {fmt(sale.total_balance, "USD")}</div>
-          <div><strong>Método de pago:</strong> {sale.payment_method || "-"}</div>
-          <div><strong>Tipo de venta:</strong> {sale.sale_type}</div>
+          {(() => {
+            const cur = sale.sale_currency || sale.currency || "USD";
+            return (
+              <>
+                <div><strong>Precio de venta:</strong> {fmt(sale.sale_price, cur)}</div>
+                <div><strong>Tipo de cambio:</strong> {sale.sale_exchange_rate || "-"}</div>
+                <div><strong>Trade-in:</strong> {fmt(sale.tradein_amount, cur)}</div>
+                <div><strong>Prima:</strong> {fmt(sale.down_payment, cur)}</div>
+                <div><strong>Depósitos totales:</strong> {fmt(sale.deposits_total, cur)}</div>
+                <div><strong>Saldo:</strong> {fmt(sale.total_balance, cur)}</div>
+                <div><strong>Método de pago:</strong> {sale.payment_method || "-"}</div>
+                <div><strong>Tipo de venta:</strong> {sale.sale_type}</div>
+              </>
+            );
+          })()}
         </div>
       </div>
 
@@ -1626,7 +1627,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
                   <td style={S.td}>{d.deposit_date || "-"}</td>
                   <td style={S.td}>{d.bank || "-"}</td>
                   <td style={S.td}>{d.reference || "-"}</td>
-                  <td style={S.td}>{fmt(d.amount, "USD")}</td>
+                  <td style={S.td}>{fmt(d.amount, sale.sale_currency || sale.currency || "USD")}</td>
                 </tr>
               ))}
             </tbody>
