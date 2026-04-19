@@ -40,19 +40,6 @@ const idTypeMap = {
   extranjero: 'NITE',
 };
 
-// Mapeo de medio de pago segun el banco/texto del primer deposito
-// Codigos Alegra CR:
-// 01 efectivo, 02 tarjeta, 03 cheque, 04 transferencia
-function getPaymentMethodFromDeposit(bankText) {
-  if (!bankText) return '01'; // default efectivo
-  const b = bankText.toLowerCase();
-  if (b.includes('efectivo')) return '01';
-  if (b.includes('tarjeta')) return '02';
-  if (b.includes('cheque')) return '03';
-  // Todo lo demas (bancos) -> transferencia
-  return '04';
-}
-
 async function alegraFetch(endpoint, method = 'GET', body = null) {
   const email = process.env.ALEGRA_EMAIL;
   const token = process.env.ALEGRA_TOKEN;
@@ -196,8 +183,7 @@ export default async function handler(req, res) {
       });
     }
 
-    const { data: deposits } = await supabase.from('sale_deposits').select('*').eq('sale_id', sale_id).order('deposit_date');
-    const firstDeposit = (deposits && deposits.length > 0) ? deposits[0] : null;
+    // Los depositos se manejan manualmente en Alegra despues de crear el borrador
 
     // 2. Cliente en Alegra
     let clientAlegraId;
@@ -246,41 +232,32 @@ export default async function handler(req, res) {
     }
     const toISODate = (d) => d.toISOString().slice(0, 10);
 
-    const paymentMethod = getPaymentMethodFromDeposit(firstDeposit?.bank);
-
-    // Tipo documento: tiquete si no tiene actividad, factura si si
+    // Tipo documento (solo informativo para el response, Alegra lo decide segun el cliente)
     const documentType = sale.client_has_activity ? 'invoice' : 'ticket';
-
-    const taxRate = sale.iva_exceptional ? parseFloat(sale.iva_rate) : 0;
-    const taxId = getTaxIdForRate(taxRate);
 
     const price = parseFloat(sale.sale_price) || 0;
 
-    // 5. Payload factura
+    // 5. Payload factura - SOLO los campos obligatorios segun doc oficial Alegra
+    // https://developer.alegra.com/reference/post_invoices
+    // Campos obligatorios: date, dueDate, client, items[]
+    // status: 'draft' = borrador (no timbrar)
     const invoicePayload = {
       date: toISODate(today),
       dueDate: toISODate(dueDate),
       client: clientAlegraId,
-      status: 'draft', // BORRADOR
-      stamp: { generateStamp: false }, // NO timbrar todavia
-      warehouse: { id: 1 },
+      status: 'draft',
       items: [{
         id: itemAlegraId,
         price,
         quantity: 1,
-        tax: [{ id: taxId }],
         description: sale.vehicle_plate ? `Placa: ${sale.vehicle_plate}` : undefined,
       }],
-      paymentMethod,
-      paymentForm: isCredit ? 'CREDIT' : 'CASH',
-      anotation: sale.observations || '',
-      numberTemplate: {
-        documentType, // 'invoice' o 'ticket'
-      },
-      // Actividad economica del emisor (VCR)
-      saleConditionCode: isCredit ? '02' : '01', // 01 contado, 02 credito
-      economicActivity: VCR_ACTIVITY_CODE,
     };
+
+    // Anotacion opcional
+    if (sale.observations) {
+      invoicePayload.anotation = String(sale.observations).slice(0, 500);
+    }
 
     // Moneda
     if (sale.sale_currency === 'USD' && sale.sale_exchange_rate) {
