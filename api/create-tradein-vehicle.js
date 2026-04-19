@@ -44,7 +44,8 @@ async function alegraFetch(endpoint, method = 'GET', body = null) {
 }
 
 // Crear item en Alegra con datos del trade-in
-async function createAlegraItem(vehicle, priceUSD) {
+// El priceCRC es el precio en colones (tu cuenta de Alegra usa CRC)
+async function createAlegraItem(vehicle, priceCRC, costCRC) {
   const marca = (vehicle.brand || '').toUpperCase();
   const modelo = (vehicle.model || '').toUpperCase();
   const anio = vehicle.year || '';
@@ -65,18 +66,27 @@ async function createAlegraItem(vehicle, priceUSD) {
   if (vehicle.km) parts.push(`${Number(vehicle.km).toLocaleString('es-CR')} KM`);
   const description = parts.join(', ');
 
+  // Constantes de la cuenta Alegra de VCR (obtenidas del item de ejemplo)
+  const PRICE_LIST_ID = '01983f21-0f79-737f-85df-988548dcbc02';
+  const CATEGORY_ID = 5135; // "Ventas"
+
   const payload = {
     name: itemName,
     description,
-    price: [{ idPriceList: 1, price: priceUSD }],
+    category: { id: CATEGORY_ID },
+    price: [{
+      idPriceList: PRICE_LIST_ID,
+      price: Math.round(priceCRC) || 0,
+    }],
     inventory: {
       unit: 'unit',
-      unitCost: priceUSD,
+      unitCost: Math.round(costCRC) || 0,
       initialQuantity: 1,
+      warehouses: [{ id: 1, initialQuantity: 1 }],
     },
-    tax: [{ id: 2 }], // IVA exento (vehiculos)
-    productKey: vehicle.cabys_code || undefined,
+    productKey: vehicle.cabys_code || '4911404000000',
     type: 'product',
+    status: 'active',
   };
 
   const created = await alegraFetch('/items', 'POST', payload);
@@ -149,11 +159,9 @@ export default async function handler(req, res) {
     }
     purchaseCostCRC = Math.round(purchaseCostCRC);
 
-    // Precio inicial en USD para Alegra
-    let priceForAlegra = parseFloat(sale.tradein_value) || 0;
-    if (sale.sale_currency === 'CRC' && tcVenta > 0) {
-      priceForAlegra = priceForAlegra / tcVenta;
-    }
+    // Precio inicial para Alegra (en CRC, que es la moneda de tu cuenta)
+    // Inicialmente 0 porque aun no has definido precio de venta para este trade-in
+    const priceForAlegra = 0; // Lo actualizas cuando definas precio de venta
 
     // 5. Notas descriptivas
     const notesParts = [];
@@ -200,7 +208,8 @@ export default async function handler(req, res) {
     let alegraItemId = null;
     let alegraError = null;
     try {
-      alegraItemId = await createAlegraItem(vehicleData, priceForAlegra);
+      // Precio 0, costo = purchaseCostCRC (que ya esta convertido)
+      alegraItemId = await createAlegraItem(vehicleData, priceForAlegra, purchaseCostCRC);
       vehicleData.alegra_item_id = String(alegraItemId);
     } catch (e) {
       alegraError = e.message;
