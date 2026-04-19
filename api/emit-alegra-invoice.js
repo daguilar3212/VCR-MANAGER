@@ -130,7 +130,10 @@ async function createVehicleItem(sale) {
   const marca = (sale.vehicle_brand || '').toUpperCase();
   const modelo = (sale.vehicle_model || '').toUpperCase();
   const anio = sale.vehicle_year || '';
-  const placa = (sale.vehicle_plate || '').toUpperCase().replace(/-/g, '');
+
+  // Placa: usar el formato ya guardado en la DB (ya viene bien desde formatPlate)
+  // BSS530, BXR237 (sin guion) o CL-5136416 (con guion)
+  const placa = (sale.vehicle_plate || '').toUpperCase();
 
   const itemName = `${marca} ${modelo} ${anio} ${placa}`.trim().replace(/\s+/g, ' ');
 
@@ -203,10 +206,27 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, step: 'client', error: e.message });
     }
 
-    // 3. Item del vehiculo
+    // 3. Item del vehiculo: reusar si ya existe (por vehicle_id -> alegra_item_id), si no crear
     let itemAlegraId;
     try {
-      itemAlegraId = await createVehicleItem(sale);
+      // Buscar el vehiculo correspondiente para ver si ya tiene alegra_item_id
+      let existingItemId = null;
+      if (sale.vehicle_id) {
+        const { data: veh } = await supabase.from('vehicles').select('alegra_item_id').eq('id', sale.vehicle_id).single();
+        if (veh && veh.alegra_item_id) existingItemId = veh.alegra_item_id;
+      }
+
+      if (existingItemId) {
+        // Ya existe en Alegra, reusar
+        itemAlegraId = existingItemId;
+      } else {
+        // Crear nuevo
+        itemAlegraId = await createVehicleItem(sale);
+        // Guardar el alegra_item_id en la tabla vehicles para futuras ventas del mismo carro
+        if (sale.vehicle_id) {
+          await supabase.from('vehicles').update({ alegra_item_id: String(itemAlegraId) }).eq('id', sale.vehicle_id);
+        }
+      }
     } catch (e) {
       return res.status(500).json({ ok: false, step: 'item', error: e.message });
     }
