@@ -203,6 +203,7 @@ const emptyForm = () => ({
   has_tradein: false,
   tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "",
   tradein_color: "", tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "",
+  tradein_engine_cc: "", tradein_chassis: "", tradein_style: "", tradein_cabys: "",
   tradein_value: "",
   sale_type: "propio",
   sale_price: "", sale_exchange_rate: "", tradein_amount: "", down_payment: "",
@@ -210,6 +211,7 @@ const emptyForm = () => ({
   deposits: [{ bank: "", reference: "", date: "", amount: "" }],
   payment_method: "contado",
   financing_term_months: "", financing_interest_pct: "", financing_amount: "",
+  credit_due_days: "",
   transfer_included: false, transfer_in_price: false, transfer_in_financing: false,
   transfer_amount: "",
   has_insurance: false, insurance_months: "",
@@ -607,6 +609,10 @@ export default function AgentPanel() {
       tradein_engine: saleForm.tradein_engine || null,
       tradein_drive: saleForm.tradein_drive || null,
       tradein_fuel: saleForm.tradein_fuel || null,
+      tradein_engine_cc: parseInt(saleForm.tradein_engine_cc) || null,
+      tradein_chassis: saleForm.tradein_chassis || null,
+      tradein_style: saleForm.tradein_style || null,
+      tradein_cabys: saleForm.tradein_cabys || null,
       tradein_value: parseFloat(saleForm.tradein_value) || null,
       sale_type: saleForm.sale_type || "propio",
       sale_price: salePrice,
@@ -620,6 +626,7 @@ export default function AgentPanel() {
       financing_term_months: parseInt(saleForm.financing_term_months) || null,
       financing_interest_pct: parseFloat(saleForm.financing_interest_pct) || null,
       financing_amount: parseFloat(saleForm.financing_amount) || null,
+      credit_due_days: parseInt(saleForm.credit_due_days) || null,
       transfer_included: !!saleForm.transfer_included,
       transfer_in_price: !!saleForm.transfer_in_price,
       transfer_in_financing: !!saleForm.transfer_in_financing,
@@ -1286,6 +1293,48 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Motor</label><input style={S.input} value={form.tradein_engine} onChange={e => upd("tradein_engine", e.target.value)} /></div>
             <div><label style={S.label}>Tracción</label><input style={S.input} value={form.tradein_drive} onChange={e => upd("tradein_drive", e.target.value)} /></div>
             <div><label style={S.label}>Combustible</label><input style={S.input} value={form.tradein_fuel} onChange={e => upd("tradein_fuel", e.target.value)} /></div>
+            <div>
+              <label style={S.label}>Estilo</label>
+              <select
+                style={S.sel}
+                value={form.tradein_style || ""}
+                onChange={e => {
+                  const val = e.target.value;
+                  upd("tradein_style", val);
+                  const sug = suggestCabys(val, form.tradein_engine_cc, form.tradein_fuel);
+                  if (sug) upd("tradein_cabys", sug);
+                }}
+              >
+                <option value="">Seleccionar</option>
+                {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Cilindrada (CC)</label>
+              <input
+                style={S.input}
+                type="number"
+                value={form.tradein_engine_cc || ""}
+                onChange={e => {
+                  const val = e.target.value;
+                  upd("tradein_engine_cc", val);
+                  const sug = suggestCabys(form.tradein_style, val, form.tradein_fuel);
+                  if (sug) upd("tradein_cabys", sug);
+                }}
+              />
+            </div>
+            <div><label style={S.label}>Chasis (VIN)</label><input style={S.input} value={form.tradein_chassis || ""} onChange={e => upd("tradein_chassis", e.target.value.toUpperCase())} /></div>
+            <div>
+              <label style={S.label}>Código CABYS</label>
+              <select
+                style={S.sel}
+                value={form.tradein_cabys || ""}
+                onChange={e => upd("tradein_cabys", e.target.value)}
+              >
+                <option value="">Seleccionar</option>
+                {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
+              </select>
+            </div>
             <div><label style={S.label}>Valor acordado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => upd("tradein_value", e.target.value)} /></div>
           </div>
         )}
@@ -1375,6 +1424,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Plazo (meses)</label><input style={S.input} type="number" value={form.financing_term_months} onChange={e => upd("financing_term_months", e.target.value)} /></div>
             <div><label style={S.label}>Interés %</label><input style={S.input} type="number" step="0.01" value={form.financing_interest_pct} onChange={e => upd("financing_interest_pct", e.target.value)} /></div>
             <div><label style={S.label}>Monto financiado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.financing_amount} onChange={e => upd("financing_amount", e.target.value)} /></div>
+            <div><label style={S.label}>Días para cancelar saldo</label><input style={S.input} type="number" value={form.credit_due_days} onChange={e => upd("credit_due_days", e.target.value)} /></div>
           </div>
         )}
       </div>
