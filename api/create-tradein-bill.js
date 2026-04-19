@@ -75,9 +75,12 @@ async function ensureContactIsProvider(alegraClientId) {
     return alegraClientId;
   }
 
-  // 4. Agregar 'provider' al type
+  // 4. Agregar 'provider' al type (Alegra requiere name en el PUT)
   const newType = [...new Set([...typeArray, 'client', 'provider'])];
-  await alegraFetch(`/contacts/${alegraClientId}`, 'PUT', { type: newType });
+  await alegraFetch(`/contacts/${alegraClientId}`, 'PUT', {
+    name: contact.name,
+    type: newType,
+  });
 
   return alegraClientId;
 }
