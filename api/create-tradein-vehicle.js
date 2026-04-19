@@ -76,7 +76,7 @@ async function createAlegraItem(vehicle, priceUSD) {
     },
     tax: [{ id: 2 }], // IVA exento (vehiculos)
     productKey: vehicle.cabys_code || undefined,
-    reference: { reference: placa },
+    type: 'product',
   };
 
   const created = await alegraFetch('/items', 'POST', payload);
