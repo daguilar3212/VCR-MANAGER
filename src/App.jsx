@@ -888,7 +888,28 @@ export default function App() {
     setVehicleForm(null);
     setVehicleFormLine(null);
     await loadVehicles();
-    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase() + (allDone ? "" : ` (${newCompleted.size}/${totalLines} líneas completadas)`));
+
+    // Sincronizar a Alegra (modo espejo)
+    let alegraMsg = "";
+    try {
+      const syncRes = await fetch('/api/sync-vehicle-alegra', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vehicle_id: veh.id })
+      });
+      const syncData = await syncRes.json();
+      if (syncData.ok && !syncData.already_synced) {
+        alegraMsg = `\n🧾 Sincronizado con Alegra (ID ${syncData.alegra_item_id})`;
+      } else if (syncData.already_synced) {
+        alegraMsg = `\n🧾 Ya estaba en Alegra`;
+      } else {
+        alegraMsg = `\n⚠ No se sincronizo con Alegra: ${syncData.error || 'error'}`;
+      }
+    } catch (e) {
+      alegraMsg = `\n⚠ No se pudo sincronizar con Alegra: ${e.message}`;
+    }
+
+    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase() + (allDone ? "" : ` (${newCompleted.size}/${totalLines} líneas completadas)`) + alegraMsg);
   };
 
   const dismissVehicle = async () => {
@@ -2744,7 +2765,7 @@ export default function App() {
     const saveNewVehicle = async () => {
       if (!newVehicleForm || !newVehicleForm.plate) { alert("La placa es requerida"); return; }
       if (!newVehicleForm.cabys_code) { alert("El código CABYS es requerido"); return; }
-      const { error } = await supabase.from('vehicles').insert({
+      const { data: inserted, error } = await supabase.from('vehicles').insert({
         plate: newVehicleForm.plate.toUpperCase().replace(/\s+/g, '-'),
         brand: newVehicleForm.brand || null, model: newVehicleForm.model || null,
         year: parseInt(newVehicleForm.year) || null, color: newVehicleForm.color || null,
@@ -2760,9 +2781,30 @@ export default function App() {
         entry_date: newVehicleForm.entry_date || null,
         price_currency: newVehicleForm.purchase_cost ? "CRC" : null,
         cabys_code: newVehicleForm.cabys_code, status: newVehicleForm.status || "disponible",
-      });
+      }).select().single();
       if (error) { alert("Error: " + error.message); return; }
       await loadVehicles(); setNewVehicleForm(null); setShowAddVehicle(false);
+
+      // Sincronizar a Alegra (modo espejo)
+      let alegraMsg = "";
+      try {
+        const syncRes = await fetch('/api/sync-vehicle-alegra', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ vehicle_id: inserted.id })
+        });
+        const syncData = await syncRes.json();
+        if (syncData.ok && !syncData.already_synced) {
+          alegraMsg = `\n🧾 Sincronizado con Alegra (ID ${syncData.alegra_item_id})`;
+        } else if (syncData.ok && syncData.already_synced) {
+          alegraMsg = `\n🧾 Ya estaba en Alegra`;
+        } else {
+          alegraMsg = `\n⚠ No se sincronizo con Alegra: ${syncData.error || 'error'}`;
+        }
+      } catch (e) {
+        alegraMsg = `\n⚠ Error sincronizando con Alegra: ${e.message}`;
+      }
+      alert(`✓ Vehículo ${inserted.plate} agregado al inventario.${alegraMsg}`);
     };
     const thS = { padding:"10px 12px", textAlign:"left", fontSize:10, fontWeight:700, color:"#8b8fa4", textTransform:"uppercase", letterSpacing:0.4, borderBottom:"2px solid #2a2d3d", whiteSpace:"nowrap" };
     const tdS = { padding:"10px 12px", borderBottom:"1px solid #2a2d3d", fontSize:12, verticalAlign:"middle" };
