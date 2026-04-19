@@ -31,12 +31,13 @@ function getTaxIdForRate(rate) {
   return 2;
 }
 
-// Mapeo de tipo ID VCR -> Alegra
+// Mapeo de tipo ID VCR -> Alegra (codigos de Hacienda CR)
+// CF = Cedula Fisica, CJ = Cedula Juridica, DIMEX = residente extranjero, NITE = no residente
 const idTypeMap = {
-  fisica: '01',
-  juridica: '02',
-  dimex: '03',
-  extranjero: '04',
+  fisica: 'CF',
+  juridica: 'CJ',
+  dimex: 'DIMEX',
+  extranjero: 'NITE',
 };
 
 // Mapeo de medio de pago segun el banco/texto del primer deposito
@@ -95,7 +96,7 @@ async function findOrCreateClient(sale) {
     name: (sale.client_name || '').toUpperCase(),
     identification: cedula,
     identificationObject: {
-      type: idTypeMap[sale.client_id_type] || '01',
+      type: idTypeMap[sale.client_id_type] || 'CF',
       number: cedula,
     },
     type: ['client'],
@@ -203,7 +204,12 @@ export default async function handler(req, res) {
     try {
       clientAlegraId = await findOrCreateClient(sale);
     } catch (e) {
-      return res.status(500).json({ ok: false, step: 'client', error: e.message });
+      return res.status(500).json({
+        ok: false,
+        step: 'client',
+        error: e.message,
+        hint: 'Error al crear/buscar cliente en Alegra. Revisar si el tipo de identificación es válido (CF, CJ, DIMEX, NITE).',
+      });
     }
 
     // 3. Item del vehiculo: reusar si ya existe (por vehicle_id -> alegra_item_id), si no crear
