@@ -4907,6 +4907,33 @@ export default function App() {
                     </button>
                   </div>
                 )}
+                {pickedSale.status === "reservado" && (
+                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                    <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
+                      style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
+                      Rechazar
+                    </button>
+                    <button onClick={() => editSale(pickedSale)}
+                      style={{ ...S.sel, color: "#f59e0b", background: "#f59e0b10", fontWeight: 600, padding: "12px 24px" }}>
+                      Corregir / Completar
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!window.confirm("¿Enviar esta reserva a estado Pendiente para aprobación final?")) return;
+                        const { error } = await supabase.from('sales').update({ status: 'pendiente' }).eq('id', pickedSale.id);
+                        if (error) { alert("Error: " + error.message); return; }
+                        await loadSales();
+                        setPickedSale(prev => ({ ...prev, status: 'pendiente' }));
+                      }}
+                      style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 24px", border: "none" }}>
+                      Enviar a Pendiente
+                    </button>
+                    <button onClick={() => setConfirmApprove(pickedSale.id)}
+                      style={{ ...S.sel, background: "#10b981", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
+                      Aprobar directo
+                    </button>
+                  </div>
+                )}
                 {pickedSale.status === "aprobada" && (
                   <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
                     <button onClick={() => editSale(pickedSale)}
