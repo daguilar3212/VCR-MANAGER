@@ -1273,35 +1273,58 @@ export default function App() {
     }
   };
 
-  const saveSale = async () => {
+  const saveSale = async (targetStatus = "pendiente") => {
+    // Validaciones base (siempre obligatorias)
     if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
     if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) { alert("Tipo de cambio es requerido"); return; }
 
-    // VALIDACIÓN DE SALDO
+    // Si es reserva: menos validaciones, solo lo esencial
+    if (targetStatus === "reservado") {
+      if (!saleForm.client_cedula) { alert("Cédula del cliente es requerida para reservar"); return; }
+      if (!saleForm.vehicle_plate) { alert("Placa del vehículo es requerida"); return; }
+      // No se validan depósitos ni saldo para una reserva
+    } else {
+      // targetStatus === "pendiente": validación completa de depósitos y saldo
+      const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
+      if (validDeposits.length === 0) {
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
+        return;
+      }
+      for (const d of validDeposits) {
+        if (!d.bank || !d.reference) {
+          alert("Cada depósito debe tener banco y número de referencia.");
+          return;
+        }
+      }
+
+      // VALIDACIÓN DE SALDO (solo para pendiente)
+      const bd = computeBreakdown(saleForm);
+      const isCash = (saleForm.payment_method || "contado") === "contado";
+      const tolerance = 0.01;
+
+      if (isCash && Math.abs(bd.balance) > tolerance) {
+        alert(
+          `El saldo debe ser 0 para ventas de contado.\n\n` +
+          `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
+          `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+        );
+        return;
+      }
+      if (!isCash && bd.balance < -tolerance) {
+        alert(`El saldo no puede ser negativo. Saldo actual: ${bd.balance.toFixed(2)}`);
+        return;
+      }
+    }
+
+    // Recomputar breakdown aquí (fuera del if) para poder usar bd.balance después
     const bd = computeBreakdown(saleForm);
-    const isCash = (saleForm.payment_method || "contado") === "contado";
-    const tolerance = 0.01;
-
-    if (isCash && Math.abs(bd.balance) > tolerance) {
-      alert(
-        `El saldo debe ser 0 para ventas de contado.\n\n` +
-        `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
-        `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
-      );
-      return;
-    }
-    if (!isCash && bd.balance < -tolerance) {
-      alert(`El saldo no puede ser negativo. Saldo actual: ${bd.balance.toFixed(2)}`);
-      return;
-    }
-
     const balance = bd.balance;
     const saleType = saleForm.sale_type;
     const commPct = saleType === "consignacion_grupo" ? 1 : saleType === "consignacion_externa" ? 5 : 0;
     const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
 
     const row = {
-      sale_date: saleForm.sale_date, status: "pendiente",
+      sale_date: saleForm.sale_date, status: targetStatus,
       client_id_type: saleForm.client_id_type || "fisica",
       client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
@@ -1383,6 +1406,25 @@ export default function App() {
     }
     if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
 
+    // Si se guardo como reserva, generar PDF automaticamente
+    if (targetStatus === "reservado") {
+      try {
+        const res = await fetch('/api/approve-sale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sale_id: data.id, mode: 'reserve' })
+        });
+        const pdfData = await res.json();
+        if (pdfData.ok && pdfData.pdf_url) {
+          alert(`📝 Reserva guardada.\n\nPDF de reserva subido a Drive: ${pdfData.file_name}`);
+        } else {
+          alert(`📝 Reserva guardada pero el PDF tuvo un problema: ${pdfData.error || 'desconocido'}`);
+        }
+      } catch (e) {
+        alert(`📝 Reserva guardada pero falló subir el PDF: ${e.message}`);
+      }
+    }
+
     await loadSales();
     setSalesView("list");
     setSaleForm(null);
@@ -1393,7 +1435,7 @@ export default function App() {
       const res = await fetch('/api/approve-sale', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sale_id: id })
+        body: JSON.stringify({ sale_id: id, mode: 'approve' })
       });
       const data = await res.json();
 
@@ -1457,31 +1499,51 @@ export default function App() {
       agent2_id: (sale.sale_agents && sale.sale_agents[1]) ? sale.sale_agents[1].agent_id : "",
       client_signature: sale.client_signature || null,
       signed_at: sale.signed_at || null,
+      current_status: sale.status || null,
     });
     setPickedSale(null);
     setSalesView("form");
   };
 
-  const updateSale = async () => {
+  const updateSale = async (targetStatus = null) => {
     if (!saleForm.client_name || !saleForm.sale_price) { alert("Nombre del cliente y precio son requeridos"); return; }
     if (!saleForm.sale_exchange_rate || parseFloat(saleForm.sale_exchange_rate) <= 0) { alert("Tipo de cambio es requerido"); return; }
 
-    // VALIDACIÓN DE SALDO
+    // Si se pide cambiar a pendiente (completar desde reserva), validar depósitos
+    if (targetStatus === "pendiente") {
+      const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
+      if (validDeposits.length === 0) {
+        alert("Para enviar a aprobación necesitás al menos un depósito con monto.");
+        return;
+      }
+      for (const d of validDeposits) {
+        if (!d.bank || !d.reference) {
+          alert("Cada depósito debe tener banco y número de referencia.");
+          return;
+        }
+      }
+    }
+
+    // VALIDACIÓN DE SALDO (excepto si sigue siendo reserva)
     const bd = computeBreakdown(saleForm);
     const isCash = (saleForm.payment_method || "contado") === "contado";
     const tolerance = 0.01;
 
-    if (isCash && Math.abs(bd.balance) > tolerance) {
-      alert(
-        `El saldo debe ser 0 para ventas de contado.\n\n` +
-        `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
-        `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
-      );
-      return;
-    }
-    if (!isCash && bd.balance < -tolerance) {
-      alert(`El saldo no puede ser negativo. Saldo actual: ${bd.balance.toFixed(2)}`);
-      return;
+    // Si NO es reserva (es decir, editando una venta aprobada/pendiente/rechazada), validar saldo
+    const isReservationEdit = !targetStatus && saleForm.current_status === "reservado";
+    if (!isReservationEdit) {
+      if (isCash && Math.abs(bd.balance) > tolerance) {
+        alert(
+          `El saldo debe ser 0 para ventas de contado.\n\n` +
+          `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
+          `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+        );
+        return;
+      }
+      if (!isCash && bd.balance < -tolerance) {
+        alert(`El saldo no puede ser negativo. Saldo actual: ${bd.balance.toFixed(2)}`);
+        return;
+      }
     }
 
     const balance = bd.balance;
@@ -1490,6 +1552,7 @@ export default function App() {
     const commAmt = saleType !== "propio" ? (parseFloat(saleForm.sale_price) || 0) * commPct / 100 : 0;
     const row = {
       sale_date: saleForm.sale_date,
+      ...(targetStatus ? { status: targetStatus } : {}),
       client_id_type: saleForm.client_id_type || "fisica",
       client_name: saleForm.client_name, client_cedula: saleForm.client_cedula,
       client_phone1: saleForm.client_phone1, client_phone2: saleForm.client_phone2,
@@ -1547,6 +1610,22 @@ export default function App() {
     if (saleForm.agent1_id) { const ag = agents.find(a => a.id === saleForm.agent1_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc }); }
     if (hasAgent2) { const ag = agents.find(a => a.id === saleForm.agent2_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc }); }
     if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
+
+    // Regenerar PDF si viene de una reserva:
+    // - Actualizar reserva o pasar a pendiente: el PDF sigue siendo de "reserva" (aun no aprobado)
+    // - Cuando David apruebe, se regenera con titulo "PLAN DE VENTAS"
+    if (saleForm.current_status === "reservado") {
+      try {
+        await fetch('/api/approve-sale', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sale_id: editingSaleId, mode: 'update_reserve' })
+        });
+      } catch (e) {
+        console.error('Error actualizando PDF:', e.message);
+      }
+    }
+
     await loadSales();
     setSalesView("list");
     setSaleForm(null);
@@ -3329,9 +3408,9 @@ export default function App() {
               </button>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-            {[["all", "Todas"], ["pendiente", "Pendientes"], ["aprobada", "Aprobadas"], ["rechazada", "Rechazadas"]].map(([v, l]) => (
-              <button key={v} onClick={() => setSaleFilter(v)} style={{ ...S.sel, background: saleFilter === v ? "#4f8cff20" : "#1e2130", color: saleFilter === v ? "#4f8cff" : "#8b8fa4", fontWeight: saleFilter === v ? 600 : 400 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+            {[["all", "Todas"], ["reservado", "Reservadas"], ["pendiente", "Pendientes"], ["aprobada", "Aprobadas"], ["rechazada", "Rechazadas"]].map(([v, l]) => (
+              <button key={v} onClick={() => setSaleFilter(v)} style={{ ...S.sel, background: saleFilter === v ? (v === "reservado" ? "#f59e0b20" : "#4f8cff20") : "#1e2130", color: saleFilter === v ? (v === "reservado" ? "#f59e0b" : "#4f8cff") : "#8b8fa4", fontWeight: saleFilter === v ? 600 : 400 }}>
                 {l} ({sales.filter(s => v === "all" || s.status === v).length})
               </button>
             ))}
@@ -3350,8 +3429,8 @@ export default function App() {
                       {" · "}{new Date(s.sale_date).toLocaleDateString("es-CR")}
                     </div>
                     <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-                      <span style={S.badge(s.status === "aprobada" ? "#10b981" : s.status === "rechazada" ? "#e11d48" : "#f59e0b")}>
-                        {s.status === "aprobada" ? "Aprobada" : s.status === "rechazada" ? "Rechazada" : "Pendiente"}
+                      <span style={S.badge(s.status === "aprobada" ? "#10b981" : s.status === "rechazada" ? "#e11d48" : s.status === "reservado" ? "#f59e0b" : "#f59e0b")}>
+                        {s.status === "aprobada" ? "Aprobada" : s.status === "rechazada" ? "Rechazada" : s.status === "reservado" ? "📝 Reservada" : "Pendiente"}
                       </span>
                       <span style={S.badge(s.sale_type === "propio" ? "#6366f1" : s.sale_type === "consignacion_grupo" ? "#8b5cf6" : "#f97316")}>
                         {s.sale_type === "propio" ? "Propio" : s.sale_type === "consignacion_grupo" ? "Consig. Grupo 1%" : "Consig. Externa 5%"}
@@ -3377,7 +3456,7 @@ export default function App() {
       return (
         <div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <h1 style={{ fontSize: 24, fontWeight: 800 }}>{editingSaleId ? "Corregir Plan de Ventas" : "Nuevo Plan de Ventas"}</h1>
+            <h1 style={{ fontSize: 24, fontWeight: 800 }}>{editingSaleId ? (F.current_status === "reservado" ? "Editar Reserva" : "Corregir Plan de Ventas") : "Nuevo Plan de Ventas"}</h1>
             <button onClick={() => { setSalesView("list"); setSaleForm(null); }} style={{ ...S.sel, color: "#8b8fa4" }}>Cancelar</button>
           </div>
 
@@ -3474,13 +3553,37 @@ export default function App() {
                   styleInp={{...S.inp, width: "100%"}}
                 />
               </div>
-              {fld("Estilo", "vehicle_style", { type: "select", options: [{v:"SUV",l:"SUV"},{v:"SEDAN",l:"SEDAN"},{v:"PICK UP",l:"PICK UP"},{v:"HATCHBACK",l:"HATCHBACK"},{v:"COUPE",l:"COUPE"},{v:"FAMILIAR",l:"FAMILIAR"},{v:"TODOTERRENO",l:"TODOTERRENO"},{v:"MICROBUS",l:"MICROBUS"}] })}
+              {fld("Estilo", "vehicle_style", {
+                type: "select",
+                options: [{v:"SUV",l:"SUV"},{v:"SEDAN",l:"SEDAN"},{v:"PICK UP",l:"PICK UP"},{v:"HATCHBACK",l:"HATCHBACK"},{v:"COUPE",l:"COUPE"},{v:"FAMILIAR",l:"FAMILIAR"},{v:"TODOTERRENO",l:"TODOTERRENO"},{v:"MICROBUS",l:"MICROBUS"}],
+                onChange: (val) => {
+                  const cabys = suggestCabys(val, F.vehicle_engine_cc);
+                  if (cabys && !F.vehicle_cabys) uf("vehicle_cabys", cabys);
+                }
+              })}
               {fld("Año", "vehicle_year", { inputType: "number", list: "dl-sale-years" })}
               {fld("Color", "vehicle_color", { list: "dl-sale-colors", upperCase: true })}
               {fld("Kilometraje", "vehicle_km", { inputType: "number" })}
               {fld("Tracción", "vehicle_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
               {fld("Combustible", "vehicle_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
-              {fld("Cilindrada (CC)", "vehicle_engine_cc", { inputType: "number" })}
+              {fld("Cilindrada (CC)", "vehicle_engine_cc", {
+                inputType: "number",
+                onChange: (val) => {
+                  const cabys = suggestCabys(F.vehicle_style, val);
+                  if (cabys && !F.vehicle_cabys) uf("vehicle_cabys", cabys);
+                }
+              })}
+              <div style={{ marginBottom: 10, gridColumn: "1/3" }}>
+                <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Código CABYS</div>
+                <select
+                  value={F.vehicle_cabys || ""}
+                  onChange={e => uf("vehicle_cabys", e.target.value)}
+                  style={{ ...S.sel, width: "100%" }}
+                >
+                  <option value="">Seleccionar CABYS (se sugiere con estilo + CC)</option>
+                  {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}
+                </select>
+              </div>
             </div>
           </div>
 
@@ -3664,10 +3767,10 @@ export default function App() {
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Gastos de Traspaso y Seguro</div>
             <div style={{ display: "flex", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
-                <input type="checkbox" checked={F.transfer_included} onChange={e => uf("transfer_included", e.target.checked)} /> Traspaso incluido
+                <input type="checkbox" checked={F.transfer_included} onChange={e => uf("transfer_included", e.target.checked)} /> Traspaso por aparte
               </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
-                <input type="checkbox" checked={F.transfer_in_price} onChange={e => uf("transfer_in_price", e.target.checked)} /> En precio
+                <input type="checkbox" checked={F.transfer_in_price} onChange={e => uf("transfer_in_price", e.target.checked)} /> Traspaso incluido
               </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#e8eaf0", cursor: "pointer" }}>
                 <input type="checkbox" checked={F.transfer_in_financing} onChange={e => uf("transfer_in_financing", e.target.checked)} /> En financiamiento
@@ -3851,11 +3954,45 @@ export default function App() {
           </div>
 
           {/* SUBMIT */}
-          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", flexWrap: "wrap" }}>
             <button onClick={() => { setSalesView("list"); setSaleForm(null); setEditingSaleId(null); }} style={{ ...S.sel, color: "#8b8fa4", padding: "12px 24px" }}>Cancelar</button>
-            <button onClick={editingSaleId ? updateSale : saveSale} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
-              {editingSaleId ? "Guardar Correcciones" : "Enviar para Aprobación"}
-            </button>
+
+            {(() => {
+              // Caso 1: Plan nuevo (no está editando nada)
+              if (!editingSaleId) {
+                return (
+                  <>
+                    <button onClick={() => saveSale("reservado")} style={{ ...S.sel, background: "#f59e0b", color: "#fff", fontWeight: 700, padding: "12px 24px", border: "none" }}>
+                      📝 Guardar como Reserva
+                    </button>
+                    <button onClick={() => saveSale("pendiente")} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 24px", border: "none" }}>
+                      ✓ Enviar para Aprobación
+                    </button>
+                  </>
+                );
+              }
+
+              // Caso 2: Editando un plan que está en estado "reservado"
+              if (F.current_status === "reservado") {
+                return (
+                  <>
+                    <button onClick={() => updateSale(null)} style={{ ...S.sel, background: "#f59e0b", color: "#fff", fontWeight: 700, padding: "12px 24px", border: "none" }}>
+                      📝 Actualizar Reserva
+                    </button>
+                    <button onClick={() => updateSale("pendiente")} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 24px", border: "none" }}>
+                      ✓ Completar y Enviar a Aprobación
+                    </button>
+                  </>
+                );
+              }
+
+              // Caso 3: Editando un plan pendiente/aprobado/rechazado (botón tradicional)
+              return (
+                <button onClick={() => updateSale(null)} style={{ ...S.sel, background: "#4f8cff", color: "#fff", fontWeight: 700, padding: "12px 30px", border: "none" }}>
+                  Guardar Correcciones
+                </button>
+              );
+            })()}
           </div>
 
           {/* Modal de firma */}
@@ -4504,8 +4641,8 @@ export default function App() {
                     <p style={{ fontSize: 12, color: "#8b8fa4" }}>{new Date(pickedSale.sale_date).toLocaleDateString("es-CR")}</p>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={S.badge(pickedSale.status === "aprobada" ? "#10b981" : pickedSale.status === "rechazada" ? "#e11d48" : "#f59e0b")}>
-                      {pickedSale.status === "aprobada" ? "Aprobada" : pickedSale.status === "rechazada" ? "Rechazada" : "Pendiente"}
+                    <span style={S.badge(pickedSale.status === "aprobada" ? "#10b981" : pickedSale.status === "rechazada" ? "#e11d48" : pickedSale.status === "reservado" ? "#f59e0b" : "#f59e0b")}>
+                      {pickedSale.status === "aprobada" ? "Aprobada" : pickedSale.status === "rechazada" ? "Rechazada" : pickedSale.status === "reservado" ? "📝 Reservada" : "Pendiente"}
                     </span>
                     {pickedSale.pdf_url && (
                       <a
