@@ -5373,6 +5373,10 @@ export default function App() {
         container.innerHTML = `
           <div style="padding:28px;">
             <div style="border-bottom:2px solid #cc0033;padding-bottom:14px;margin-bottom:16px;position:relative;">
+              <div style="position:absolute;left:0;top:50%;transform:translateY(-50%);text-align:left;">
+                <div style="font-size:13px;color:#333;font-weight:600;">📞 2240-8082</div>
+                <div style="font-size:13px;color:#333;font-weight:600;margin-top:3px;">💬 2235-8869</div>
+              </div>
               <div style="text-align:center;">
                 <img src="${logoBase64 || '/logo-vcr.png'}" style="height:100px;" />
               </div>
