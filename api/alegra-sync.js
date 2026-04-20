@@ -35,20 +35,29 @@ function toDateOnly(d) {
   return s.length > 10 ? s.slice(0, 10) : s;
 }
 
+function formatPlate(plate) {
+  if (!plate) return '';
+  const cleaned = String(plate).trim().toUpperCase().replace(/[-\s]/g, '');
+  if (cleaned.startsWith('CL')) return `CL-${cleaned.slice(2)}`;
+  return cleaned;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed. Use POST.' });
   }
 
-  const { invoice_id } = req.body || {};
-  const type = req.query.type || 'bill'; // 'bill' o 'payment'
+  const { invoice_id, vehicle_id } = req.body || {};
+  const type = req.query.type || 'bill'; // 'bill' | 'payment' | 'vehicle'
 
-  if (!invoice_id) {
-    return res.status(400).json({ ok: false, error: 'Falta invoice_id en el body' });
+  if (type === 'vehicle') {
+    if (!vehicle_id) return res.status(400).json({ ok: false, error: 'Falta vehicle_id en el body' });
+  } else {
+    if (!invoice_id) return res.status(400).json({ ok: false, error: 'Falta invoice_id en el body' });
   }
 
-  if (type !== 'bill' && type !== 'payment') {
-    return res.status(400).json({ ok: false, error: 'type debe ser "bill" o "payment"' });
+  if (type !== 'bill' && type !== 'payment' && type !== 'vehicle') {
+    return res.status(400).json({ ok: false, error: 'type debe ser "bill", "payment" o "vehicle"' });
   }
 
   const email = process.env.ALEGRA_EMAIL;
@@ -503,6 +512,106 @@ export default async function handler(req, res) {
         payment_method: paymentMethod,
         amount: invoice.total,
         sent_payload: paymentPayload
+      });
+
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // ============================================================
+  // VEHICLE: Sincronizar vehiculo de Supabase hacia Alegra como item
+  // ============================================================
+  if (type === 'vehicle') {
+    try {
+      const { data: vehicle, error: vErr } = await supabase
+        .from('vehicles')
+        .select('*')
+        .eq('id', vehicle_id)
+        .single();
+
+      if (vErr || !vehicle) {
+        return res.status(404).json({ ok: false, error: 'Vehiculo no encontrado' });
+      }
+
+      // Idempotencia
+      if (vehicle.alegra_item_id) {
+        return res.status(200).json({
+          ok: true,
+          already_synced: true,
+          alegra_item_id: vehicle.alegra_item_id,
+          message: 'Vehiculo ya sincronizado con Alegra',
+        });
+      }
+
+      // Calcular precio en CRC (moneda por default de Alegra CR)
+      const tc = parseFloat(vehicle.exchange_rate) || 500;
+      let priceCRC = 0;
+      if (vehicle.price_crc && parseFloat(vehicle.price_crc) > 0) {
+        priceCRC = Math.round(parseFloat(vehicle.price_crc));
+      } else if (vehicle.price_usd && parseFloat(vehicle.price_usd) > 0) {
+        priceCRC = Math.round(parseFloat(vehicle.price_usd) * tc);
+      }
+
+      let costCRC = 0;
+      if (vehicle.purchase_cost) {
+        costCRC = Math.round(parseFloat(vehicle.purchase_cost));
+      }
+
+      // Armar item
+      const plateFormatted = formatPlate(vehicle.plate);
+      const marca = (vehicle.brand || '').toUpperCase();
+      const modelo = (vehicle.model || '').toUpperCase();
+      const anio = vehicle.year || '';
+      const itemName = `${marca} ${modelo} ${anio} ${plateFormatted}`.trim().replace(/\s+/g, ' ').slice(0, 100);
+
+      const parts = [];
+      if (vehicle.brand && vehicle.model) parts.push(`${vehicle.brand} ${vehicle.model}`);
+      if (vehicle.style) parts.push(vehicle.style);
+      if (vehicle.year) parts.push(`AÑO ${vehicle.year}`);
+      if (vehicle.color) parts.push(`COLOR ${vehicle.color}`);
+      if (vehicle.engine_cc) parts.push(`${vehicle.engine_cc} CC`);
+      if (vehicle.drivetrain) parts.push(vehicle.drivetrain);
+      if (vehicle.fuel) parts.push(vehicle.fuel);
+      if (plateFormatted) parts.push(`PLACA ${plateFormatted}`);
+      if (vehicle.chassis) parts.push(`SERIE ${vehicle.chassis}`);
+      if (vehicle.km) parts.push(`${Number(vehicle.km).toLocaleString('es-CR')} KM`);
+      const description = parts.join(', ').slice(0, 500);
+
+      const PRICE_LIST_ID = '01983f21-0f79-737f-85df-988548dcbc02';
+      const CATEGORY_ID = 5135;
+
+      const payload = {
+        name: itemName,
+        description,
+        category: { id: CATEGORY_ID },
+        price: [{ idPriceList: PRICE_LIST_ID, price: priceCRC }],
+        inventory: {
+          unit: 'unit',
+          unitCost: costCRC,
+          initialQuantity: 1,
+          warehouses: [{ id: 1, initialQuantity: 1 }],
+        },
+        productKey: vehicle.cabys_code || '4911404000000',
+        type: 'product',
+        status: 'active',
+      };
+
+      const createRes = await alegraFetch('/items', { method: 'POST', body: JSON.stringify(payload) });
+      if (!createRes.ok) {
+        return res.status(502).json({ ok: false, step: 'create_item', error: createRes.data, payload });
+      }
+
+      await supabase
+        .from('vehicles')
+        .update({ alegra_item_id: String(createRes.data.id) })
+        .eq('id', vehicle_id);
+
+      return res.status(200).json({
+        ok: true,
+        alegra_item_id: createRes.data.id,
+        plate: plateFormatted,
+        message: 'Vehiculo sincronizado con Alegra',
       });
 
     } catch (err) {
