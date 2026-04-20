@@ -1863,7 +1863,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
         <div style="padding:28px;">
           <div style="border-bottom:2px solid #cc0033;padding-bottom:14px;margin-bottom:16px;position:relative;">
             <div style="text-align:center;">
-              <img src="${logoBase64 || '/logo-vcr.png'}" style="height:110px;" />
+              <img src="${logoBase64 || '/logo-vcr.png'}" style="height:100px;" />
             </div>
             <div style="position:absolute;right:0;top:50%;transform:translateY(-50%);text-align:right;">
               <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">Ficha de vehículo</div>
@@ -1871,7 +1871,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
             </div>
           </div>
 
-          ${fotoFicha ? `<img src="${fotoFicha}" style="width:100%;height:260px;object-fit:cover;border-radius:12px;margin-bottom:18px;" />` : ''}
+          ${fotoFicha ? `<div style="text-align:center;margin-bottom:18px;"><img src="${fotoFicha}" style="width:560px;max-width:100%;height:380px;object-fit:cover;border-radius:12px;" /></div>` : ''}
 
           <div style="margin-bottom:16px;">
             <div style="font-size:28px;font-weight:800;color:#111;line-height:1.2;">${v.brand} ${v.model}</div>
@@ -1893,7 +1893,10 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
 
           <div style="margin-top:18px;padding-top:14px;border-top:1px solid #e4e4e7;text-align:center;">
             <div style="font-size:13px;color:#666;font-weight:600;">Vehículos de Costa Rica S.A.</div>
-            <div style="font-size:12px;color:#888;margin-top:2px;">www.vehiculosdecr.com</div>
+            <div style="font-size:13px;color:#333;margin-top:6px;font-weight:600;">
+              📞 2240-8082 &nbsp;&nbsp;•&nbsp;&nbsp; 💬 WhatsApp 2235-8869
+            </div>
+            <div style="font-size:12px;color:#888;margin-top:4px;">www.vehiculosdecr.com</div>
           </div>
         </div>
       `;
