@@ -64,19 +64,21 @@ function calcSegBAC(valor, anio, moneda, esPickup) {
   const tipo = esPickup ? 'pickup' : 'particular';
   const f = BAC_SEG_FACT[tabla][moneda.toLowerCase()][tipo];
   const sub = f.A + valor*f.D + valor*f.F + valor*f.H;
-  return sub * 1.13 / 6;
+  return sub * 1.13 * 0.5 / 12; // formula Excel BAC: con impuesto 13%, descuento 50%, luego mensual
 }
 
 function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPickup, esAsalariado }) {
   const mon = moneda.toLowerCase();
   const plan = anio >= 2023 ? BAC_PLANES.seminuevo : (anio >= 2019 ? BAC_PLANES.usado : null);
   if (!plan) return { error: 'BAC no financia este año (solo 2019+)' };
+  // Control Car: dispositivo GPS de BAC que se suma al financiamiento (instalación única)
+  const controlCar = mon === 'usd' ? 436 : 256000;
   const precioTotal = valorAuto + traspaso;
   const primaMonto = precioTotal * primaPct;
   if (primaPct < plan.prima_min) return { error: `Prima mínima: ${(plan.prima_min*100).toFixed(0)}%` };
   const sinCom = precioTotal - primaMonto;
   const comision = sinCom * plan.comision;
-  const monto = sinCom + comision;
+  const monto = sinCom + comision + controlCar; // incluye Control Car
   const cfg = plan[mon];
   if (plazo > cfg.plazo_max) return { error: `Plazo máximo: ${cfg.plazo_max} meses` };
   let cIni, cVar, tIni, tVar, tipoPlan;
@@ -100,8 +102,8 @@ function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPick
     tipoPlan = 'Fija 2 años, luego variable';
   }
   const segA = calcSegBAC(valorAuto, anio, mon, esPickup);
-  const segDI = esAsalariado ? cIni * 0.028 : 0;
-  const segDV = esAsalariado && cVar ? cVar * 0.028 : 0;
+  const segDI = esAsalariado ? monto * 0.0115 / 12 : 0; // 1.15% anual sobre saldo
+  const segDV = esAsalariado && cVar ? monto * 0.0115 / 12 : 0;
   const cTI = cIni + segA + segDI;
   const cTV = cVar ? cVar + segA + segDV : null;
   return {
@@ -110,7 +112,9 @@ function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPick
     tipoPlan, moneda: mon.toUpperCase(),
     valorAuto, traspaso, precioTotal,
     primaPct, primaMonto, primaMinPct: plan.prima_min,
-    comision, comisionPct: plan.comision, monto, plazo,
+    comision, comisionPct: plan.comision,
+    controlCar,
+    monto, plazo,
     tasaInicial: tIni, tasaVariable: tVar,
     cuotaFinInicial: cIni, cuotaFinVariable: cVar,
     segAuto: segA, segDesempleoInicial: segDI, segDesempleoVariable: segDV,
@@ -5093,6 +5097,7 @@ export default function App() {
                       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:12,fontSize:13,marginBottom:14,color:"#b8bcc8"}}>
                         <div><div style={{fontSize:10,color:"#8b8fa4"}}>Prima</div>{fmt(cot.primaMonto, cot.moneda)}</div>
                         <div><div style={{fontSize:10,color:"#8b8fa4"}}>Comisión ({(cot.comisionPct*100).toFixed(2)}%)</div>{fmt(cot.comision, cot.moneda)}</div>
+                        {cotBanco === 'BAC' && cot.controlCar && <div><div style={{fontSize:10,color:"#8b8fa4"}}>Control Car</div>{fmt(cot.controlCar, cot.moneda)}</div>}
                         <div><div style={{fontSize:10,color:"#8b8fa4"}}>A financiar</div>{fmt(cot.monto, cot.moneda)}</div>
                         <div><div style={{fontSize:10,color:"#8b8fa4"}}>Plazo</div>{cot.plazo} meses</div>
                       </div>
