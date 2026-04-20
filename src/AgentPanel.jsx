@@ -446,6 +446,7 @@ export default function AgentPanel() {
   const [showroomSort, setShowroomSort] = useState("precio_desc");
   const [showroomPicked, setShowroomPicked] = useState(null);
   const [cotState, setCotState] = useState({});
+  const [fotoElegida, setFotoElegida] = useState(null);
   const [showroomVehicles, setShowroomVehicles] = useState([]);
   const [notif, setNotif] = useState(null); // { type, message } para toast
   const [searchingClient, setSearchingClient] = useState(false);
@@ -1044,6 +1045,8 @@ export default function AgentPanel() {
           setPickedId={setShowroomPicked}
           cotState={cotState}
           setCotState={setCotState}
+          fotoElegida={fotoElegida}
+          setFotoElegida={setFotoElegida}
           onSellVehicle={(srv) => {
             // Adaptar showroom_vehicles al formato que espera openNewSaleForm
             const isCRC = srv.currency === "CRC";
@@ -1188,7 +1191,7 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM (Inventario comercial con cotizador)
 // ============================================================
-function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, onSellVehicle }) {
+function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, onSellVehicle }) {
   const fmt0 = (n, c) => {
     if (n == null || isNaN(n)) return "-";
     return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -1207,7 +1210,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
     if (!v) {
       return <div style={{ padding: "1rem", color: "#71717a" }}>Vehículo no encontrado. <button onClick={() => setPickedId(null)} style={S.btn}>Volver</button></div>;
     }
-    return <ShowroomDetailView v={v} cotState={cotState} setCotState={setCotState} onBack={() => { setPickedId(null); setCotState({}); }} onSellVehicle={onSellVehicle} fmt0={fmt0} getPrice={getPrice} />;
+    return <ShowroomDetailView v={v} cotState={cotState} setCotState={setCotState} fotoElegida={fotoElegida} setFotoElegida={setFotoElegida} onBack={() => { setPickedId(null); setCotState({}); setFotoElegida(null); }} onSellVehicle={onSellVehicle} fmt0={fmt0} getPrice={getPrice} />;
   }
 
   // Lista
@@ -1280,7 +1283,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                 return (
                   <tr
                     key={v.id}
-                    onClick={() => { setCotState({}); setPickedId(v.id); }}
+                    onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}
                     style={{ cursor: "pointer", transition: "background 0.15s", opacity: isDisp ? 1 : 0.7 }}
                     onMouseEnter={e => e.currentTarget.style.background = "#f4f4f5"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
@@ -1312,7 +1315,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM DETAIL (Ficha + Cotizador)
 // ============================================================
-function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, fmt0, getPrice }) {
+function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoElegida, onBack, onSellVehicle, fmt0, getPrice }) {
   if (!v) return <div style={{ padding: "1rem" }}>Cargando...</div>;
   const precioOrig = getPrice(v);
   const anioNum = parseInt(v.year) || 2020;
@@ -1418,6 +1421,162 @@ function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, f
     window.open(`https://wa.me/?text=${msg}`, '_blank');
   };
 
+  const descargarFicha = async () => {
+    try {
+      if (typeof window.html2canvas === 'undefined') {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+
+      // Usar foto elegida por el usuario; si no, la primera
+      const fotoFicha = fotoElegida || (v.photos ? v.photos.split(',')[0].trim() : '');
+      const precioTxt = fmt0(precioOrig.val, precioOrig.cur);
+
+      let cotInfo = '';
+      if (cot && !cot.error) {
+        if (cot.banco === 'Crédito Personal') {
+          cotInfo = `
+            <div style="background:#f8f9fb;padding:16px;border-radius:10px;border-left:4px solid #cc0033;margin-top:16px;">
+              <div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:6px;">Crédito Personal</div>
+              <div style="font-size:14px;color:#333;margin-bottom:4px;">Monto: ${fmt0(cot.precioCRC, 'CRC')}</div>
+              <div style="font-size:22px;color:#cc0033;font-weight:800;">Cuota mensual: ${fmt0(cot.cuotaMensual, 'CRC')}</div>
+              <div style="font-size:11px;color:#888;margin-top:6px;">Solo asalariados</div>
+            </div>`;
+        } else if (cot.banco === 'BAC') {
+          const cuotaUno = cot.cuotaTotalInicial;
+          const cuotaDos = cot.cuotaTotalVariable;
+          cotInfo = `
+            <div style="background:#f8f9fb;padding:16px;border-radius:10px;border-left:4px solid #cc0033;margin-top:16px;">
+              <div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px;">Crédito Prendario</div>
+              <div style="font-size:13px;color:#555;margin-bottom:2px;">Prima (${(cot.primaPct*100).toFixed(0)}%): ${fmt0(cot.primaMonto, cot.moneda)}</div>
+              <div style="font-size:13px;color:#555;margin-bottom:2px;">Plazo: ${cot.plazo} meses</div>
+              <div style="font-size:13px;color:#555;margin-bottom:10px;">A financiar: ${fmt0(cot.monto, cot.moneda)}</div>
+              ${cuotaDos ? `
+                <div style="font-size:20px;color:#cc0033;font-weight:800;line-height:1.3;">Primeros 24 meses: ${fmt0(cuotaUno, cot.moneda)}</div>
+                <div style="font-size:16px;color:#cc0033;font-weight:700;line-height:1.3;">Resto del plazo: ${fmt0(cuotaDos, cot.moneda)}</div>
+              ` : `<div style="font-size:22px;color:#cc0033;font-weight:800;">Cuota mensual: ${fmt0(cuotaUno, cot.moneda)}</div>`}
+              <div style="font-size:11px;color:#888;margin-top:8px;">Incluye seguro cobertura total y gastos de traspaso</div>
+            </div>`;
+        } else if (cot.banco === 'RAPIMAX') {
+          cotInfo = `
+            <div style="background:#f8f9fb;padding:16px;border-radius:10px;border-left:4px solid #cc0033;margin-top:16px;">
+              <div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:8px;">Leasing</div>
+              <div style="font-size:13px;color:#555;margin-bottom:2px;">Prima (${(cot.primaPct*100).toFixed(0)}%): ${fmt0(cot.primaMonto, cot.moneda)}</div>
+              <div style="font-size:13px;color:#555;margin-bottom:2px;">Plazo: ${cot.plazo} meses</div>
+              <div style="font-size:13px;color:#555;margin-bottom:10px;">A financiar: ${fmt0(cot.monto, cot.moneda)}</div>
+              <div style="font-size:20px;color:#cc0033;font-weight:800;line-height:1.3;">Cuota FIJA (${cot.plazoFijo}m): ${fmt0(cot.cuotaTotalFija, cot.moneda)}</div>
+              ${cot.cuotaTotalVariable ? `<div style="font-size:16px;color:#cc0033;font-weight:700;line-height:1.3;">Cuota VARIABLE (${cot.plazoVariable}m): ${fmt0(cot.cuotaTotalVariable, cot.moneda)}</div>` : ''}
+              <div style="font-size:11px;color:#888;margin-top:8px;">Incluye seguro cobertura total y gastos de traspaso</div>
+            </div>`;
+        }
+      }
+
+      const specs = [];
+      if (v.year) specs.push(['AÑO', v.year]);
+      if (v.km != null) specs.push(['KM', Number(v.km).toLocaleString('es-CR')]);
+      if (v.engine_cc) specs.push(['MOTOR', `${v.engine_cc} CC`]);
+      if (v.transmission) specs.push(['TRANSMISIÓN', v.transmission]);
+      if (v.fuel) specs.push(['COMBUSTIBLE', v.fuel]);
+      if (v.color) specs.push(['COLOR', v.color]);
+      if (v.drivetrain) specs.push(['TRACCIÓN', v.drivetrain]);
+      if (v.style) specs.push(['ESTILO', v.style]);
+
+      const specsHtml = specs.map(([l, val]) => `
+        <div style="background:#f8f9fb;padding:10px 12px;border-radius:8px;">
+          <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:3px;">${l}</div>
+          <div style="font-size:14px;color:#111;font-weight:600;">${val}</div>
+        </div>`).join('');
+
+      const disclaimerHtml = cot && !cot.error ? `
+        <div style="margin-top:14px;padding:10px 14px;background:#fff8e1;border:1px solid #f0d78e;border-radius:8px;">
+          <div style="font-size:11px;color:#8a6d1e;font-style:italic;line-height:1.4;">
+            * Datos del financiamiento aproximados. Los datos aquí descritos pueden variar sin previo aviso.
+          </div>
+        </div>` : '';
+
+      const container = document.createElement('div');
+      container.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;background:#fff;font-family:Arial,sans-serif;';
+      container.innerHTML = `
+        <div style="padding:28px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #cc0033;padding-bottom:14px;margin-bottom:18px;">
+            <img src="/logo-vcr.png" style="height:70px;" crossorigin="anonymous" />
+            <div style="text-align:right;">
+              <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">Ficha de vehículo</div>
+              <div style="font-size:13px;color:#333;">${new Date().toLocaleDateString('es-CR', { day:'2-digit', month:'long', year:'numeric' })}</div>
+            </div>
+          </div>
+
+          ${fotoFicha ? `<img src="${fotoFicha}" crossorigin="anonymous" style="width:100%;height:380px;object-fit:cover;border-radius:12px;margin-bottom:18px;" />` : ''}
+
+          <div style="margin-bottom:16px;">
+            <div style="font-size:28px;font-weight:800;color:#111;line-height:1.2;">${v.brand} ${v.model}</div>
+            <div style="font-size:16px;color:#666;font-weight:600;margin-top:4px;">Placa ${v.plate}</div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
+            ${specsHtml}
+          </div>
+
+          <div style="background:#cc0033;padding:20px 22px;border-radius:12px;color:#fff;">
+            <div style="font-size:12px;opacity:0.85;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;margin-bottom:6px;">Precio</div>
+            <div style="font-size:36px;font-weight:800;">${precioTxt}</div>
+          </div>
+
+          ${cotInfo}
+
+          ${disclaimerHtml}
+
+          <div style="margin-top:18px;padding-top:14px;border-top:1px solid #e4e4e7;text-align:center;">
+            <div style="font-size:13px;color:#666;font-weight:600;">Vehículos de Costa Rica S.A.</div>
+            <div style="font-size:12px;color:#888;margin-top:2px;">www.vehiculosdecr.com</div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(container);
+
+      const imgs = container.querySelectorAll('img');
+      await Promise.all(Array.from(imgs).map(img => {
+        if (img.complete) return Promise.resolve();
+        return new Promise(resolve => {
+          img.onload = resolve;
+          img.onerror = resolve;
+        });
+      }));
+
+      const canvas = await window.html2canvas(container, {
+        backgroundColor: '#fff',
+        scale: 2,
+        useCORS: true,
+        allowTaint: false,
+        logging: false,
+      });
+
+      document.body.removeChild(container);
+
+      canvas.toBlob(blob => {
+        if (!blob) { alert('Error al generar imagen'); return; }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${v.brand}_${v.model}_${v.plate}.png`.replace(/\s+/g, '_');
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+        setTimeout(() => {
+          const msg = encodeURIComponent(`🚗 ${v.brand} ${v.model} ${v.year} - ${v.plate}\n\n📎 Ficha adjunta (revisá tus descargas)`);
+          window.open(`https://wa.me/?text=${msg}`, '_blank');
+        }, 500);
+      }, 'image/png');
+    } catch (e) {
+      alert('Error generando ficha: ' + e.message);
+    }
+  };
+
   return (
     <div>
       <button onClick={onBack} style={{ ...S.btnGhost, marginBottom: "1rem" }}>← Volver al Showroom</button>
@@ -1442,13 +1601,31 @@ function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, f
 
         {v.photos && (
           <div style={{ marginBottom: "1rem" }}>
-            <div style={S.detailLabel}>FOTOS</div>
+            <div style={S.detailLabel}>FOTOS — click para elegir cuál va en la ficha de WhatsApp</div>
             <div style={{ display: "flex", gap: "0.5rem", overflowX: "auto", padding: "0.35rem 0" }}>
-              {v.photos.split(',').slice(0, 10).map((url, i) => (
-                <a key={i} href={url.trim()} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>
-                  <img src={url.trim()} alt={`Foto ${i + 1}`} style={{ height: 130, borderRadius: 8, border: "1px solid #e4e4e7", cursor: "pointer" }} />
-                </a>
-              ))}
+              {v.photos.split(',').slice(0, 10).map((url, i) => {
+                const urlClean = url.trim();
+                const isSelected = fotoElegida === urlClean;
+                return (
+                  <div key={i} style={{ flexShrink: 0, position: "relative", cursor: "pointer" }} onClick={() => setFotoElegida(isSelected ? null : urlClean)}>
+                    <img src={urlClean} alt={`Foto ${i + 1}`} style={{
+                      height: 130,
+                      borderRadius: 8,
+                      border: isSelected ? "3px solid #cc0033" : "1px solid #e4e4e7",
+                      boxShadow: isSelected ? "0 0 0 2px rgba(204,0,51,0.25)" : "none",
+                      cursor: "pointer",
+                      display: "block"
+                    }} />
+                    {isSelected && (
+                      <div style={{ position: "absolute", top: 6, right: 6, background: "#cc0033", color: "#fff", fontSize: 10, fontWeight: 700, padding: "3px 7px", borderRadius: 4, letterSpacing: 0.5 }}>ELEGIDA</div>
+                    )}
+                    <a href={urlClean} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} style={{ position: "absolute", bottom: 6, right: 6, background: "rgba(0,0,0,0.6)", color: "#fff", fontSize: 10, padding: "2px 6px", borderRadius: 3, textDecoration: "none" }}>ver</a>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 11, color: "#71717a", marginTop: 4 }}>
+              {fotoElegida ? "✓ Esta foto saldrá en la ficha" : "Si no elegís ninguna, se usa la primera por defecto."}
             </div>
           </div>
         )}
@@ -1635,8 +1812,9 @@ function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, f
                 )}
 
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
-                  <button onClick={copyToClipboard} style={S.btn}>📋 Copiar cotización</button>
-                  <button onClick={shareWhatsApp} style={S.btnGhost}>📱 Compartir WhatsApp</button>
+                  <button onClick={descargarFicha} style={S.btn}>🖼️ Ficha para WhatsApp</button>
+                  <button onClick={copyToClipboard} style={S.btnGhost}>📋 Copiar texto</button>
+                  <button onClick={shareWhatsApp} style={S.btnGhost}>📱 Solo texto WhatsApp</button>
                 </div>
               </div>
             )}
