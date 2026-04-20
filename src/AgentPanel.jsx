@@ -1191,7 +1191,9 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
   // Vista detalle (carro seleccionado)
   if (pickedId) {
     const v = vehicles.find(x => x.id === pickedId);
-    if (!v) { setPickedId(null); return null; }
+    if (!v) {
+      return <div style={{ padding: "1rem", color: "#71717a" }}>Vehículo no encontrado. <button onClick={() => setPickedId(null)} style={S.btn}>Volver</button></div>;
+    }
     return <ShowroomDetailView v={v} cotState={cotState} setCotState={setCotState} onBack={() => { setPickedId(null); setCotState({}); }} onSellVehicle={onSellVehicle} fmt0={fmt0} getPrice={getPrice} />;
   }
 
@@ -1265,7 +1267,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                 return (
                   <tr
                     key={v.id}
-                    onClick={() => setPickedId(v.id)}
+                    onClick={() => { setCotState({}); setPickedId(v.id); }}
                     style={{ cursor: "pointer", transition: "background 0.15s", opacity: isDisp ? 1 : 0.7 }}
                     onMouseEnter={e => e.currentTarget.style.background = "#f4f4f5"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
@@ -1298,10 +1300,31 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
 // SUBCOMPONENTE: SHOWROOM DETAIL (Ficha + Cotizador)
 // ============================================================
 function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, fmt0, getPrice }) {
+  if (!v) return <div style={{ padding: "1rem" }}>Cargando...</div>;
   const precioOrig = getPrice(v);
-  const bancosDisp = bancosDispAnio(v.year || 2020);
+  const anioNum = parseInt(v.year) || 2020;
+  const bancosDisp = bancosDispAnio(anioNum);
 
-  const cotBanco = cotState.banco || (bancosDisp[0] || 'BAC');
+  // Si el banco del state NO esta disponible para este año, usar el primero disponible
+  const cotBancoState = cotState.banco;
+  const cotBanco = (cotBancoState && bancosDisp.includes(cotBancoState))
+    ? cotBancoState
+    : (bancosDisp[0] || null);
+
+  if (!cotBanco) {
+    return (
+      <div>
+        <button onClick={onBack} style={{ ...S.btnGhost, marginBottom: "1rem" }}>← Volver al Showroom</button>
+        <div style={S.card}>
+          <h1 style={{ fontSize: "1.4rem", fontWeight: 800 }}>{v.brand} {v.model} {v.year}</h1>
+          <div style={{ padding: "1rem", background: "#fef3c7", borderRadius: 10, color: "#b45309", marginTop: "1rem" }}>
+            Año sin opciones de financiamiento configuradas ({v.year || "sin año"})
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const cotMoneda = cotState.moneda || precioOrig.cur;
   const cotTC = cotState.tc || 500;
 
@@ -1318,25 +1341,29 @@ function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, f
   const traspaso = cotState.traspaso != null ? cotState.traspaso : traspasoAuto;
 
   let primaMin = 0;
-  if (cotBanco === 'BAC') primaMin = primaMinBAC(v.year) || 0.25;
-  if (cotBanco === 'RAPIMAX') primaMin = primaMinRM(v.year) || 0.25;
+  if (cotBanco === 'BAC') primaMin = primaMinBAC(anioNum) || 0.25;
+  if (cotBanco === 'RAPIMAX') primaMin = primaMinRM(anioNum) || 0.25;
   const primaPct = cotState.primaPct != null ? cotState.primaPct : primaMin;
 
   let plazoMax = 96;
-  if (cotBanco === 'BAC') plazoMax = plazoMaxBAC(v.year) || 96;
-  if (cotBanco === 'RAPIMAX') plazoMax = plazoMaxRM(v.year) || 96;
+  if (cotBanco === 'BAC') plazoMax = plazoMaxBAC(anioNum) || 96;
+  if (cotBanco === 'RAPIMAX') plazoMax = plazoMaxRM(anioNum) || 96;
   const plazo = cotState.plazo != null ? cotState.plazo : plazoMax;
 
   const esPickup = cotState.esPickup != null ? cotState.esPickup : (v.style || '').toUpperCase().includes("PICK");
   const esAsalariado = cotState.esAsalariado != null ? cotState.esAsalariado : true;
 
   let cot = null;
-  if (cotBanco === 'BAC') {
-    cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: v.year, plazo, primaPct, esPickup, esAsalariado });
-  } else if (cotBanco === 'RAPIMAX') {
-    cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: v.year, plazo, primaPct });
-  } else if (cotBanco === 'CP') {
-    cot = cotizarCP({ valorAuto: precioOrig.val, traspaso: precioOrig.val * 0.035, monedaAuto: precioOrig.cur, tipoCambio: cotTC });
+  try {
+    if (cotBanco === 'BAC') {
+      cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct, esPickup, esAsalariado });
+    } else if (cotBanco === 'RAPIMAX') {
+      cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct });
+    } else if (cotBanco === 'CP') {
+      cot = cotizarCP({ valorAuto: precioOrig.val, traspaso: precioOrig.val * 0.035, monedaAuto: precioOrig.cur, tipoCambio: cotTC });
+    }
+  } catch (e) {
+    cot = { error: 'Error calculando cotización: ' + e.message };
   }
 
   const updCot = (patch) => setCotState(prev => ({ ...prev, ...patch }));
