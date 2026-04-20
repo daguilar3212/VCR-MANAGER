@@ -5372,15 +5372,17 @@ export default function App() {
         container.style.cssText = 'position:fixed;left:-9999px;top:0;width:900px;background:#fff;font-family:Arial,sans-serif;';
         container.innerHTML = `
           <div style="padding:28px;">
-            <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #cc0033;padding-bottom:14px;margin-bottom:18px;">
-              <img src="${logoBase64 || '/logo-vcr.png'}" style="height:70px;" />
-              <div style="text-align:right;">
+            <div style="border-bottom:2px solid #cc0033;padding-bottom:14px;margin-bottom:16px;position:relative;">
+              <div style="text-align:center;">
+                <img src="${logoBase64 || '/logo-vcr.png'}" style="height:110px;" />
+              </div>
+              <div style="position:absolute;right:0;top:50%;transform:translateY(-50%);text-align:right;">
                 <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">Ficha de vehículo</div>
                 <div style="font-size:13px;color:#333;">${new Date().toLocaleDateString('es-CR', { day:'2-digit', month:'long', year:'numeric' })}</div>
               </div>
             </div>
 
-            ${fotoFicha ? `<img src="${fotoFicha}" style="width:100%;height:380px;object-fit:cover;border-radius:12px;margin-bottom:18px;" />` : ''}
+            ${fotoFicha ? `<img src="${fotoFicha}" style="width:100%;height:260px;object-fit:cover;border-radius:12px;margin-bottom:18px;" />` : ''}
 
             <div style="margin-bottom:16px;">
               <div style="font-size:28px;font-weight:800;color:#111;line-height:1.2;">${v.brand} ${v.model}</div>
