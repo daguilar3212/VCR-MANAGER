@@ -636,6 +636,14 @@ export default function App() {
   const [showroomVehicles, setShowroomVehicles] = useState([]);
   const [showroomSyncing, setShowroomSyncing] = useState(false);
   const [showroomLastSync, setShowroomLastSync] = useState(null);
+  const [showAddCarModal, setShowAddCarModal] = useState(false);
+  const [newCar, setNewCar] = useState({
+    estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
+    transmission: '', color: '', km: '', fuel: '', engine_cc: '',
+    cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
+    price: '', currency: 'USD'
+  });
+  const [addingCar, setAddingCar] = useState(false);
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
@@ -748,6 +756,42 @@ export default function App() {
       alert(`❌ Error de red: ${e.message}`);
     } finally {
       setShowroomSyncing(false);
+    }
+  };
+
+  const addCarToShowroom = async () => {
+    // Validar campos obligatorios
+    const required = ['plate', 'brand', 'model', 'year', 'price'];
+    const missing = required.filter(f => !newCar[f]);
+    if (missing.length) {
+      alert(`Faltan campos obligatorios: ${missing.join(', ')}`);
+      return;
+    }
+    setAddingCar(true);
+    try {
+      const res = await fetch('/api/sync-showroom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', car: newCar }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        alert(`✅ Carro ${newCar.brand} ${newCar.model} (${newCar.plate}) agregado al Sheets y al Showroom.\n\nRecordá agregar las fotos manualmente en el Sheets (columna Fotos y Fotos Lovable).`);
+        setShowAddCarModal(false);
+        setNewCar({
+          estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
+          transmission: '', color: '', km: '', fuel: '', engine_cc: '',
+          cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
+          price: '', currency: 'USD'
+        });
+        await loadShowroomVehicles();
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo agregar'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    } finally {
+      setAddingCar(false);
     }
   };
 
@@ -4736,13 +4780,21 @@ export default function App() {
               Inventario comercial — {all.length} vehículos • Última sincronización: {lastSyncTxt}
             </div>
           </div>
-          <button
-            onClick={syncShowroomNow}
-            disabled={showroomSyncing}
-            style={{...S.btn, background: showroomSyncing ? "#4f8cff77" : "#4f8cff"}}
-          >
-            {showroomSyncing ? "⏳ Sincronizando..." : "🔄 Sincronizar con Google Sheets"}
-          </button>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button
+              onClick={() => setShowAddCarModal(true)}
+              style={{...S.btn, background: "#10b981"}}
+            >
+              ➕ Agregar carro
+            </button>
+            <button
+              onClick={syncShowroomNow}
+              disabled={showroomSyncing}
+              style={{...S.btn, background: showroomSyncing ? "#4f8cff77" : "#4f8cff"}}
+            >
+              {showroomSyncing ? "⏳ Sincronizando..." : "🔄 Sincronizar con Google Sheets"}
+            </button>
+          </div>
         </div>
 
         <div style={{...S.card,padding:16,marginBottom:16}}>
@@ -4816,6 +4868,133 @@ export default function App() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {showAddCarModal && (
+          <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={() => !addingCar && setShowAddCarModal(false)}>
+            <div style={{background:"#1a1d2b",borderRadius:12,padding:24,maxWidth:720,width:"100%",maxHeight:"90vh",overflowY:"auto"}} onClick={e => e.stopPropagation()}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+                <h2 style={{fontSize:20,fontWeight:800,margin:0}}>➕ Agregar carro al Showroom</h2>
+                <button onClick={() => !addingCar && setShowAddCarModal(false)} style={{background:"transparent",border:"none",color:"#8b8fa4",fontSize:24,cursor:"pointer"}}>×</button>
+              </div>
+
+              <div style={{fontSize:12,color:"#8b8fa4",marginBottom:16,padding:10,background:"#2a2d3d",borderRadius:6}}>
+                Este carro se agregará al final del Google Sheets. Las fotos (columnas "Fotos" y "Fotos Lovable") las llenás manualmente después.
+              </div>
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>ESTADO *</label>
+                  <select value={newCar.estado} onChange={e => setNewCar({...newCar, estado: e.target.value})} style={S.select}>
+                    <option value="DISPONIBLE">DISPONIBLE</option>
+                    <option value="RESERVADO">RESERVADO</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>PLACA *</label>
+                  <input type="text" value={newCar.plate} onChange={e => setNewCar({...newCar, plate: e.target.value.toUpperCase()})} placeholder="BXX-123" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>MARCA *</label>
+                  <input type="text" value={newCar.brand} onChange={e => setNewCar({...newCar, brand: e.target.value.toUpperCase()})} placeholder="TOYOTA" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>MODELO *</label>
+                  <input type="text" value={newCar.model} onChange={e => setNewCar({...newCar, model: e.target.value.toUpperCase()})} placeholder="COROLLA" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>AÑO *</label>
+                  <input type="number" value={newCar.year} onChange={e => setNewCar({...newCar, year: e.target.value})} placeholder="2023" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>PRECIO *</label>
+                  <input type="number" value={newCar.price} onChange={e => setNewCar({...newCar, price: e.target.value})} placeholder="15000" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>MONEDA *</label>
+                  <select value={newCar.currency} onChange={e => setNewCar({...newCar, currency: e.target.value})} style={S.select}>
+                    <option value="USD">USD (Dólares)</option>
+                    <option value="CRC">CRC (Colones)</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>TRANSMISIÓN</label>
+                  <select value={newCar.transmission} onChange={e => setNewCar({...newCar, transmission: e.target.value})} style={S.select}>
+                    <option value="">-</option>
+                    <option value="Automático">Automático</option>
+                    <option value="Manual">Manual</option>
+                    <option value="CVT">CVT</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>COLOR</label>
+                  <input type="text" value={newCar.color} onChange={e => setNewCar({...newCar, color: e.target.value})} placeholder="Blanco" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>KILOMETRAJE</label>
+                  <input type="number" value={newCar.km} onChange={e => setNewCar({...newCar, km: e.target.value})} placeholder="50000" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>COMBUSTIBLE</label>
+                  <select value={newCar.fuel} onChange={e => setNewCar({...newCar, fuel: e.target.value})} style={S.select}>
+                    <option value="">-</option>
+                    <option value="Gasolina">Gasolina</option>
+                    <option value="Diesel">Diesel</option>
+                    <option value="Híbrido">Híbrido</option>
+                    <option value="Eléctrico">Eléctrico</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>MOTOR (CC)</label>
+                  <input type="text" value={newCar.engine_cc} onChange={e => setNewCar({...newCar, engine_cc: e.target.value})} placeholder="1600" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>CILINDROS</label>
+                  <input type="text" value={newCar.cylinders} onChange={e => setNewCar({...newCar, cylinders: e.target.value})} placeholder="4" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>PROCEDENCIA</label>
+                  <select value={newCar.origin} onChange={e => setNewCar({...newCar, origin: e.target.value})} style={S.select}>
+                    <option value="">-</option>
+                    <option value="Nacional">Nacional</option>
+                    <option value="Importado">Importado</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>TRACCIÓN</label>
+                  <select value={newCar.drivetrain} onChange={e => setNewCar({...newCar, drivetrain: e.target.value})} style={S.select}>
+                    <option value="">-</option>
+                    <option value="4x2">4x2</option>
+                    <option value="4x4">4x4</option>
+                    <option value="AWD">AWD</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>PASAJEROS</label>
+                  <input type="text" value={newCar.passengers} onChange={e => setNewCar({...newCar, passengers: e.target.value})} placeholder="5" style={S.input} />
+                </div>
+                <div>
+                  <label style={{fontSize:11,color:"#8b8fa4",fontWeight:600,display:"block",marginBottom:4}}>ESTILO</label>
+                  <select value={newCar.style} onChange={e => setNewCar({...newCar, style: e.target.value})} style={S.select}>
+                    <option value="">-</option>
+                    <option value="SEDAN">SEDAN</option>
+                    <option value="SUV">SUV</option>
+                    <option value="PICK UP">PICK UP</option>
+                    <option value="HATCHBACK">HATCHBACK</option>
+                    <option value="VAN">VAN</option>
+                    <option value="COUPE">COUPE</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{display:"flex",gap:10,marginTop:20,justifyContent:"flex-end"}}>
+                <button onClick={() => !addingCar && setShowAddCarModal(false)} style={S.btnGhost} disabled={addingCar}>Cancelar</button>
+                <button onClick={addCarToShowroom} disabled={addingCar} style={{...S.btn, background: addingCar ? "#10b98177" : "#10b981"}}>
+                  {addingCar ? "⏳ Agregando..." : "✅ Agregar al Sheets"}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
