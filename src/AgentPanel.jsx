@@ -447,6 +447,14 @@ export default function AgentPanel() {
   const [showroomPicked, setShowroomPicked] = useState(null);
   const [cotState, setCotState] = useState({});
   const [fotoElegida, setFotoElegida] = useState(null);
+  const [showAddCarModal, setShowAddCarModal] = useState(false);
+  const [newCar, setNewCar] = useState({
+    estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
+    transmission: '', color: '', km: '', fuel: '', engine_cc: '',
+    cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
+    price: '', currency: 'USD'
+  });
+  const [addingCar, setAddingCar] = useState(false);
   const [showroomVehicles, setShowroomVehicles] = useState([]);
   const [notif, setNotif] = useState(null); // { type, message } para toast
   const [searchingClient, setSearchingClient] = useState(false);
@@ -559,6 +567,41 @@ export default function AgentPanel() {
       .order('estado, brand, model');
     if (error) { console.error('Error loading showroom:', error); return; }
     setShowroomVehicles(data || []);
+  }
+
+  async function addCarToShowroom() {
+    const required = ['plate', 'brand', 'model', 'year', 'price'];
+    const missing = required.filter(f => !newCar[f]);
+    if (missing.length) {
+      alert(`Faltan campos obligatorios: ${missing.join(', ')}`);
+      return;
+    }
+    setAddingCar(true);
+    try {
+      const res = await fetch('/api/sync-showroom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', car: newCar }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        alert(`✅ Carro ${newCar.brand} ${newCar.model} (${newCar.plate}) agregado al Sheets y al Showroom.\n\nRecordá agregar las fotos manualmente en el Sheets.`);
+        setShowAddCarModal(false);
+        setNewCar({
+          estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
+          transmission: '', color: '', km: '', fuel: '', engine_cc: '',
+          cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
+          price: '', currency: 'USD'
+        });
+        await loadShowroomVehicles();
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo agregar'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    } finally {
+      setAddingCar(false);
+    }
   }
 
   async function loadSales() {
@@ -1047,6 +1090,12 @@ export default function AgentPanel() {
           setCotState={setCotState}
           fotoElegida={fotoElegida}
           setFotoElegida={setFotoElegida}
+          showAddCarModal={showAddCarModal}
+          setShowAddCarModal={setShowAddCarModal}
+          newCar={newCar}
+          setNewCar={setNewCar}
+          addingCar={addingCar}
+          onAddCar={addCarToShowroom}
           onSellVehicle={(srv) => {
             // Adaptar showroom_vehicles al formato que espera openNewSaleForm
             const isCRC = srv.currency === "CRC";
@@ -1191,7 +1240,7 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM (Inventario comercial con cotizador)
 // ============================================================
-function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, onSellVehicle }) {
+function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, onSellVehicle }) {
   const fmt0 = (n, c) => {
     if (n == null || isNaN(n)) return "-";
     return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -1236,9 +1285,14 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
   return (
     <div>
       <div style={S.card}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-          <div style={S.cardTitle}>Showroom — Inventario Comercial</div>
-          <div style={{ fontSize: "0.9rem", color: "#71717a" }}>{sorted.length} vehículos disponibles</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", gap: "0.5rem", flexWrap: "wrap" }}>
+          <div>
+            <div style={S.cardTitle}>Showroom — Inventario Comercial</div>
+            <div style={{ fontSize: "0.85rem", color: "#71717a" }}>{sorted.length} vehículos disponibles</div>
+          </div>
+          <button onClick={() => setShowAddCarModal(true)} style={{ ...S.btn, background: "#10b981" }}>
+            ➕ Agregar carro
+          </button>
         </div>
 
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center", marginBottom: "1rem" }}>
@@ -1308,6 +1362,133 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
           </table>
         )}
       </div>
+
+      {showAddCarModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }} onClick={() => !addingCar && setShowAddCarModal(false)}>
+          <div style={{ background: "#fff", borderRadius: 12, padding: "1.5rem", maxWidth: 720, width: "100%", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ fontSize: "1.2rem", fontWeight: 800, margin: 0, color: "#111" }}>➕ Agregar carro al Showroom</h2>
+              <button onClick={() => !addingCar && setShowAddCarModal(false)} style={{ background: "transparent", border: "none", color: "#71717a", fontSize: "1.5rem", cursor: "pointer" }}>×</button>
+            </div>
+
+            <div style={{ fontSize: "0.8rem", color: "#71717a", marginBottom: "1rem", padding: "0.5rem 0.75rem", background: "#f4f4f5", borderRadius: 6 }}>
+              Este carro se agregará al final del Google Sheets. Las fotos las llena el admin manualmente después.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.6rem" }}>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>ESTADO *</label>
+                <select value={newCar.estado} onChange={e => setNewCar({ ...newCar, estado: e.target.value })} style={S.select}>
+                  <option value="DISPONIBLE">DISPONIBLE</option>
+                  <option value="RESERVADO">RESERVADO</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>PLACA *</label>
+                <input type="text" value={newCar.plate} onChange={e => setNewCar({ ...newCar, plate: e.target.value.toUpperCase() })} placeholder="BXX-123" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>MARCA *</label>
+                <input type="text" value={newCar.brand} onChange={e => setNewCar({ ...newCar, brand: e.target.value.toUpperCase() })} placeholder="TOYOTA" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>MODELO *</label>
+                <input type="text" value={newCar.model} onChange={e => setNewCar({ ...newCar, model: e.target.value.toUpperCase() })} placeholder="COROLLA" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>AÑO *</label>
+                <input type="number" value={newCar.year} onChange={e => setNewCar({ ...newCar, year: e.target.value })} placeholder="2023" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>PRECIO *</label>
+                <input type="number" value={newCar.price} onChange={e => setNewCar({ ...newCar, price: e.target.value })} placeholder="15000" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>MONEDA *</label>
+                <select value={newCar.currency} onChange={e => setNewCar({ ...newCar, currency: e.target.value })} style={S.select}>
+                  <option value="USD">USD (Dólares)</option>
+                  <option value="CRC">CRC (Colones)</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>TRANSMISIÓN</label>
+                <select value={newCar.transmission} onChange={e => setNewCar({ ...newCar, transmission: e.target.value })} style={S.select}>
+                  <option value="">-</option>
+                  <option value="Automático">Automático</option>
+                  <option value="Manual">Manual</option>
+                  <option value="CVT">CVT</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>COLOR</label>
+                <input type="text" value={newCar.color} onChange={e => setNewCar({ ...newCar, color: e.target.value })} placeholder="Blanco" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>KILOMETRAJE</label>
+                <input type="number" value={newCar.km} onChange={e => setNewCar({ ...newCar, km: e.target.value })} placeholder="50000" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>COMBUSTIBLE</label>
+                <select value={newCar.fuel} onChange={e => setNewCar({ ...newCar, fuel: e.target.value })} style={S.select}>
+                  <option value="">-</option>
+                  <option value="Gasolina">Gasolina</option>
+                  <option value="Diesel">Diesel</option>
+                  <option value="Híbrido">Híbrido</option>
+                  <option value="Eléctrico">Eléctrico</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>MOTOR (CC)</label>
+                <input type="text" value={newCar.engine_cc} onChange={e => setNewCar({ ...newCar, engine_cc: e.target.value })} placeholder="1600" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>CILINDROS</label>
+                <input type="text" value={newCar.cylinders} onChange={e => setNewCar({ ...newCar, cylinders: e.target.value })} placeholder="4" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>PROCEDENCIA</label>
+                <select value={newCar.origin} onChange={e => setNewCar({ ...newCar, origin: e.target.value })} style={S.select}>
+                  <option value="">-</option>
+                  <option value="Nacional">Nacional</option>
+                  <option value="Importado">Importado</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>TRACCIÓN</label>
+                <select value={newCar.drivetrain} onChange={e => setNewCar({ ...newCar, drivetrain: e.target.value })} style={S.select}>
+                  <option value="">-</option>
+                  <option value="4x2">4x2</option>
+                  <option value="4x4">4x4</option>
+                  <option value="AWD">AWD</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>PASAJEROS</label>
+                <input type="text" value={newCar.passengers} onChange={e => setNewCar({ ...newCar, passengers: e.target.value })} placeholder="5" style={S.input} />
+              </div>
+              <div>
+                <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>ESTILO</label>
+                <select value={newCar.style} onChange={e => setNewCar({ ...newCar, style: e.target.value })} style={S.select}>
+                  <option value="">-</option>
+                  <option value="SEDAN">SEDAN</option>
+                  <option value="SUV">SUV</option>
+                  <option value="PICK UP">PICK UP</option>
+                  <option value="HATCHBACK">HATCHBACK</option>
+                  <option value="VAN">VAN</option>
+                  <option value="COUPE">COUPE</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "1.25rem", justifyContent: "flex-end" }}>
+              <button onClick={() => !addingCar && setShowAddCarModal(false)} style={S.btnGhost} disabled={addingCar}>Cancelar</button>
+              <button onClick={onAddCar} disabled={addingCar} style={{ ...S.btn, background: addingCar ? "#10b98177" : "#10b981" }}>
+                {addingCar ? "⏳ Agregando..." : "✅ Agregar al Sheets"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
