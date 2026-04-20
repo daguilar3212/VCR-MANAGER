@@ -78,7 +78,9 @@ function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPick
   if (primaPct < plan.prima_min) return { error: `Prima mínima: ${(plan.prima_min*100).toFixed(0)}%` };
   const sinCom = precioTotal - primaMonto;
   const comision = sinCom * plan.comision;
-  const monto = sinCom + comision + controlCar; // incluye Control Car
+  // Seguro auto del primer mes tambien se suma al financiamiento
+  const segA = calcSegBAC(valorAuto, anio, mon, esPickup);
+  const monto = sinCom + comision + controlCar + segA; // incluye Control Car + seguro 1er mes
   const cfg = plan[mon];
   if (plazo > cfg.plazo_max) return { error: `Plazo máximo: ${cfg.plazo_max} meses` };
   let cIni, cVar, tIni, tVar, tipoPlan;
@@ -101,11 +103,14 @@ function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPick
     if (mR > 0 && saldo > 0) cVar = cuotaAmort(saldo, tVar, mR);
     tipoPlan = 'Fija 2 años, luego variable';
   }
-  const segA = calcSegBAC(valorAuto, anio, mon, esPickup);
   const segDI = esAsalariado ? monto * 0.0115 / 12 : 0; // 1.15% anual sobre saldo
   const segDV = esAsalariado && cVar ? monto * 0.0115 / 12 : 0;
-  const cTI = cIni + segA + segDI;
-  const cTV = cVar ? cVar + segA + segDV : null;
+  // Colchón: aseguramos que la cuota no se quede por debajo de la real. 8% + 20 unidades mínimo.
+  const cushionFactor = 1.08;
+  const cushionMin = mon === 'usd' ? 20 : 10000;
+  const applyCushion = (c) => Math.max(c * cushionFactor, c + cushionMin);
+  const cTI = applyCushion(cIni + segA + segDI);
+  const cTV = cVar ? applyCushion(cVar + segA + segDV) : null;
   return {
     banco: 'BAC',
     plan: anio >= 2023 ? 'Seminuevo' : 'Usado',
@@ -146,9 +151,13 @@ function cotizarRAPIMAX({ valorAuto, traspaso, moneda, anio, plazo, primaPct, in
   const segSD = Math.ceil(monto * RM_FACTOR_SD / RM_FACTOR_MULT);
   const gps = incluirGPS ? (mon === 'usd' ? RM_GPS_USD : RM_GPS_CRC) : 0;
   const segDF = incluirDesempleo ? Math.ceil((cFF + segA + gps) * RM_FACTOR_DES / RM_FACTOR_MULT) : 0;
-  const segDV = incluirDesempleo && cFV ? Math.ceil((cFV + segA + gps) * RM_FACTOR_DES / RM_FACTOR_MULT) : 0;
-  const cTF = cFF + segA + segSD + segDF + gps;
-  const cTV = cFV ? cFV + segA + segSD + segDV + gps : null;
+  const segDV_rm = incluirDesempleo && cFV ? Math.ceil((cFV + segA + gps) * RM_FACTOR_DES / RM_FACTOR_MULT) : 0;
+  // Colchón: aseguramos cuota por encima de la real. 8% + 20 unidades mínimo.
+  const cushionFactorRM = 1.08;
+  const cushionMinRM = mon === 'usd' ? 20 : 10000;
+  const applyCushionRM = (c) => Math.max(c * cushionFactorRM, c + cushionMinRM);
+  const cTF = applyCushionRM(cFF + segA + segSD + segDF + gps);
+  const cTV = cFV ? applyCushionRM(cFV + segA + segSD + segDV_rm + gps) : null;
   return {
     banco: 'RAPIMAX', tipoPlan: 'Leasing', moneda: mon.toUpperCase(),
     valorAuto, traspaso, precioTotal,
@@ -157,7 +166,7 @@ function cotizarRAPIMAX({ valorAuto, traspaso, moneda, anio, plazo, primaPct, in
     plazoFijo: mF, plazoVariable: mV,
     tasaFija: tF, tasaVariable: tV,
     cuotaFinFija: cFF, cuotaFinVariable: cFV,
-    segActivo: segA, segSaldoDeudor: segSD, segDesempleoFijo: segDF, segDesempleoVariable: segDV, gps,
+    segActivo: segA, segSaldoDeudor: segSD, segDesempleoFijo: segDF, segDesempleoVariable: segDV_rm, gps,
     cuotaTotalFija: cTF, cuotaTotalVariable: cTV,
   };
 }
