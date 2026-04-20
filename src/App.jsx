@@ -619,6 +619,9 @@ export default function App() {
   const [showroomSort, setShowroomSort] = useState("precio_desc");
   const [showroomPicked, setShowroomPicked] = useState(null);
   const [cotState, setCotState] = useState({});
+  const [showroomVehicles, setShowroomVehicles] = useState([]);
+  const [showroomSyncing, setShowroomSyncing] = useState(false);
+  const [showroomLastSync, setShowroomLastSync] = useState(null);
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
@@ -699,11 +702,39 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); }, []);
 
   const loadBankAccounts = async () => {
     const { data } = await supabase.from('bank_accounts').select('*').order('id');
     if (data) setBankAccounts(data);
+  };
+
+  const loadShowroomVehicles = async () => {
+    const { data } = await supabase.from('showroom_vehicles').select('*').order('estado, brand, model');
+    if (data) {
+      setShowroomVehicles(data);
+      if (data.length > 0 && data[0].synced_at) {
+        setShowroomLastSync(data[0].synced_at);
+      }
+    }
+  };
+
+  const syncShowroomNow = async () => {
+    setShowroomSyncing(true);
+    try {
+      const res = await fetch('/api/sync-showroom', { method: 'POST' });
+      const j = await res.json();
+      if (j.ok) {
+        alert(`✅ Sincronizados ${j.synced} vehículos del Sheets\n(${j.skipped || 0} filas omitidas)`);
+        await loadShowroomVehicles();
+      } else {
+        alert(`❌ Error: ${j.error || 'Sincronización falló'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    } finally {
+      setShowroomSyncing(false);
+    }
   };
 
   // Realtime: escuchar planes de venta nuevos (pendientes) de agentes
@@ -1091,7 +1122,7 @@ export default function App() {
     // Sincronizar a Alegra (modo espejo)
     let alegraMsg = "";
     try {
-      const syncRes = await fetch('/api/sync-vehicle-alegra', {
+      const syncRes = await fetch('/api/alegra-sync?type=vehicle', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ vehicle_id: veh.id })
@@ -3011,7 +3042,7 @@ export default function App() {
       // Sincronizar a Alegra (modo espejo)
       let alegraMsg = "";
       try {
-        const syncRes = await fetch('/api/sync-vehicle-alegra', {
+        const syncRes = await fetch('/api/alegra-sync?type=vehicle', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ vehicle_id: inserted.id })
@@ -4647,40 +4678,55 @@ export default function App() {
 
   // ===== SHOWROOM (Inventario comercial con cotizador) =====
   const renderShowroom = () => {
-    const disp = cars.filter(v => v.s === "disponible");
-    const [srQ, srSort, srPicked] = [showroomQ, showroomSort, showroomPicked];
+    const all = showroomVehicles;
+    const srQ = showroomQ;
+    const srSort = showroomSort;
+    const srPicked = showroomPicked;
 
-    const filt = disp.filter(v => {
+    const filt = all.filter(v => {
       if (!srQ) return true;
       const qL = srQ.toLowerCase();
-      return [v.p, v.b, v.m, v.co, String(v.y)].some(x => (x || "").toLowerCase().includes(qL));
+      return [v.plate, v.brand, v.model, v.color, String(v.year)].some(x => (x || "").toLowerCase().includes(qL));
     });
     const sorted = [...filt].sort((a,b) => {
-      if (srSort === "precio_desc") return (b.usd || b.crc/500 || 0) - (a.usd || a.crc/500 || 0);
-      if (srSort === "precio_asc") return (a.usd || a.crc/500 || 0) - (b.usd || b.crc/500 || 0);
-      if (srSort === "anio_desc") return (b.y || 0) - (a.y || 0);
-      if (srSort === "anio_asc") return (a.y || 0) - (b.y || 0);
+      const valA = a.currency === "USD" ? (a.price || 0) : (a.price || 0) / 500;
+      const valB = b.currency === "USD" ? (b.price || 0) : (b.price || 0) / 500;
+      if (srSort === "precio_desc") return valB - valA;
+      if (srSort === "precio_asc") return valA - valB;
+      if (srSort === "anio_desc") return (b.year || 0) - (a.year || 0);
+      if (srSort === "anio_asc") return (a.year || 0) - (b.year || 0);
       if (srSort === "km_asc") return (a.km || 999999) - (b.km || 999999);
       if (srSort === "km_desc") return (b.km || 0) - (a.km || 0);
       return 0;
     });
 
-    const getPrice = (v) => {
-      if (v.usd) return { val: v.usd, cur: "USD" };
-      if (v.crc) return { val: v.crc, cur: "CRC" };
-      return { val: 0, cur: "USD" };
-    };
-
     if (srPicked) {
-      const v = cars.find(c => c.id === srPicked);
+      const v = all.find(c => c.id === srPicked);
       if (!v) { setShowroomPicked(null); return null; }
       return renderShowroomDetail(v);
     }
 
+    const lastSyncTxt = showroomLastSync
+      ? new Date(showroomLastSync).toLocaleString("es-CR", { dateStyle: "short", timeStyle: "short" })
+      : "nunca";
+
     return (
       <div>
-        <h1 style={{fontSize:26,fontWeight:800,marginBottom:8}}>Showroom</h1>
-        <div style={{fontSize:13,color:"#8b8fa4",marginBottom:16}}>Inventario comercial — {disp.length} vehículos disponibles</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:12,marginBottom:8}}>
+          <div>
+            <h1 style={{fontSize:26,fontWeight:800,marginBottom:4}}>Showroom</h1>
+            <div style={{fontSize:13,color:"#8b8fa4"}}>
+              Inventario comercial — {all.length} vehículos • Última sincronización: {lastSyncTxt}
+            </div>
+          </div>
+          <button
+            onClick={syncShowroomNow}
+            disabled={showroomSyncing}
+            style={{...S.btn, background: showroomSyncing ? "#4f8cff77" : "#4f8cff"}}
+          >
+            {showroomSyncing ? "⏳ Sincronizando..." : "🔄 Sincronizar con Google Sheets"}
+          </button>
+        </div>
 
         <div style={{...S.card,padding:16,marginBottom:16}}>
           <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
@@ -4703,41 +4749,51 @@ export default function App() {
         </div>
 
         {sorted.length === 0 ? (
-          <div style={{...S.card,padding:40,textAlign:"center",color:"#8b8fa4"}}>No se encontraron vehículos</div>
+          <div style={{...S.card,padding:40,textAlign:"center",color:"#8b8fa4"}}>
+            {all.length === 0
+              ? "No hay vehículos sincronizados. Presioná '🔄 Sincronizar con Google Sheets' para cargarlos."
+              : "No se encontraron vehículos con ese criterio."}
+          </div>
         ) : (
           <div style={{...S.card,overflow:"auto"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:13}}>
               <thead>
                 <tr style={{background:"#1f2230",borderBottom:"1px solid #2a2d3d"}}>
+                  <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Estado</th>
                   <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Placa</th>
                   <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Vehículo</th>
                   <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Año</th>
-                  <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>CC</th>
+                  <th style={{padding:"10px 12px",textAlign:"center",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Estilo</th>
                   <th style={{padding:"10px 12px",textAlign:"right",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Km</th>
                   <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Color</th>
-                  <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Combustible</th>
+                  <th style={{padding:"10px 12px",textAlign:"left",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Combust.</th>
                   <th style={{padding:"10px 12px",textAlign:"right",fontSize:11,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4}}>Precio</th>
                 </tr>
               </thead>
               <tbody>
                 {sorted.map(v => {
-                  const pr = getPrice(v);
+                  const isDisp = v.estado === "DISPONIBLE";
                   return (
                     <tr
                       key={v.id}
                       onClick={() => setShowroomPicked(v.id)}
-                      style={{cursor:"pointer",borderBottom:"1px solid #2a2d3d",transition:"background 0.15s"}}
+                      style={{cursor:"pointer",borderBottom:"1px solid #2a2d3d",transition:"background 0.15s",opacity: isDisp ? 1 : 0.7}}
                       onMouseEnter={e => e.currentTarget.style.background = "#1f2230"}
                       onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                     >
-                      <td style={{padding:"10px 12px",fontWeight:700,color:"#4f8cff"}}>{v.p || "-"}</td>
-                      <td style={{padding:"10px 12px"}}>{v.b} {v.m}</td>
-                      <td style={{padding:"10px 12px",textAlign:"center"}}>{v.y || "-"}</td>
-                      <td style={{padding:"10px 12px",textAlign:"center",color:"#8b8fa4"}}>{v.engine_cc || "-"}</td>
+                      <td style={{padding:"10px 12px"}}>
+                        <span style={{...S.badge(isDisp ? "#10b981" : "#f59e0b"),fontSize:10}}>
+                          {isDisp ? "DISPONIBLE" : "RESERVADO"}
+                        </span>
+                      </td>
+                      <td style={{padding:"10px 12px",fontWeight:700,color:"#4f8cff"}}>{v.plate || "-"}</td>
+                      <td style={{padding:"10px 12px"}}>{v.brand} {v.model}</td>
+                      <td style={{padding:"10px 12px",textAlign:"center"}}>{v.year || "-"}</td>
+                      <td style={{padding:"10px 12px",textAlign:"center",color:"#8b8fa4"}}>{v.style || "-"}</td>
                       <td style={{padding:"10px 12px",textAlign:"right",color:"#8b8fa4"}}>{v.km ? Number(v.km).toLocaleString("es-CR") : "-"}</td>
-                      <td style={{padding:"10px 12px"}}>{v.co || "-"}</td>
-                      <td style={{padding:"10px 12px",color:"#8b8fa4"}}>{v.f || "-"}</td>
-                      <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#10b981"}}>{fmt(pr.val, pr.cur)}</td>
+                      <td style={{padding:"10px 12px"}}>{v.color || "-"}</td>
+                      <td style={{padding:"10px 12px",color:"#8b8fa4"}}>{v.fuel || "-"}</td>
+                      <td style={{padding:"10px 12px",textAlign:"right",fontWeight:700,color:"#10b981"}}>{fmt(v.price, v.currency)}</td>
                     </tr>
                   );
                 })}
@@ -4751,13 +4807,8 @@ export default function App() {
 
   // ===== SHOWROOM - FICHA + COTIZADOR =====
   const renderShowroomDetail = (v) => {
-    const getPrice = () => {
-      if (v.usd) return { val: parseFloat(v.usd), cur: "USD" };
-      if (v.crc) return { val: parseFloat(v.crc), cur: "CRC" };
-      return { val: 0, cur: "USD" };
-    };
-    const precioOrig = getPrice();
-    const bancosDisp = bancosDispAnio(v.y || 2020);
+    const precioOrig = { val: parseFloat(v.price) || 0, cur: v.currency || "USD" };
+    const bancosDisp = bancosDispAnio(v.year || 2020);
 
     // Tomar state de cotizador o usar defaults
     const cotBanco = cotState.banco || (bancosDisp[0] || 'BAC');
@@ -4781,25 +4832,25 @@ export default function App() {
 
     // Prima default al minimo del banco
     let primaMin = 0;
-    if (cotBanco === 'BAC') primaMin = primaMinBAC(v.y) || 0.25;
-    if (cotBanco === 'RAPIMAX') primaMin = primaMinRM(v.y) || 0.25;
+    if (cotBanco === 'BAC') primaMin = primaMinBAC(v.year) || 0.25;
+    if (cotBanco === 'RAPIMAX') primaMin = primaMinRM(v.year) || 0.25;
     const primaPct = cotState.primaPct != null ? cotState.primaPct : primaMin;
 
     // Plazo default al maximo del banco
     let plazoMax = 96;
-    if (cotBanco === 'BAC') plazoMax = plazoMaxBAC(v.y) || 96;
-    if (cotBanco === 'RAPIMAX') plazoMax = plazoMaxRM(v.y) || 96;
+    if (cotBanco === 'BAC') plazoMax = plazoMaxBAC(v.year) || 96;
+    if (cotBanco === 'RAPIMAX') plazoMax = plazoMaxRM(v.year) || 96;
     const plazo = cotState.plazo != null ? cotState.plazo : plazoMax;
 
-    const esPickup = cotState.esPickup != null ? cotState.esPickup : (v.st || '').toUpperCase().includes("PICK");
+    const esPickup = cotState.esPickup != null ? cotState.esPickup : (v.style || '').toUpperCase().includes("PICK");
     const esAsalariado = cotState.esAsalariado != null ? cotState.esAsalariado : true;
 
     // Calcular cotizacion segun banco
     let cot = null;
     if (cotBanco === 'BAC') {
-      cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: v.y, plazo, primaPct, esPickup, esAsalariado });
+      cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: v.year, plazo, primaPct, esPickup, esAsalariado });
     } else if (cotBanco === 'RAPIMAX') {
-      cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: v.y, plazo, primaPct });
+      cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: v.year, plazo, primaPct });
     } else if (cotBanco === 'CP') {
       cot = cotizarCP({ valorAuto: precioOrig.val, traspaso: precioOrig.val * 0.035, monedaAuto: precioOrig.cur, tipoCambio: cotTC });
     }
@@ -4809,7 +4860,7 @@ export default function App() {
     // Generar texto de cotizacion para copiar
     const textoCot = () => {
       if (!cot || cot.error) return '';
-      let t = `🚗 ${v.b} ${v.m} ${v.y} - Placa ${v.p}\n`;
+      let t = `🚗 ${v.brand} ${v.model} ${v.year} - Placa ${v.plate}\n`;
       t += `💰 Precio: ${fmt(precioOrig.val, precioOrig.cur)}\n\n`;
       t += `━━━ COTIZACIÓN ${cot.banco} ━━━\n`;
       if (cot.banco === 'Crédito Personal') {
@@ -4849,23 +4900,39 @@ export default function App() {
         <button onClick={() => { setShowroomPicked(null); setCotState({}); }} style={{...S.btnGhost,marginBottom:16}}>← Volver al Showroom</button>
 
         <div style={{...S.card,padding:24,marginBottom:16}}>
-          <h1 style={{fontSize:26,fontWeight:800,marginBottom:6}}>{v.b} {v.m} {v.y}</h1>
-          <div style={{fontSize:15,color:"#4f8cff",fontWeight:700,marginBottom:12}}>{v.p}</div>
+          <h1 style={{fontSize:26,fontWeight:800,marginBottom:6}}>{v.brand} {v.model} {v.year}</h1>
+          <div style={{fontSize:15,color:"#4f8cff",fontWeight:700,marginBottom:12}}>{v.plate}</div>
 
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:16}}>
-            {v.y && <div><div style={S.detailLabel}>AÑO</div><div style={S.detailValue}>{v.y}</div></div>}
-            {v.engine_cc && <div><div style={S.detailLabel}>CILINDRADA</div><div style={S.detailValue}>{v.engine_cc} CC</div></div>}
-            {v.dr && <div><div style={S.detailLabel}>TRACCIÓN</div><div style={S.detailValue}>{v.dr}</div></div>}
-            {v.f && <div><div style={S.detailLabel}>COMBUSTIBLE</div><div style={S.detailValue}>{v.f}</div></div>}
+            {v.year && <div><div style={S.detailLabel}>AÑO</div><div style={S.detailValue}>{v.year}</div></div>}
+            {v.engine_cc && <div><div style={S.detailLabel}>MOTOR</div><div style={S.detailValue}>{v.engine_cc} CC</div></div>}
+            {v.cylinders && <div><div style={S.detailLabel}>CILINDROS</div><div style={S.detailValue}>{v.cylinders}</div></div>}
+            {v.transmission && <div><div style={S.detailLabel}>TRANSMISIÓN</div><div style={S.detailValue}>{v.transmission}</div></div>}
+            {v.drivetrain && <div><div style={S.detailLabel}>TRACCIÓN</div><div style={S.detailValue}>{v.drivetrain}</div></div>}
+            {v.fuel && <div><div style={S.detailLabel}>COMBUSTIBLE</div><div style={S.detailValue}>{v.fuel}</div></div>}
             {v.km != null && <div><div style={S.detailLabel}>KILOMETRAJE</div><div style={S.detailValue}>{Number(v.km).toLocaleString("es-CR")} km</div></div>}
-            {v.co && <div><div style={S.detailLabel}>COLOR</div><div style={S.detailValue}>{v.co}</div></div>}
+            {v.color && <div><div style={S.detailLabel}>COLOR</div><div style={S.detailValue}>{v.color}</div></div>}
             {v.passengers && <div><div style={S.detailLabel}>PASAJEROS</div><div style={S.detailValue}>{v.passengers}</div></div>}
-            {v.st && <div><div style={S.detailLabel}>ESTILO</div><div style={S.detailValue}>{v.st}</div></div>}
-            {v.chassis && <div style={{gridColumn:"1 / -1"}}><div style={S.detailLabel}>CHASIS</div><div style={{...S.detailValue,fontSize:13,fontFamily:"monospace"}}>{v.chassis}</div></div>}
+            {v.style && <div><div style={S.detailLabel}>ESTILO</div><div style={S.detailValue}>{v.style}</div></div>}
+            {v.origin && <div><div style={S.detailLabel}>PROCEDENCIA</div><div style={S.detailValue}>{v.origin}</div></div>}
           </div>
 
-          <div style={{padding:"14px 18px",background:"#10b98122",border:"1px solid #10b981",borderRadius:10,fontSize:22,fontWeight:800,color:"#10b981"}}>
-            💰 Precio: {fmt(precioOrig.val, precioOrig.cur)}
+          {v.photos && (
+            <div style={{marginBottom:16}}>
+              <div style={S.detailLabel}>FOTOS</div>
+              <div style={{display:"flex",gap:8,overflowX:"auto",padding:"6px 0"}}>
+                {v.photos.split(',').slice(0,10).map((url, i) => (
+                  <a key={i} href={url.trim()} target="_blank" rel="noreferrer" style={{flexShrink:0}}>
+                    <img src={url.trim()} alt={`Foto ${i+1}`} style={{height:140,borderRadius:8,border:"1px solid #2a2d3d",cursor:"pointer"}} />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div style={{padding:"14px 18px",background:"#10b98122",border:"1px solid #10b981",borderRadius:10,fontSize:22,fontWeight:800,color:"#10b981",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+            <div>💰 Precio: {fmt(precioOrig.val, precioOrig.cur)}</div>
+            {v.web_url && <a href={v.web_url} target="_blank" rel="noreferrer" style={{...S.btnGhost,fontSize:13,textDecoration:"none"}}>🌐 Ver en web</a>}
           </div>
         </div>
 
