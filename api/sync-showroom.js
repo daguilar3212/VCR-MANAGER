@@ -639,6 +639,52 @@ async function handleEditCar(req, res, supabase, car) {
     const writeJson = await writeRes.json();
     if (!writeRes.ok) return res.status(502).json({ ok: false, error: 'Error escribiendo Sheets', detail: writeJson });
 
+    // FORZAR RECALCULO: obtener sheetId numerico y hacer batchUpdate
+    // Esto dispara el recalculo de fórmulas que dependen de esta fila
+    try {
+      const infoRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      );
+      const info = await infoRes.json();
+      const invSheet = info.sheets?.find(s => s.properties?.title === 'Inventario');
+      if (invSheet) {
+        const sheetIdNum = invSheet.properties.sheetId;
+        // Truco: usar updateCells con userEnteredValue para la celda estado
+        // Esto fuerza recalculo de fórmulas dependientes (equivalente a edicion manual)
+        const estadoColIdx = colMap.estado;
+        await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`,
+          {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              requests: [{
+                updateCells: {
+                  range: {
+                    sheetId: sheetIdNum,
+                    startRowIndex: rowIdx - 1,
+                    endRowIndex: rowIdx,
+                    startColumnIndex: estadoColIdx,
+                    endColumnIndex: estadoColIdx + 1,
+                  },
+                  rows: [{
+                    values: [{
+                      userEnteredValue: { stringValue: car.estado || '' }
+                    }]
+                  }],
+                  fields: 'userEnteredValue',
+                }
+              }]
+            }),
+          }
+        );
+      }
+    } catch (trigErr) {
+      // Si falla el trigger, seguimos adelante. El dato ya se escribio.
+      console.error('Trigger recalculo falló (no bloqueante):', trigErr.message);
+    }
+
     // Update en Supabase
     const supabaseRecord = {
       estado: car.estado,
