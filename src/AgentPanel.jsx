@@ -1756,16 +1756,35 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
       const precioTxt = fmt0(precioOrig.val, precioOrig.cur);
 
       // Convertir URL a base64 para evitar CORS en html2canvas
+      // Usamos proxy publico images.weserv.nl que maneja CORS automaticamente
       const urlToBase64 = async (url) => {
         if (!url) return '';
         try {
-          const res = await fetch(url, { mode: 'cors' });
-          const blob = await res.blob();
+          // Primero intentar directo (si el host soporta CORS)
+          try {
+            const r1 = await fetch(url, { mode: 'cors' });
+            if (r1.ok) {
+              const b1 = await r1.blob();
+              return await new Promise((resolve, reject) => {
+                const rd = new FileReader();
+                rd.onloadend = () => resolve(rd.result);
+                rd.onerror = reject;
+                rd.readAsDataURL(b1);
+              });
+            }
+          } catch (e1) { /* cae al proxy */ }
+
+          // Si falla, usar proxy weserv (funciona con Drive, sitios sin CORS, etc)
+          const cleanUrl = url.replace(/^https?:\/\//, '');
+          const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl)}&output=jpg`;
+          const r2 = await fetch(proxyUrl);
+          if (!r2.ok) throw new Error(`Proxy fallo: ${r2.status}`);
+          const b2 = await r2.blob();
           return await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
+            const rd = new FileReader();
+            rd.onloadend = () => resolve(rd.result);
+            rd.onerror = reject;
+            rd.readAsDataURL(b2);
           });
         } catch (err) {
           console.warn('No se pudo cargar imagen:', url, err);
@@ -1774,6 +1793,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
       };
 
       const fotoFicha = fotoFichaUrl ? await urlToBase64(fotoFichaUrl) : '';
+      const logoBase64 = await urlToBase64('/logo-vcr.png');
 
       let cotInfo = '';
       if (cot && !cot.error) {
@@ -1842,14 +1862,14 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
       container.innerHTML = `
         <div style="padding:28px;">
           <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #cc0033;padding-bottom:14px;margin-bottom:18px;">
-            <img src="/logo-vcr.png" style="height:70px;" crossorigin="anonymous" />
+            <img src="${logoBase64 || '/logo-vcr.png'}" style="height:70px;" />
             <div style="text-align:right;">
               <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.5px;font-weight:700;">Ficha de vehículo</div>
               <div style="font-size:13px;color:#333;">${new Date().toLocaleDateString('es-CR', { day:'2-digit', month:'long', year:'numeric' })}</div>
             </div>
           </div>
 
-          ${fotoFicha ? `<img src="${fotoFicha}" crossorigin="anonymous" style="width:100%;height:380px;object-fit:cover;border-radius:12px;margin-bottom:18px;" />` : ''}
+          ${fotoFicha ? `<img src="${fotoFicha}" style="width:100%;height:380px;object-fit:cover;border-radius:12px;margin-bottom:18px;" />` : ''}
 
           <div style="margin-bottom:16px;">
             <div style="font-size:28px;font-weight:800;color:#111;line-height:1.2;">${v.brand} ${v.model}</div>
