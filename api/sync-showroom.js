@@ -107,6 +107,14 @@ export default async function handler(req, res) {
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
+  // Detectar accion: agregar carro al Sheets (si body trae action: 'add')
+  const body = req.body || {};
+  if (body.action === 'add' && body.car) {
+    return await handleAddCar(req, res, supabase, body.car);
+  }
+
+  // Caso default: sync desde Sheets
+
   try {
     // 1. Descargar CSV del Sheets
     const csvRes = await fetch(CSV_URL);
@@ -262,5 +270,165 @@ export default async function handler(req, res) {
 
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stack: err.stack });
+  }
+}
+
+// Obtiene un access token usando el refresh token guardado en Supabase (tabla gmail_sync)
+async function getGoogleAccessToken(supabase) {
+  // Leer refresh token de Supabase
+  const { data, error } = await supabase.from('gmail_sync').select('refresh_token').limit(1).single();
+  if (error || !data?.refresh_token) {
+    throw new Error('No hay refresh token de Google. Reautoriza desde /api/auth-gmail');
+  }
+
+  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env.GMAIL_CLIENT_ID,
+      client_secret: process.env.GMAIL_CLIENT_SECRET,
+      refresh_token: data.refresh_token,
+      grant_type: 'refresh_token',
+    }),
+  });
+  const tokens = await tokenRes.json();
+  if (tokens.error) {
+    throw new Error(`Error refrescando token: ${tokens.error_description || tokens.error}`);
+  }
+  return tokens.access_token;
+}
+
+// Agrega un carro al Sheets como nueva fila y luego sincroniza con Supabase
+async function handleAddCar(req, res, supabase, car) {
+  try {
+    // Validar campos obligatorios
+    const requiredFields = ['estado', 'plate', 'brand', 'model', 'year', 'price', 'currency'];
+    for (const f of requiredFields) {
+      if (car[f] == null || car[f] === '') {
+        return res.status(400).json({ ok: false, error: `Campo obligatorio: ${f}` });
+      }
+    }
+
+    // Obtener access token
+    let accessToken;
+    try {
+      accessToken = await getGoogleAccessToken(supabase);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+
+    // Leer encabezados del Sheets para saber orden de columnas
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/A1:AZ1`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const metaJson = await metaRes.json();
+    if (!metaRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo leer encabezados del Sheets', detail: metaJson });
+    }
+
+    const headers = (metaJson.values?.[0] || []).map(h => (h || '').trim().toLowerCase());
+    if (headers.length === 0) {
+      return res.status(400).json({ ok: false, error: 'El Sheets no tiene encabezados en la fila 1' });
+    }
+
+    // Map campo -> valor que le corresponde al carro
+    const findHeader = (...names) => {
+      const lowerNames = names.map(n => n.toLowerCase());
+      for (const n of lowerNames) {
+        const idx = headers.findIndex(h => h === n);
+        if (idx !== -1) return idx;
+      }
+      for (const n of lowerNames) {
+        const idx = headers.findIndex(h => h.includes(n));
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    const colMap = {
+      estado: findHeader('estado'),
+      plate: findHeader('id / placa', 'id/placa', 'placa'),
+      brand: findHeader('marca'),
+      model: findHeader('modelo'),
+      year: findHeader('año', 'ano'),
+      transmission: findHeader('transmisión', 'transmision'),
+      color: findHeader('color'),
+      km: findHeader('kilometraje', 'km'),
+      fuel: findHeader('combustible'),
+      engine_cc: findHeader('motor'),
+      cylinders: findHeader('cilindros'),
+      origin: findHeader('procedencia'),
+      drivetrain: findHeader('tracción', 'traccion'),
+      passengers: findHeader('capacidad'),
+      style: findHeader('estilo'),
+      price: findHeader('precio preferencia', 'precio pref'),
+      currency: findHeader('moneda preferencia', 'moneda pref'),
+    };
+
+    // Construir la fila: array del tamaño total de headers, con los valores en su posicion
+    const row = new Array(headers.length).fill('');
+    for (const [field, idx] of Object.entries(colMap)) {
+      if (idx !== -1 && car[field] != null && car[field] !== '') {
+        row[idx] = String(car[field]);
+      }
+    }
+
+    // Enviar a Sheets: usar append para agregar al final
+    const appendRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/A:AZ:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ values: [row] }),
+      }
+    );
+    const appendJson = await appendRes.json();
+    if (!appendRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo escribir al Sheets', detail: appendJson });
+    }
+
+    // Insertar tambien en Supabase directamente para no esperar al sync
+    const supabaseRecord = {
+      estado: car.estado,
+      plate: car.plate,
+      brand: car.brand,
+      model: car.model,
+      year: parseInt(car.year) || null,
+      transmission: car.transmission || null,
+      color: car.color || null,
+      km: car.km != null ? parseInt(String(car.km).replace(/[^\d]/g, '')) : null,
+      fuel: car.fuel || null,
+      engine_cc: car.engine_cc || null,
+      cylinders: car.cylinders || null,
+      origin: car.origin || null,
+      drivetrain: car.drivetrain || null,
+      passengers: car.passengers || null,
+      style: car.style || null,
+      price: parseFloat(car.price) || null,
+      currency: (car.currency || '').toUpperCase() || null,
+    };
+    const { error: supErr } = await supabase.from('showroom_vehicles').insert(supabaseRecord);
+    if (supErr) {
+      return res.status(200).json({
+        ok: true,
+        written_to_sheets: true,
+        warning: `Escrito al Sheets pero error en Supabase: ${supErr.message}. Sincroniza manualmente.`,
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      written_to_sheets: true,
+      written_to_supabase: true,
+      updated_range: appendJson.updates?.updatedRange,
+      plate: car.plate,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 }
