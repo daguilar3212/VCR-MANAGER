@@ -384,11 +384,14 @@ async function handleAddCar(req, res, supabase, car) {
       return s;
     };
 
-    const estadoCol = colLetter(colMap.estado);
     const plateCol = colLetter(colMap.plate);
+    const modelCol = colLetter(colMap.model);
 
-    // Leer columnas estado y placa completas
-    const readRange = `Inventario!${estadoCol}2:${plateCol}1000`;
+    // Leer columnas placa Y modelo para detectar filas con carro real
+    // Modelo es texto libre (no dropdown), así que las filas vacías con fórmulas arrastradas no tienen modelo
+    const firstCol = colMap.plate < colMap.model ? colMap.plate : colMap.model;
+    const lastCol = colMap.plate < colMap.model ? colMap.model : colMap.plate;
+    const readRange = `Inventario!${colLetter(firstCol)}2:${colLetter(lastCol)}1000`;
     const readRes = await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(readRange)}?majorDimension=ROWS`,
       { headers: { 'Authorization': `Bearer ${accessToken}` } }
@@ -398,25 +401,66 @@ async function handleAddCar(req, res, supabase, car) {
       return res.status(502).json({ ok: false, error: 'No se pudo leer Sheets para buscar fin de datos', detail: readJson });
     }
 
-    // Buscar el indice de la ultima fila con datos REALES (estado y placa llenas)
-    const dataRows = readJson.values || [];
-    // columnas retornadas: 0 = estado, 1 = placa (si estadoCol < plateCol)
-    // IMPORTANTE: el orden depende de cuál columna viene primero alfabeticamente
-    const estadoIdx = colMap.estado < colMap.plate ? 0 : 1;
-    const plateIdx = colMap.estado < colMap.plate ? 1 : 0;
+    // Una fila es REAL si tiene placa Y modelo no vacios (modelo es texto libre)
+    const plateIdxInArr = colMap.plate - firstCol;
+    const modelIdxInArr = colMap.model - firstCol;
 
+    const dataRows = readJson.values || [];
     let lastRealRow = -1;
     for (let i = 0; i < dataRows.length; i++) {
-      const estadoVal = (dataRows[i][estadoIdx] || '').trim().toUpperCase();
-      const plateVal = (dataRows[i][plateIdx] || '').trim();
-      if ((estadoVal === 'DISPONIBLE' || estadoVal === 'RESERVADO') && plateVal) {
+      const row = dataRows[i] || [];
+      const plateVal = (row[plateIdxInArr] || '').trim();
+      const modelVal = (row[modelIdxInArr] || '').trim();
+      // Fila real: tiene placa y modelo (ambos con contenido)
+      if (plateVal && modelVal) {
         lastRealRow = i;
       }
     }
 
     // Fila donde escribir: lastRealRow es 0-based dentro de dataRows (que empieza en fila 2 del Sheets)
-    // Entonces fila real = lastRealRow + 2 + 1 = lastRealRow + 3
     const targetRow = lastRealRow === -1 ? 2 : lastRealRow + 3;
+
+    // Verificar que el Sheets tenga suficientes filas; si no, agregar las que faltan
+    const spreadsheetInfoRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const spreadsheetInfo = await spreadsheetInfoRes.json();
+    if (!spreadsheetInfoRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo leer info del Sheets', detail: spreadsheetInfo });
+    }
+
+    const inventarioSheet = spreadsheetInfo.sheets?.find(s => s.properties?.title === 'Inventario');
+    if (!inventarioSheet) {
+      return res.status(500).json({ ok: false, error: 'No se encontró pestaña Inventario' });
+    }
+    const sheetIdNum = inventarioSheet.properties.sheetId;
+    const currentRowCount = inventarioSheet.properties.gridProperties.rowCount;
+
+    // Si targetRow excede el tamaño de la grilla, agregar filas
+    if (targetRow > currentRowCount) {
+      const rowsToAdd = targetRow - currentRowCount + 10; // 10 de margen
+      const appendDimensionRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            requests: [{
+              appendDimension: {
+                sheetId: sheetIdNum,
+                dimension: 'ROWS',
+                length: rowsToAdd,
+              },
+            }],
+          }),
+        }
+      );
+      if (!appendDimensionRes.ok) {
+        const errDetail = await appendDimensionRes.json();
+        return res.status(502).json({ ok: false, error: 'No se pudo expandir el Sheets', detail: errDetail });
+      }
+    }
 
     // Construir la fila: array del tamaño total de headers
     const row = new Array(headers.length).fill('');
