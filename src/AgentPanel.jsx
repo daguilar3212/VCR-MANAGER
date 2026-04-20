@@ -433,6 +433,7 @@ export default function AgentPanel() {
   const [showroomSort, setShowroomSort] = useState("precio_desc");
   const [showroomPicked, setShowroomPicked] = useState(null);
   const [cotState, setCotState] = useState({});
+  const [showroomVehicles, setShowroomVehicles] = useState([]);
   const [notif, setNotif] = useState(null); // { type, message } para toast
   const [searchingClient, setSearchingClient] = useState(false);
   const [showSignatureModal, setShowSignatureModal] = useState(false);
@@ -524,7 +525,7 @@ export default function AgentPanel() {
 
   async function loadAll() {
     setLoading(true);
-    await Promise.all([loadVehicles(), loadSales(), loadAgents()]);
+    await Promise.all([loadVehicles(), loadSales(), loadAgents(), loadShowroomVehicles()]);
     setLoading(false);
   }
 
@@ -535,6 +536,15 @@ export default function AgentPanel() {
       .order('created_at', { ascending: false });
     if (error) { console.error('Error loading vehicles:', error); return; }
     setVehicles(data || []);
+  }
+
+  async function loadShowroomVehicles() {
+    const { data, error } = await supabase
+      .from('showroom_vehicles')
+      .select('*')
+      .order('estado, brand, model');
+    if (error) { console.error('Error loading showroom:', error); return; }
+    setShowroomVehicles(data || []);
   }
 
   async function loadSales() {
@@ -1012,7 +1022,7 @@ export default function AgentPanel() {
         />}
 
         {tab === "showroom" && <ShowroomView
-          vehicles={vehicles.filter(v => v.status === "disponible")}
+          vehicles={showroomVehicles}
           q={showroomQ}
           setQ={setShowroomQ}
           sort={showroomSort}
@@ -1021,7 +1031,19 @@ export default function AgentPanel() {
           setPickedId={setShowroomPicked}
           cotState={cotState}
           setCotState={setCotState}
-          onSellVehicle={openNewSaleForm}
+          onSellVehicle={(srv) => {
+            // Adaptar showroom_vehicles al formato que espera openNewSaleForm
+            const isCRC = srv.currency === "CRC";
+            const vehicleAdapted = {
+              ...srv,
+              id: null, // no tiene id en tabla vehicles
+              price_usd: isCRC ? null : srv.price,
+              price_crc: isCRC ? srv.price : null,
+              price_currency: srv.currency,
+              engine: srv.engine_cc,
+            };
+            openNewSaleForm(vehicleAdapted);
+          }}
         />}
 
         {tab === "ventas" && view === "list" && <VentasListView
@@ -1160,15 +1182,10 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
   };
 
   const getPrice = (v) => {
-    const usdVal = parseFloat(v.price_usd) || 0;
-    const crcVal = parseFloat(v.price_crc) || 0;
-    const explicitCur = v.price_currency;
-    if (explicitCur === "USD" && usdVal > 0) return { val: usdVal, cur: "USD" };
-    if (explicitCur === "CRC" && crcVal > 0) return { val: crcVal, cur: "CRC" };
-    const val = usdVal || crcVal;
-    if (val === 0) return { val: 0, cur: "USD" };
-    if (val > 100000) return { val, cur: "CRC" };
-    return { val, cur: "USD" };
+    // showroom_vehicles tiene 'price' y 'currency' directos
+    const val = parseFloat(v.price) || 0;
+    const cur = v.currency || (val > 100000 ? "CRC" : "USD");
+    return { val, cur };
   };
 
   // Vista detalle (carro seleccionado)
@@ -1230,31 +1247,38 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
           <table style={S.table}>
             <thead>
               <tr>
+                <th style={S.th}>Estado</th>
                 <th style={S.th}>Placa</th>
                 <th style={S.th}>Vehículo</th>
                 <th style={S.th}>Año</th>
-                <th style={S.th}>CC</th>
+                <th style={S.th}>Estilo</th>
                 <th style={S.th}>Km</th>
                 <th style={S.th}>Color</th>
-                <th style={S.th}>Combustible</th>
+                <th style={S.th}>Combust.</th>
                 <th style={S.th}>Precio</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map(v => {
                 const pr = getPrice(v);
+                const isDisp = v.estado === "DISPONIBLE";
                 return (
                   <tr
                     key={v.id}
                     onClick={() => setPickedId(v.id)}
-                    style={{ cursor: "pointer", transition: "background 0.15s" }}
+                    style={{ cursor: "pointer", transition: "background 0.15s", opacity: isDisp ? 1 : 0.7 }}
                     onMouseEnter={e => e.currentTarget.style.background = "#f4f4f5"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                   >
+                    <td style={S.td}>
+                      <span style={S.badge(isDisp ? "#10b981" : "#f59e0b")}>
+                        {isDisp ? "Disponible" : "Reservado"}
+                      </span>
+                    </td>
                     <td style={S.td}><strong style={{ color: "#4f8cff" }}>{v.plate || "-"}</strong></td>
                     <td style={S.td}>{v.brand} {v.model}</td>
                     <td style={S.td}>{v.year || "-"}</td>
-                    <td style={S.td}>{v.engine_cc || "-"}</td>
+                    <td style={S.td}>{v.style || "-"}</td>
                     <td style={S.td}>{v.km ? Number(v.km).toLocaleString("es-CR") : "-"}</td>
                     <td style={S.td}>{v.color || "-"}</td>
                     <td style={S.td}>{v.fuel || "-"}</td>
@@ -1364,18 +1388,34 @@ function ShowroomDetailView({ v, cotState, setCotState, onBack, onSellVehicle, f
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.75rem", marginBottom: "1rem" }}>
           {v.year && <div><div style={S.detailLabel}>AÑO</div><div style={S.detailValue}>{v.year}</div></div>}
-          {v.engine_cc && <div><div style={S.detailLabel}>CILINDRADA</div><div style={S.detailValue}>{v.engine_cc} CC</div></div>}
+          {v.engine_cc && <div><div style={S.detailLabel}>MOTOR</div><div style={S.detailValue}>{v.engine_cc} CC</div></div>}
+          {v.cylinders && <div><div style={S.detailLabel}>CILINDROS</div><div style={S.detailValue}>{v.cylinders}</div></div>}
+          {v.transmission && <div><div style={S.detailLabel}>TRANSMISIÓN</div><div style={S.detailValue}>{v.transmission}</div></div>}
           {v.drivetrain && <div><div style={S.detailLabel}>TRACCIÓN</div><div style={S.detailValue}>{v.drivetrain}</div></div>}
           {v.fuel && <div><div style={S.detailLabel}>COMBUSTIBLE</div><div style={S.detailValue}>{v.fuel}</div></div>}
           {v.km != null && <div><div style={S.detailLabel}>KILOMETRAJE</div><div style={S.detailValue}>{Number(v.km).toLocaleString("es-CR")} km</div></div>}
           {v.color && <div><div style={S.detailLabel}>COLOR</div><div style={S.detailValue}>{v.color}</div></div>}
           {v.passengers && <div><div style={S.detailLabel}>PASAJEROS</div><div style={S.detailValue}>{v.passengers}</div></div>}
           {v.style && <div><div style={S.detailLabel}>ESTILO</div><div style={S.detailValue}>{v.style}</div></div>}
-          {v.chassis && <div style={{ gridColumn: "1 / -1" }}><div style={S.detailLabel}>CHASIS</div><div style={{ ...S.detailValue, fontSize: "0.85rem", fontFamily: "monospace" }}>{v.chassis}</div></div>}
+          {v.origin && <div><div style={S.detailLabel}>PROCEDENCIA</div><div style={S.detailValue}>{v.origin}</div></div>}
         </div>
 
-        <div style={{ padding: "1rem 1.25rem", background: "#10b98118", border: "1px solid #10b981", borderRadius: 10, fontSize: "1.5rem", fontWeight: 800, color: "#10b981", marginBottom: "1rem" }}>
-          💰 Precio: {fmt0(precioOrig.val, precioOrig.cur)}
+        {v.photos && (
+          <div style={{ marginBottom: "1rem" }}>
+            <div style={S.detailLabel}>FOTOS</div>
+            <div style={{ display: "flex", gap: "0.5rem", overflowX: "auto", padding: "0.35rem 0" }}>
+              {v.photos.split(',').slice(0, 10).map((url, i) => (
+                <a key={i} href={url.trim()} target="_blank" rel="noreferrer" style={{ flexShrink: 0 }}>
+                  <img src={url.trim()} alt={`Foto ${i + 1}`} style={{ height: 130, borderRadius: 8, border: "1px solid #e4e4e7", cursor: "pointer" }} />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ padding: "1rem 1.25rem", background: "#10b98118", border: "1px solid #10b981", borderRadius: 10, fontSize: "1.5rem", fontWeight: 800, color: "#10b981", marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
+          <div>💰 Precio: {fmt0(precioOrig.val, precioOrig.cur)}</div>
+          {v.web_url && <a href={v.web_url} target="_blank" rel="noreferrer" style={{ ...S.btnGhost, fontSize: "0.85rem", textDecoration: "none" }}>🌐 Ver en web</a>}
         </div>
 
         <button onClick={() => onSellVehicle(v)} style={S.btn}>Iniciar plan de venta</button>
