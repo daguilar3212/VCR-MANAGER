@@ -1879,7 +1879,6 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
 
           <div style="margin-bottom:16px;">
             <div style="font-size:28px;font-weight:800;color:#111;line-height:1.2;">${v.brand} ${v.model}</div>
-            <div style="font-size:16px;color:#666;font-weight:600;margin-top:4px;">Placa ${v.plate}</div>
           </div>
 
           <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;">
