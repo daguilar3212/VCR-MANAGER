@@ -448,6 +448,7 @@ export default function AgentPanel() {
   const [cotState, setCotState] = useState({});
   const [fotoElegida, setFotoElegida] = useState(null);
   const [showAddCarModal, setShowAddCarModal] = useState(false);
+  const [editingPlate, setEditingPlate] = useState(null);
   const [newCar, setNewCar] = useState({
     estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
     transmission: '', color: '', km: '', fuel: '', engine_cc: '',
@@ -601,6 +602,122 @@ export default function AgentPanel() {
       alert(`❌ Error de red: ${e.message}`);
     } finally {
       setAddingCar(false);
+    }
+  }
+
+  async function editCarShowroom(carData) {
+    setAddingCar(true);
+    try {
+      const res = await fetch('/api/sync-showroom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'edit', car: carData }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        alert(`✅ Carro ${carData.plate} actualizado`);
+        setShowAddCarModal(false);
+        setEditingPlate(null);
+        setNewCar({
+          estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
+          transmission: '', color: '', km: '', fuel: '', engine_cc: '',
+          cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
+          price: '', currency: 'USD'
+        });
+        await loadShowroomVehicles();
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo editar'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    } finally {
+      setAddingCar(false);
+    }
+  }
+
+  async function deleteCarShowroom(plate, brand, model) {
+    const confirm1 = window.confirm(`¿Seguro que querés borrar ${brand} ${model} (${plate}) del Showroom y del Sheets?`);
+    if (!confirm1) return;
+    try {
+      const res = await fetch('/api/sync-showroom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', plate }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        alert(`✅ ${plate} borrado`);
+        await loadShowroomVehicles();
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo borrar'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    }
+  }
+
+  function openEditCarModal(v) {
+    setEditingPlate(v.plate);
+    setNewCar({
+      estado: v.estado || 'DISPONIBLE',
+      plate: v.plate || '',
+      brand: v.brand || '',
+      model: v.model || '',
+      year: v.year || '',
+      transmission: v.transmission || '',
+      color: v.color || '',
+      km: v.km || '',
+      fuel: v.fuel || '',
+      engine_cc: v.engine_cc || '',
+      cylinders: v.cylinders || '',
+      origin: v.origin || '',
+      drivetrain: v.drivetrain || '',
+      passengers: v.passengers || '',
+      style: v.style || '',
+      price: v.price || '',
+      currency: v.currency || 'USD'
+    });
+    setShowAddCarModal(true);
+  }
+
+  async function marcarVendido(v) {
+    const confirm1 = window.confirm(`¿Marcar ${v.brand} ${v.model} (${v.plate}) como VENDIDO?\n\nVa a desaparecer del Showroom y se marcará como VENDIDO en el Sheets.`);
+    if (!confirm1) return;
+    try {
+      const carUpdated = {
+        estado: 'VENDIDO',
+        plate: v.plate,
+        brand: v.brand,
+        model: v.model,
+        year: v.year,
+        transmission: v.transmission,
+        color: v.color,
+        km: v.km,
+        fuel: v.fuel,
+        engine_cc: v.engine_cc,
+        cylinders: v.cylinders,
+        origin: v.origin,
+        drivetrain: v.drivetrain,
+        passengers: v.passengers,
+        style: v.style,
+        price: v.price,
+        currency: v.currency
+      };
+      const res = await fetch('/api/sync-showroom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'edit', car: carUpdated }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        await supabase.from('showroom_vehicles').delete().eq('plate', v.plate);
+        alert(`✅ ${v.plate} marcado como VENDIDO`);
+        await loadShowroomVehicles();
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo marcar'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
     }
   }
 
@@ -1096,6 +1213,12 @@ export default function AgentPanel() {
           setNewCar={setNewCar}
           addingCar={addingCar}
           onAddCar={addCarToShowroom}
+          editingPlate={editingPlate}
+          setEditingPlate={setEditingPlate}
+          onEditCar={editCarShowroom}
+          onOpenEditModal={openEditCarModal}
+          onDeleteCar={deleteCarShowroom}
+          onMarcarVendido={marcarVendido}
           onSellVehicle={(srv) => {
             // Adaptar showroom_vehicles al formato que espera openNewSaleForm
             const isCRC = srv.currency === "CRC";
@@ -1240,7 +1363,7 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM (Inventario comercial con cotizador)
 // ============================================================
-function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, onSellVehicle }) {
+function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, editingPlate, setEditingPlate, onEditCar, onOpenEditModal, onDeleteCar, onMarcarVendido, onSellVehicle }) {
   const fmt0 = (n, c) => {
     if (n == null || isNaN(n)) return "-";
     return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -1328,6 +1451,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                 <th style={S.th}>Color</th>
                 <th style={S.th}>Combust.</th>
                 <th style={S.th}>Precio</th>
+                <th style={S.th}>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -1337,24 +1461,28 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                 return (
                   <tr
                     key={v.id}
-                    onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}
-                    style={{ cursor: "pointer", transition: "background 0.15s", opacity: isDisp ? 1 : 0.7 }}
+                    style={{ transition: "background 0.15s", opacity: isDisp ? 1 : 0.7 }}
                     onMouseEnter={e => e.currentTarget.style.background = "#f4f4f5"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                   >
-                    <td style={S.td}>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>
                       <span style={S.badge(isDisp ? "#10b981" : "#f59e0b")}>
                         {isDisp ? "Disponible" : "Reservado"}
                       </span>
                     </td>
-                    <td style={S.td}><strong style={{ color: "#4f8cff" }}>{v.plate || "-"}</strong></td>
-                    <td style={S.td}>{v.brand} {v.model}</td>
-                    <td style={S.td}>{v.year || "-"}</td>
-                    <td style={S.td}>{v.style || "-"}</td>
-                    <td style={S.td}>{v.km ? Number(v.km).toLocaleString("es-CR") : "-"}</td>
-                    <td style={S.td}>{v.color || "-"}</td>
-                    <td style={S.td}>{v.fuel || "-"}</td>
-                    <td style={S.td}><strong style={{ color: "#10b981" }}>{fmt0(pr.val, pr.cur)}</strong></td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}><strong style={{ color: "#4f8cff" }}>{v.plate || "-"}</strong></td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.brand} {v.model}</td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.year || "-"}</td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.style || "-"}</td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.km ? Number(v.km).toLocaleString("es-CR") : "-"}</td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.color || "-"}</td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.fuel || "-"}</td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}><strong style={{ color: "#10b981" }}>{fmt0(pr.val, pr.cur)}</strong></td>
+                    <td style={{ ...S.td, whiteSpace: "nowrap", textAlign: "center" }}>
+                      <button onClick={(e) => { e.stopPropagation(); onMarcarVendido(v); }} style={{ background: "#10b981", border: "none", color: "#fff", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11, marginRight: 4 }} title="Marcar como vendido">💰</button>
+                      <button onClick={(e) => { e.stopPropagation(); onOpenEditModal(v); }} style={{ background: "#4f8cff", border: "none", color: "#fff", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11, marginRight: 4 }} title="Editar">✏️</button>
+                      <button onClick={(e) => { e.stopPropagation(); onDeleteCar(v.plate, v.brand, v.model); }} style={{ background: "#ef4444", border: "none", color: "#fff", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11 }} title="Borrar">🗑️</button>
+                    </td>
                   </tr>
                 );
               })}
@@ -1364,15 +1492,17 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
       </div>
 
       {showAddCarModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }} onClick={() => !addingCar && setShowAddCarModal(false)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }} onClick={() => { if (!addingCar) { setShowAddCarModal(false); setEditingPlate(null); } }}>
           <div style={{ background: "#fff", borderRadius: 12, padding: "1.5rem", maxWidth: 720, width: "100%", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-              <h2 style={{ fontSize: "1.2rem", fontWeight: 800, margin: 0, color: "#111" }}>➕ Agregar carro al Showroom</h2>
-              <button onClick={() => !addingCar && setShowAddCarModal(false)} style={{ background: "transparent", border: "none", color: "#71717a", fontSize: "1.5rem", cursor: "pointer" }}>×</button>
+              <h2 style={{ fontSize: "1.2rem", fontWeight: 800, margin: 0, color: "#111" }}>{editingPlate ? `✏️ Editar ${editingPlate}` : '➕ Agregar carro al Showroom'}</h2>
+              <button onClick={() => { if (!addingCar) { setShowAddCarModal(false); setEditingPlate(null); } }} style={{ background: "transparent", border: "none", color: "#71717a", fontSize: "1.5rem", cursor: "pointer" }}>×</button>
             </div>
 
             <div style={{ fontSize: "0.8rem", color: "#71717a", marginBottom: "1rem", padding: "0.5rem 0.75rem", background: "#f4f4f5", borderRadius: 6 }}>
-              Este carro se agregará al final del Google Sheets. Las fotos las llena el admin manualmente después.
+              {editingPlate
+                ? 'Los cambios se guardarán en el Sheets (misma fila del carro) y en el Showroom.'
+                : 'Este carro se agregará al Sheets y al Showroom. Las fotos las llena el admin manualmente después.'}
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.6rem" }}>
@@ -1381,6 +1511,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                 <select value={newCar.estado} onChange={e => setNewCar({ ...newCar, estado: e.target.value })} style={S.select}>
                   <option value="DISPONIBLE">DISPONIBLE</option>
                   <option value="RESERVADO">RESERVADO</option>
+                  <option value="VENDIDO">VENDIDO</option>
                 </select>
               </div>
               <div>
@@ -1414,7 +1545,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                 <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>TRANSMISIÓN</label>
                 <select value={newCar.transmission} onChange={e => setNewCar({ ...newCar, transmission: e.target.value })} style={S.select}>
                   <option value="">-</option>
-                  <option value="Automático">Automático</option>
+                  <option value="Automática">Automática</option>
                   <option value="Manual">Manual</option>
                   <option value="CVT">CVT</option>
                 </select>
@@ -1481,9 +1612,15 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
             </div>
 
             <div style={{ display: "flex", gap: "0.5rem", marginTop: "1.25rem", justifyContent: "flex-end" }}>
-              <button onClick={() => !addingCar && setShowAddCarModal(false)} style={S.btnGhost} disabled={addingCar}>Cancelar</button>
-              <button onClick={onAddCar} disabled={addingCar} style={{ ...S.btn, background: addingCar ? "#10b98177" : "#10b981" }}>
-                {addingCar ? "⏳ Agregando..." : "✅ Agregar al Sheets"}
+              <button onClick={() => { if (!addingCar) { setShowAddCarModal(false); setEditingPlate(null); } }} style={S.btnGhost} disabled={addingCar}>Cancelar</button>
+              <button
+                onClick={() => editingPlate ? onEditCar(newCar) : onAddCar()}
+                disabled={addingCar}
+                style={{ ...S.btn, background: addingCar ? "#10b98177" : "#10b981" }}
+              >
+                {addingCar
+                  ? (editingPlate ? "⏳ Guardando..." : "⏳ Agregando...")
+                  : (editingPlate ? "💾 Guardar cambios" : "✅ Agregar al Sheets")}
               </button>
             </div>
           </div>
