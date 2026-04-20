@@ -4702,7 +4702,10 @@ export default function App() {
 
     if (srPicked) {
       const v = all.find(c => c.id === srPicked);
-      if (!v) { setShowroomPicked(null); return null; }
+      if (!v) {
+        // No actualizamos state durante el render (anti-patron). Mostramos mensaje.
+        return <div style={{padding:20,color:"#8b8fa4"}}>Vehículo no encontrado. <button onClick={() => setShowroomPicked(null)} style={S.btn}>Volver</button></div>;
+      }
       return renderShowroomDetail(v);
     }
 
@@ -4776,7 +4779,7 @@ export default function App() {
                   return (
                     <tr
                       key={v.id}
-                      onClick={() => setShowroomPicked(v.id)}
+                      onClick={() => { setCotState({}); setShowroomPicked(v.id); }}
                       style={{cursor:"pointer",borderBottom:"1px solid #2a2d3d",transition:"background 0.15s",opacity: isDisp ? 1 : 0.7}}
                       onMouseEnter={e => e.currentTarget.style.background = "#1f2230"}
                       onMouseLeave={e => e.currentTarget.style.background = "transparent"}
@@ -4807,11 +4810,32 @@ export default function App() {
 
   // ===== SHOWROOM - FICHA + COTIZADOR =====
   const renderShowroomDetail = (v) => {
+    if (!v) return <div style={{padding:20}}>Cargando...</div>;
     const precioOrig = { val: parseFloat(v.price) || 0, cur: v.currency || "USD" };
-    const bancosDisp = bancosDispAnio(v.year || 2020);
+    const anioNum = parseInt(v.year) || 2020;
+    const bancosDisp = bancosDispAnio(anioNum);
 
     // Tomar state de cotizador o usar defaults
-    const cotBanco = cotState.banco || (bancosDisp[0] || 'BAC');
+    // Si el banco del state NO esta disponible para este año, usar el primer disponible
+    const cotBancoState = cotState.banco;
+    const cotBanco = (cotBancoState && bancosDisp.includes(cotBancoState))
+      ? cotBancoState
+      : (bancosDisp[0] || null);
+
+    if (!cotBanco) {
+      return (
+        <div>
+          <button onClick={() => { setShowroomPicked(null); setCotState({}); }} style={{...S.btnGhost,marginBottom:16}}>← Volver al Showroom</button>
+          <div style={{...S.card,padding:24}}>
+            <h1 style={{fontSize:22,fontWeight:800}}>{v.brand} {v.model} {v.year}</h1>
+            <div style={{padding:20,background:"#f59e0b22",borderRadius:10,color:"#f59e0b",marginTop:20}}>
+              Año sin opciones de financiamiento configuradas ({v.year || "sin año"})
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     const cotMoneda = cotState.moneda || precioOrig.cur;
     const cotTC = cotState.tc || 500;
 
@@ -4832,27 +4856,31 @@ export default function App() {
 
     // Prima default al minimo del banco
     let primaMin = 0;
-    if (cotBanco === 'BAC') primaMin = primaMinBAC(v.year) || 0.25;
-    if (cotBanco === 'RAPIMAX') primaMin = primaMinRM(v.year) || 0.25;
+    if (cotBanco === 'BAC') primaMin = primaMinBAC(anioNum) || 0.25;
+    if (cotBanco === 'RAPIMAX') primaMin = primaMinRM(anioNum) || 0.25;
     const primaPct = cotState.primaPct != null ? cotState.primaPct : primaMin;
 
     // Plazo default al maximo del banco
     let plazoMax = 96;
-    if (cotBanco === 'BAC') plazoMax = plazoMaxBAC(v.year) || 96;
-    if (cotBanco === 'RAPIMAX') plazoMax = plazoMaxRM(v.year) || 96;
+    if (cotBanco === 'BAC') plazoMax = plazoMaxBAC(anioNum) || 96;
+    if (cotBanco === 'RAPIMAX') plazoMax = plazoMaxRM(anioNum) || 96;
     const plazo = cotState.plazo != null ? cotState.plazo : plazoMax;
 
     const esPickup = cotState.esPickup != null ? cotState.esPickup : (v.style || '').toUpperCase().includes("PICK");
     const esAsalariado = cotState.esAsalariado != null ? cotState.esAsalariado : true;
 
-    // Calcular cotizacion segun banco
+    // Calcular cotizacion segun banco (envuelto en try para no romper la UI)
     let cot = null;
-    if (cotBanco === 'BAC') {
-      cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: v.year, plazo, primaPct, esPickup, esAsalariado });
-    } else if (cotBanco === 'RAPIMAX') {
-      cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: v.year, plazo, primaPct });
-    } else if (cotBanco === 'CP') {
-      cot = cotizarCP({ valorAuto: precioOrig.val, traspaso: precioOrig.val * 0.035, monedaAuto: precioOrig.cur, tipoCambio: cotTC });
+    try {
+      if (cotBanco === 'BAC') {
+        cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct, esPickup, esAsalariado });
+      } else if (cotBanco === 'RAPIMAX') {
+        cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct });
+      } else if (cotBanco === 'CP') {
+        cot = cotizarCP({ valorAuto: precioOrig.val, traspaso: precioOrig.val * 0.035, monedaAuto: precioOrig.cur, tipoCambio: cotTC });
+      }
+    } catch (e) {
+      cot = { error: 'Error calculando cotización: ' + e.message };
     }
 
     const updCot = (patch) => setCotState(prev => ({ ...prev, ...patch }));
