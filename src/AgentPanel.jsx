@@ -1434,8 +1434,28 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
       }
 
       // Usar foto elegida por el usuario; si no, la primera
-      const fotoFicha = fotoElegida || (v.photos ? v.photos.split(',')[0].trim() : '');
+      const fotoFichaUrl = fotoElegida || (v.photos ? v.photos.split(',')[0].trim() : '');
       const precioTxt = fmt0(precioOrig.val, precioOrig.cur);
+
+      // Convertir URL a base64 para evitar CORS en html2canvas
+      const urlToBase64 = async (url) => {
+        if (!url) return '';
+        try {
+          const res = await fetch(url, { mode: 'cors' });
+          const blob = await res.blob();
+          return await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch (err) {
+          console.warn('No se pudo cargar imagen:', url, err);
+          return '';
+        }
+      };
+
+      const fotoFicha = fotoFichaUrl ? await urlToBase64(fotoFichaUrl) : '';
 
       let cotInfo = '';
       if (cot && !cot.error) {
@@ -1566,11 +1586,6 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
         a.download = `${v.brand}_${v.model}_${v.plate}.png`.replace(/\s+/g, '_');
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-        setTimeout(() => {
-          const msg = encodeURIComponent(`🚗 ${v.brand} ${v.model} ${v.year} - ${v.plate}\n\n📎 Ficha adjunta (revisá tus descargas)`);
-          window.open(`https://wa.me/?text=${msg}`, '_blank');
-        }, 500);
       }, 'image/png');
     } catch (e) {
       alert('Error generando ficha: ' + e.message);
@@ -1603,7 +1618,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
           <div style={{ marginBottom: "1rem" }}>
             <div style={S.detailLabel}>FOTOS — click para elegir cuál va en la ficha de WhatsApp</div>
             <div style={{ display: "flex", gap: "0.5rem", overflowX: "auto", padding: "0.35rem 0" }}>
-              {v.photos.split(',').slice(0, 10).map((url, i) => {
+              {v.photos.split(',').map((url, i) => {
                 const urlClean = url.trim();
                 const isSelected = fotoElegida === urlClean;
                 return (
@@ -1812,7 +1827,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
                 )}
 
                 <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
-                  <button onClick={descargarFicha} style={S.btn}>🖼️ Ficha para WhatsApp</button>
+                  <button onClick={descargarFicha} style={S.btn}>🖼️ Descargar Ficha</button>
                   <button onClick={copyToClipboard} style={S.btnGhost}>📋 Copiar texto</button>
                   <button onClick={shareWhatsApp} style={S.btnGhost}>📱 Solo texto WhatsApp</button>
                 </div>
