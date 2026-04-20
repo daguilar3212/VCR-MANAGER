@@ -125,28 +125,75 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'El Sheets esta vacio o sin datos' });
     }
 
-    // 2. La fila 0 es encabezado, fila 1 es blanco en tu sheet
-    // Los carros empiezan en la fila 2 (index 2 en el array 0-based)
-    // Estructura (segun tu sheet):
-    // [0] Estado, [1] ID/Placa, [2] Marca, [3] Modelo, [4] Año, [5] (vacia),
-    // [6] Transmision, [7] Color, [8] Kilometraje, [9] Combustible, [10] Motor,
-    // [11] Cilindros, [12] Procedencia, [13] Traccion, [14] Capacidad, [15] Estilo,
-    // [16] Precio preferencia, [17] Moneda preferencia,
-    // [18] Precio USD calc, [19] Precio CRC calc, ...
-    // [26] Fotos (vehiculosdecr), [27] FOTOS LOVABLE
+    // 2. Usar encabezados para mapear dinamicamente (robusto ante columnas vacias)
+    const headers = rows[0].map(h => (h || '').trim().toLowerCase());
+
+    // Busca columna: primero match exacto, luego includes
+    const findCol = (...names) => {
+      const lowerNames = names.map(n => n.toLowerCase());
+      // Match exacto primero
+      for (const n of lowerNames) {
+        const idx = headers.findIndex(h => h === n);
+        if (idx !== -1) return idx;
+      }
+      // Luego includes
+      for (const n of lowerNames) {
+        const idx = headers.findIndex(h => h.includes(n));
+        if (idx !== -1) return idx;
+      }
+      return -1;
+    };
+
+    // IMPORTANTE: photos antes que webUrl, para que photos agarre "Fotos Lovable" y
+    // webUrl agarre la otra "Fotos" (vehiculosdecr)
+    const photosIdx = findCol('fotos lovable', 'lovable');
+    const col = {
+      estado: findCol('estado'),
+      plate: findCol('id / placa', 'id/placa', 'placa'),
+      brand: findCol('marca'),
+      model: findCol('modelo'),
+      year: findCol('año', 'ano'),
+      transmission: findCol('transmisión', 'transmision'),
+      color: findCol('color'),
+      km: findCol('kilometraje', 'km'),
+      fuel: findCol('combustible'),
+      engine: findCol('motor'),
+      cylinders: findCol('cilindros'),
+      origin: findCol('procedencia'),
+      drivetrain: findCol('traccion', 'tracción'),
+      passengers: findCol('capacidad'),
+      style: findCol('estilo'),
+      price: findCol('precio preferencia', 'precio pref'),
+      currency: findCol('moneda preferencia', 'moneda pref'),
+      photos: photosIdx,
+      // webUrl: primera columna llamada solo "fotos" que NO sea la de lovable
+      webUrl: headers.findIndex((h, i) => i !== photosIdx && h === 'fotos'),
+    };
+
+    // Validar columnas criticas
+    if (col.plate === -1 || col.brand === -1 || col.price === -1) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Encabezados no encontrados en el Sheets',
+        detected_headers: headers,
+        required: ['ID / Placa', 'Marca', 'Precio preferencia']
+      });
+    }
 
     const records = [];
     const errors = [];
     let skipped = 0;
 
+    const getCell = (row, idx) => idx >= 0 && idx < row.length ? row[idx] : '';
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       if (!row || row.length < 3) { skipped++; continue; }
 
-      const estado = (row[0] || '').trim().toUpperCase();
-      const plate = (row[1] || '').trim();
-      const brand = (row[2] || '').trim();
-      const model = (row[3] || '').trim();
+      const estado = (getCell(row, col.estado) || '').trim().toUpperCase();
+      const plate = (getCell(row, col.plate) || '').trim();
+      const brand = (getCell(row, col.brand) || '').trim();
+      const model = (getCell(row, col.model) || '').trim();
 
       // Saltar filas sin datos (plate vacio o sin marca)
       if (!plate || !brand) { skipped++; continue; }
@@ -160,21 +207,21 @@ export default async function handler(req, res) {
           plate,
           brand,
           model,
-          year: parseInt((row[4] || '').trim()) || null,
-          transmission: (row[6] || '').trim() || null,
-          color: (row[7] || '').trim() || null,
-          km: parseInt2(row[8]),
-          fuel: (row[9] || '').trim() || null,
-          engine_cc: (row[10] || '').trim() || null,
-          cylinders: (row[11] || '').trim() || null,
-          origin: (row[12] || '').trim() || null,
-          drivetrain: (row[13] || '').trim() || null,
-          passengers: (row[14] || '').trim() || null,
-          style: (row[15] || '').trim() || null,
-          price: parseNumber(row[16]),
-          currency: (row[17] || '').trim().toUpperCase() || null,
-          web_url: (row[26] || '').trim() || null,
-          photos: processPhotos(row[27]),
+          year: parseInt((getCell(row, col.year) || '').trim()) || null,
+          transmission: (getCell(row, col.transmission) || '').trim() || null,
+          color: (getCell(row, col.color) || '').trim() || null,
+          km: parseInt2(getCell(row, col.km)),
+          fuel: (getCell(row, col.fuel) || '').trim() || null,
+          engine_cc: (getCell(row, col.engine) || '').trim() || null,
+          cylinders: (getCell(row, col.cylinders) || '').trim() || null,
+          origin: (getCell(row, col.origin) || '').trim() || null,
+          drivetrain: (getCell(row, col.drivetrain) || '').trim() || null,
+          passengers: (getCell(row, col.passengers) || '').trim() || null,
+          style: (getCell(row, col.style) || '').trim() || null,
+          price: parseNumber(getCell(row, col.price)),
+          currency: (getCell(row, col.currency) || '').trim().toUpperCase() || null,
+          web_url: (getCell(row, col.webUrl) || '').trim() || null,
+          photos: processPhotos(getCell(row, col.photos)),
         };
         records.push(record);
       } catch (e) {
@@ -207,6 +254,9 @@ export default async function handler(req, res) {
       synced: inserted?.length || records.length,
       skipped,
       errors,
+      detected_columns: Object.fromEntries(
+        Object.entries(col).map(([k, v]) => [k, v === -1 ? 'NO ENCONTRADA' : `col ${v} (${headers[v] || ''})`])
+      ),
       timestamp: new Date().toISOString(),
     });
 
