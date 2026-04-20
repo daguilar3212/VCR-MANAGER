@@ -107,10 +107,16 @@ export default async function handler(req, res) {
 
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  // Detectar accion: agregar carro al Sheets (si body trae action: 'add')
+  // Detectar accion: agregar/editar/borrar carro al Sheets
   const body = req.body || {};
   if (body.action === 'add' && body.car) {
     return await handleAddCar(req, res, supabase, body.car);
+  }
+  if (body.action === 'edit' && body.car) {
+    return await handleEditCar(req, res, supabase, body.car);
+  }
+  if (body.action === 'delete' && body.plate) {
+    return await handleDeleteCar(req, res, supabase, body.plate);
   }
 
   // Caso default: sync desde Sheets
@@ -332,7 +338,7 @@ async function handleAddCar(req, res, supabase, car) {
       return res.status(400).json({ ok: false, error: 'El Sheets no tiene encabezados en la fila 1' });
     }
 
-    // Map campo -> valor que le corresponde al carro
+    // Encontrar indices columna estado y placa
     const findHeader = (...names) => {
       const lowerNames = names.map(n => n.toLowerCase());
       for (const n of lowerNames) {
@@ -366,7 +372,53 @@ async function handleAddCar(req, res, supabase, car) {
       currency: findHeader('moneda preferencia', 'moneda pref'),
     };
 
-    // Construir la fila: array del tamaño total de headers, con los valores en su posicion
+    // Leer columna estado y placa para encontrar la ultima fila con carro real
+    // Usamos pestaña Inventario explicitamente para evitar ambiguedades
+    const colLetter = (idx) => {
+      let s = '';
+      let n = idx;
+      while (n >= 0) {
+        s = String.fromCharCode(65 + (n % 26)) + s;
+        n = Math.floor(n / 26) - 1;
+      }
+      return s;
+    };
+
+    const estadoCol = colLetter(colMap.estado);
+    const plateCol = colLetter(colMap.plate);
+
+    // Leer columnas estado y placa completas
+    const readRange = `Inventario!${estadoCol}2:${plateCol}1000`;
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(readRange)}?majorDimension=ROWS`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const readJson = await readRes.json();
+    if (!readRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo leer Sheets para buscar fin de datos', detail: readJson });
+    }
+
+    // Buscar el indice de la ultima fila con datos REALES (estado y placa llenas)
+    const dataRows = readJson.values || [];
+    // columnas retornadas: 0 = estado, 1 = placa (si estadoCol < plateCol)
+    // IMPORTANTE: el orden depende de cuál columna viene primero alfabeticamente
+    const estadoIdx = colMap.estado < colMap.plate ? 0 : 1;
+    const plateIdx = colMap.estado < colMap.plate ? 1 : 0;
+
+    let lastRealRow = -1;
+    for (let i = 0; i < dataRows.length; i++) {
+      const estadoVal = (dataRows[i][estadoIdx] || '').trim().toUpperCase();
+      const plateVal = (dataRows[i][plateIdx] || '').trim();
+      if ((estadoVal === 'DISPONIBLE' || estadoVal === 'RESERVADO') && plateVal) {
+        lastRealRow = i;
+      }
+    }
+
+    // Fila donde escribir: lastRealRow es 0-based dentro de dataRows (que empieza en fila 2 del Sheets)
+    // Entonces fila real = lastRealRow + 2 + 1 = lastRealRow + 3
+    const targetRow = lastRealRow === -1 ? 2 : lastRealRow + 3;
+
+    // Construir la fila: array del tamaño total de headers
     const row = new Array(headers.length).fill('');
     for (const [field, idx] of Object.entries(colMap)) {
       if (idx !== -1 && car[field] != null && car[field] !== '') {
@@ -374,11 +426,12 @@ async function handleAddCar(req, res, supabase, car) {
       }
     }
 
-    // Enviar a Sheets: usar append para agregar al final
-    const appendRes = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/A:AZ:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    // Escribir con UPDATE en la fila exacta (no append)
+    const writeRange = `Inventario!A${targetRow}:${colLetter(headers.length - 1)}${targetRow}`;
+    const writeRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(writeRange)}?valueInputOption=USER_ENTERED`,
       {
-        method: 'POST',
+        method: 'PUT',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
@@ -386,12 +439,12 @@ async function handleAddCar(req, res, supabase, car) {
         body: JSON.stringify({ values: [row] }),
       }
     );
-    const appendJson = await appendRes.json();
-    if (!appendRes.ok) {
-      return res.status(502).json({ ok: false, error: 'No se pudo escribir al Sheets', detail: appendJson });
+    const writeJson = await writeRes.json();
+    if (!writeRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo escribir al Sheets', detail: writeJson });
     }
 
-    // Insertar tambien en Supabase directamente para no esperar al sync
+    // Insertar tambien en Supabase directamente
     const supabaseRecord = {
       estado: car.estado,
       plate: car.plate,
@@ -416,6 +469,7 @@ async function handleAddCar(req, res, supabase, car) {
       return res.status(200).json({
         ok: true,
         written_to_sheets: true,
+        sheet_row: targetRow,
         warning: `Escrito al Sheets pero error en Supabase: ${supErr.message}. Sincroniza manualmente.`,
       });
     }
@@ -424,9 +478,255 @@ async function handleAddCar(req, res, supabase, car) {
       ok: true,
       written_to_sheets: true,
       written_to_supabase: true,
-      updated_range: appendJson.updates?.updatedRange,
+      sheet_row: targetRow,
+      updated_range: writeJson.updatedRange,
       plate: car.plate,
     });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+// =====================================================
+// EDIT: busca la fila por placa y actualiza los campos
+// =====================================================
+async function handleEditCar(req, res, supabase, car) {
+  try {
+    if (!car.plate) return res.status(400).json({ ok: false, error: 'Falta placa' });
+
+    let accessToken;
+    try {
+      accessToken = await getGoogleAccessToken(supabase);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+
+    // Leer encabezados
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Inventario!A1:AZ1`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const metaJson = await metaRes.json();
+    if (!metaRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer headers', detail: metaJson });
+    const headers = (metaJson.values?.[0] || []).map(h => (h || '').trim().toLowerCase());
+
+    const findHeader = (...names) => {
+      const lowerNames = names.map(n => n.toLowerCase());
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h === n); if (idx !== -1) return idx; }
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h.includes(n)); if (idx !== -1) return idx; }
+      return -1;
+    };
+
+    const colMap = {
+      estado: findHeader('estado'),
+      plate: findHeader('id / placa', 'id/placa', 'placa'),
+      brand: findHeader('marca'),
+      model: findHeader('modelo'),
+      year: findHeader('año', 'ano'),
+      transmission: findHeader('transmisión', 'transmision'),
+      color: findHeader('color'),
+      km: findHeader('kilometraje', 'km'),
+      fuel: findHeader('combustible'),
+      engine_cc: findHeader('motor'),
+      cylinders: findHeader('cilindros'),
+      origin: findHeader('procedencia'),
+      drivetrain: findHeader('tracción', 'traccion'),
+      passengers: findHeader('capacidad'),
+      style: findHeader('estilo'),
+      price: findHeader('precio preferencia', 'precio pref'),
+      currency: findHeader('moneda preferencia', 'moneda pref'),
+    };
+
+    const colLetter = (idx) => {
+      let s = ''; let n = idx;
+      while (n >= 0) { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; }
+      return s;
+    };
+
+    // Leer columna placa para encontrar la fila
+    const plateColL = colLetter(colMap.plate);
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(`Inventario!${plateColL}2:${plateColL}1000`)}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const readJson = await readRes.json();
+    if (!readRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer columna placa', detail: readJson });
+
+    const plateNormalizado = car.plate.trim().toUpperCase();
+    const plates = readJson.values || [];
+    let rowIdx = -1;
+    for (let i = 0; i < plates.length; i++) {
+      if ((plates[i][0] || '').trim().toUpperCase() === plateNormalizado) {
+        rowIdx = i + 2; // fila en Sheets
+        break;
+      }
+    }
+
+    if (rowIdx === -1) {
+      return res.status(404).json({ ok: false, error: `Placa ${plateNormalizado} no encontrada en Sheets` });
+    }
+
+    // Leer fila existente completa para no pisar columnas que no editamos (fotos, etc)
+    const existingRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(`Inventario!A${rowIdx}:${colLetter(headers.length - 1)}${rowIdx}`)}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const existingJson = await existingRes.json();
+    const existingRow = (existingJson.values?.[0] || []);
+
+    // Construir la nueva fila: preservar valores existentes, solo sobrescribir los que edit maneja
+    const row = new Array(headers.length).fill('').map((_, i) => existingRow[i] || '');
+    for (const [field, idx] of Object.entries(colMap)) {
+      if (idx !== -1 && car[field] != null && car[field] !== '') {
+        row[idx] = String(car[field]);
+      }
+    }
+
+    const writeRange = `Inventario!A${rowIdx}:${colLetter(headers.length - 1)}${rowIdx}`;
+    const writeRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(writeRange)}?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ values: [row] }),
+      }
+    );
+    const writeJson = await writeRes.json();
+    if (!writeRes.ok) return res.status(502).json({ ok: false, error: 'Error escribiendo Sheets', detail: writeJson });
+
+    // Update en Supabase
+    const supabaseRecord = {
+      estado: car.estado,
+      brand: car.brand,
+      model: car.model,
+      year: parseInt(car.year) || null,
+      transmission: car.transmission || null,
+      color: car.color || null,
+      km: car.km != null && car.km !== '' ? parseInt(String(car.km).replace(/[^\d]/g, '')) : null,
+      fuel: car.fuel || null,
+      engine_cc: car.engine_cc || null,
+      cylinders: car.cylinders || null,
+      origin: car.origin || null,
+      drivetrain: car.drivetrain || null,
+      passengers: car.passengers || null,
+      style: car.style || null,
+      price: parseFloat(car.price) || null,
+      currency: (car.currency || '').toUpperCase() || null,
+    };
+    await supabase.from('showroom_vehicles').update(supabaseRecord).eq('plate', plateNormalizado);
+
+    return res.status(200).json({ ok: true, plate: plateNormalizado, sheet_row: rowIdx });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+// =====================================================
+// DELETE: borra la fila del Sheets y de Supabase
+// =====================================================
+async function handleDeleteCar(req, res, supabase, plate) {
+  try {
+    if (!plate) return res.status(400).json({ ok: false, error: 'Falta placa' });
+    const plateNormalizado = plate.trim().toUpperCase();
+
+    let accessToken;
+    try {
+      accessToken = await getGoogleAccessToken(supabase);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+
+    // Leer headers para encontrar columna placa
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Inventario!A1:AZ1`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const metaJson = await metaRes.json();
+    if (!metaRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer headers', detail: metaJson });
+    const headers = (metaJson.values?.[0] || []).map(h => (h || '').trim().toLowerCase());
+
+    const findHeader = (...names) => {
+      const lowerNames = names.map(n => n.toLowerCase());
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h === n); if (idx !== -1) return idx; }
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h.includes(n)); if (idx !== -1) return idx; }
+      return -1;
+    };
+
+    const plateColIdx = findHeader('id / placa', 'id/placa', 'placa');
+    const colLetter = (idx) => {
+      let s = ''; let n = idx;
+      while (n >= 0) { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; }
+      return s;
+    };
+    const plateColL = colLetter(plateColIdx);
+
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(`Inventario!${plateColL}2:${plateColL}1000`)}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const readJson = await readRes.json();
+    if (!readRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer placas', detail: readJson });
+
+    const plates = readJson.values || [];
+    let rowIdx = -1;
+    for (let i = 0; i < plates.length; i++) {
+      if ((plates[i][0] || '').trim().toUpperCase() === plateNormalizado) {
+        rowIdx = i + 2;
+        break;
+      }
+    }
+
+    if (rowIdx === -1) {
+      // No estaba en Sheets, borrar solo de Supabase
+      await supabase.from('showroom_vehicles').delete().eq('plate', plateNormalizado);
+      return res.status(200).json({ ok: true, deleted_from: 'supabase_only', note: 'No estaba en Sheets' });
+    }
+
+    // Obtener sheet_id (numerico) de la pestaña "Inventario" para poder usar deleteDimension
+    const spreadsheetInfoRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const spreadsheetInfo = await spreadsheetInfoRes.json();
+    if (!spreadsheetInfoRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo leer info del Sheets', detail: spreadsheetInfo });
+    }
+
+    const inventarioSheet = spreadsheetInfo.sheets?.find(s => s.properties?.title === 'Inventario');
+    if (!inventarioSheet) {
+      return res.status(500).json({ ok: false, error: 'No se encontró pestaña Inventario' });
+    }
+    const sheetId = inventarioSheet.properties.sheetId;
+
+    // Borrar la fila entera usando batchUpdate
+    const deleteRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            deleteDimension: {
+              range: {
+                sheetId,
+                dimension: 'ROWS',
+                startIndex: rowIdx - 1,  // 0-based
+                endIndex: rowIdx,         // exclusivo
+              },
+            },
+          }],
+        }),
+      }
+    );
+    const deleteJson = await deleteRes.json();
+    if (!deleteRes.ok) return res.status(502).json({ ok: false, error: 'Error borrando fila', detail: deleteJson });
+
+    // Borrar en Supabase
+    await supabase.from('showroom_vehicles').delete().eq('plate', plateNormalizado);
+
+    return res.status(200).json({ ok: true, deleted_row: rowIdx, plate: plateNormalizado });
 
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
