@@ -2602,7 +2602,7 @@ export default function App() {
 
     setSendingJournal(true);
     try {
-      const res = await fetch('/api/alegra-create-journal', {
+      const res = await fetch('/api/alegra-sync?type=journal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ payroll_id: payrollId }),
