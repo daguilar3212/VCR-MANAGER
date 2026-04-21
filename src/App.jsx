@@ -750,6 +750,8 @@ export default function App() {
   });
   const [settingsTab, setSettingsTab] = useState("employees");
   const [accountingConfig, setAccountingConfig] = useState([]);
+  const [searchingAccounts, setSearchingAccounts] = useState(false);
+  const [suggestedMatches, setSuggestedMatches] = useState({});
   const loadAccountingConfig = async () => {
     const { data } = await supabase.from('accounting_config').select('*').order('id');
     if (data) setAccountingConfig(data);
@@ -760,6 +762,27 @@ export default function App() {
       updated_at: new Date().toISOString()
     }).eq('concept', concept);
     await loadAccountingConfig();
+  };
+
+  const searchAlegraAccounts = async () => {
+    setSearchingAccounts(true);
+    try {
+      const res = await fetch('/api/alegra-sync?type=list-accounts', { method: 'POST' });
+      const j = await res.json();
+      if (j.ok) {
+        const map = {};
+        (j.matches || []).forEach(m => { map[m.concept] = m.suggestions || []; });
+        setSuggestedMatches(map);
+        const totalMatches = (j.matches || []).filter(m => m.suggestions.length > 0).length;
+        alert(`✅ Búsqueda completa\n\n${totalMatches} de ${(j.matches || []).length} conceptos tienen sugerencias\n${j.total_alegra_accounts} cuentas revisadas en Alegra\n\nElegí cada una y guardá.`);
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo buscar'}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    } finally {
+      setSearchingAccounts(false);
+    }
   };
   const [editingAgent, setEditingAgent] = useState(null);
 
@@ -3512,35 +3535,83 @@ export default function App() {
 
         {settingsTab === "accounts" && (
           <div style={{...S.card,padding:"18px 20px"}}>
-            <div style={{fontWeight:700,fontSize:14,marginBottom:6}}>Mapeo de Cuentas Contables Alegra</div>
-            <div style={{fontSize:12,color:"#8b8fa4",marginBottom:14}}>
-              Cada concepto de la planilla debe apuntar a una cuenta en Alegra.
-              El ID lo obtenés de Alegra → Configuración → Plan de cuentas → seleccionás la cuenta → el ID aparece en la URL (ej: <code style={{color:"#4f8cff"}}>.../accounts/edit/12345</code> → el ID es <code style={{color:"#4f8cff"}}>12345</code>).
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,marginBottom:4}}>Mapeo de Cuentas Contables Alegra</div>
+                <div style={{fontSize:11,color:"#8b8fa4"}}>
+                  Cada concepto de la planilla debe apuntar a una cuenta en Alegra.
+                </div>
+              </div>
+              <button
+                onClick={searchAlegraAccounts}
+                disabled={searchingAccounts}
+                style={{...S.sel, background: searchingAccounts ? "#8b5cf677" : "#8b5cf6", color:"#fff", fontWeight:700, border:"none", fontSize:12, padding:"8px 14px"}}
+              >
+                {searchingAccounts ? "⏳ Buscando..." : "🔍 Buscar automáticamente"}
+              </button>
             </div>
 
-            {accountingConfig.map((row) => (
-              <div key={row.id} style={{display:"grid",gridTemplateColumns:"1fr 160px 100px",gap:10,marginBottom:8,alignItems:"center",padding:"8px 12px",background:"#1e2130",borderRadius:6}}>
-                <div>
-                  <div style={{fontWeight:600,fontSize:13}}>{row.account_name}</div>
-                  <div style={{fontSize:10,color:"#8b8fa4",marginTop:2}}>concepto: <code style={{color:"#4f8cff"}}>{row.concept}</code></div>
+            <div style={{fontSize:11,color:"#8b8fa4",marginBottom:14,padding:"8px 12px",background:"#1e2130",borderRadius:6}}>
+              💡 Tip: Usá "Buscar automáticamente" para que el sistema busque las cuentas en Alegra por nombre. También podés pegar el ID manualmente (ej: de la URL <code style={{color:"#4f8cff"}}>.../accounts/edit/12345</code>).
+            </div>
+
+            {accountingConfig.map((row) => {
+              const suggestions = suggestedMatches[row.concept] || [];
+              const hasSuggestions = suggestions.length > 0;
+              return (
+                <div key={row.id} style={{marginBottom:8, padding:"10px 12px", background:"#1e2130", borderRadius:6}}>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 160px 100px", gap:10, alignItems:"center"}}>
+                    <div>
+                      <div style={{fontWeight:600,fontSize:13}}>{row.account_name}</div>
+                      <div style={{fontSize:10,color:"#8b8fa4",marginTop:2}}>concepto: <code style={{color:"#4f8cff"}}>{row.concept}</code></div>
+                    </div>
+                    <input
+                      type="number"
+                      defaultValue={row.alegra_account_id || ''}
+                      id={`acc-${row.concept}`}
+                      placeholder="ID Alegra"
+                      style={{...S.inp,textAlign:"center"}}
+                    />
+                    <button
+                      onClick={()=>{
+                        const val = document.getElementById(`acc-${row.concept}`).value;
+                        const id = val ? parseInt(val) : null;
+                        saveAccountingMapping(row.concept, id);
+                      }}
+                      style={{...S.sel,background:row.alegra_account_id?"#10b98118":"#4f8cff18",color:row.alegra_account_id?"#10b981":"#4f8cff",fontWeight:600,fontSize:11}}
+                    >{row.alegra_account_id ? "Actualizar" : "Guardar"}</button>
+                  </div>
+
+                  {hasSuggestions && (
+                    <div style={{marginTop:8, paddingTop:8, borderTop:"1px solid #2a2d3d"}}>
+                      <div style={{fontSize:10, color:"#8b5cf6", fontWeight:700, marginBottom:6, textTransform:"uppercase", letterSpacing:0.5}}>
+                        Sugerencias ({suggestions.length})
+                      </div>
+                      <div style={{display:"flex", flexWrap:"wrap", gap:6}}>
+                        {suggestions.map(s => (
+                          <button
+                            key={s.id}
+                            onClick={()=>saveAccountingMapping(row.concept, s.id)}
+                            style={{
+                              ...S.sel,
+                              background: row.alegra_account_id === s.id ? "#10b98130" : "#8b5cf618",
+                              color: row.alegra_account_id === s.id ? "#10b981" : "#8b5cf6",
+                              fontSize:11,
+                              padding:"5px 10px",
+                              border: row.alegra_account_id === s.id ? "1px solid #10b98160" : "1px solid #8b5cf640"
+                            }}
+                          >
+                            {row.alegra_account_id === s.id ? "✓ " : ""}
+                            <code style={{fontSize:10, marginRight:4}}>#{s.id}</code>
+                            {s.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <input
-                  type="number"
-                  defaultValue={row.alegra_account_id || ''}
-                  id={`acc-${row.concept}`}
-                  placeholder="ID Alegra"
-                  style={{...S.inp,textAlign:"center"}}
-                />
-                <button
-                  onClick={()=>{
-                    const val = document.getElementById(`acc-${row.concept}`).value;
-                    const id = val ? parseInt(val) : null;
-                    saveAccountingMapping(row.concept, id);
-                  }}
-                  style={{...S.sel,background:row.alegra_account_id?"#10b98118":"#4f8cff18",color:row.alegra_account_id?"#10b981":"#4f8cff",fontWeight:600,fontSize:11}}
-                >{row.alegra_account_id ? "Actualizar" : "Guardar"}</button>
-              </div>
-            ))}
+              );
+            })}
 
             <div style={{marginTop:14,padding:"10px 14px",background:"#f59e0b18",border:"1px solid #f59e0b44",borderRadius:6,fontSize:12,color:"#f59e0b"}}>
               ⚠️ Faltan {accountingConfig.filter(r => !r.alegra_account_id).length} cuentas por configurar antes de poder enviar asientos a Alegra.
