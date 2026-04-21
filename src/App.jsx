@@ -749,13 +749,25 @@ export default function App() {
     dieta_retention_pct: 15
   });
   const [settingsTab, setSettingsTab] = useState("employees");
+  const [accountingConfig, setAccountingConfig] = useState([]);
+  const loadAccountingConfig = async () => {
+    const { data } = await supabase.from('accounting_config').select('*').order('id');
+    if (data) setAccountingConfig(data);
+  };
+  const saveAccountingMapping = async (concept, alegra_account_id) => {
+    await supabase.from('accounting_config').update({
+      alegra_account_id: alegra_account_id || null,
+      updated_at: new Date().toISOString()
+    }).eq('concept', concept);
+    await loadAccountingConfig();
+  };
   const [editingAgent, setEditingAgent] = useState(null);
 
   // ===== NOTIFICACIONES REALTIME =====
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); }, []);
 
   const loadBankAccounts = async () => {
     const { data } = await supabase.from('bank_accounts').select('*').order('id');
@@ -1846,10 +1858,15 @@ export default function App() {
     const agentRows = [];
     const salePrice = parseFloat(saleForm.sale_price) || 0;
     const saleTC = parseFloat(saleForm.sale_exchange_rate) || 0;
+    const saleCurrency = saleForm.sale_currency || "CRC";
     const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id;
     const splitPct = hasAgent2 ? 0.5 : 1;
     const splitAmt = salePrice * 0.01 * (hasAgent2 ? 0.5 : 1);
-    const splitCrc = Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100;
+    // FIX: Si la venta es en CRC, la comisión ya está en CRC (no multiplicar por TC)
+    // Si es en USD, convertir a CRC multiplicando por el TC
+    const splitCrc = saleCurrency === "USD"
+      ? Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100
+      : Math.round((splitAmt + Number.EPSILON) * 100) / 100;
     if (saleForm.agent1_id) {
       const ag = agents.find(a => a.id === saleForm.agent1_id);
       agentRows.push({ sale_id: data.id, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc });
@@ -2143,10 +2160,14 @@ export default function App() {
     await supabase.from('sale_agents').delete().eq('sale_id', editingSaleId);
     const salePrice = parseFloat(saleForm.sale_price) || 0;
     const saleTC = parseFloat(saleForm.sale_exchange_rate) || 0;
+    const saleCurrency = saleForm.sale_currency || "CRC";
     const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== saleForm.agent1_id;
     const splitPct = hasAgent2 ? 0.5 : 1;
     const splitAmt = salePrice * 0.01 * (hasAgent2 ? 0.5 : 1);
-    const splitCrc = Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100;
+    // FIX: Si la venta es en CRC, la comisión ya está en CRC
+    const splitCrc = saleCurrency === "USD"
+      ? Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100
+      : Math.round((splitAmt + Number.EPSILON) * 100) / 100;
     const agentRows = [];
     if (saleForm.agent1_id) { const ag = agents.find(a => a.id === saleForm.agent1_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent1_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc }); }
     if (hasAgent2) { const ag = agents.find(a => a.id === saleForm.agent2_id); agentRows.push({ sale_id: editingSaleId, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc }); }
@@ -2363,7 +2384,7 @@ export default function App() {
   };
 
   const getAgentCommissions = (agentId, month, year) => {
-    // Returns { total_crc, missing_tc_count } - sum in colones, and count of sales without TC
+    // Returns { total_crc, missing_tc_count } - sum in colones, and count of USD sales without TC
     return sales.filter(s => {
       if (s.status !== 'aprobada') return false;
       if (!s.sale_date) return false;
@@ -2374,9 +2395,10 @@ export default function App() {
       const match = sAgents.find(a => a.agent_id === agentId);
       if (!match) return acc;
       const crcAmt = match.commission_crc || 0;
+      const saleCurrency = s.sale_currency || "CRC";
       const hasTC = s.sale_exchange_rate && s.sale_exchange_rate > 0;
-      if (!hasTC && match.commission_amount > 0) {
-        // Sale without TC - count but don't include
+      // Solo se requiere TC para ventas en USD. Ventas en CRC ya tienen commission_crc directa.
+      if (saleCurrency === "USD" && !hasTC && match.commission_amount > 0) {
         return { total_crc: acc.total_crc, missing_tc_count: acc.missing_tc_count + 1 };
       }
       return { total_crc: acc.total_crc + crcAmt, missing_tc_count: acc.missing_tc_count };
@@ -2392,6 +2414,10 @@ export default function App() {
     const year = targetYear != null ? targetYear : new Date().getFullYear();
     const isMensual = type === 'mensual';
 
+    // Cargas patronales: total % de la empresa
+    const employerCharges = appSettings.employer_charges || [];
+    const employerPct = employerCharges.reduce((s, c) => s + (parseFloat(c.pct) || 0), 0);
+
     const lines = employees.map(emp => {
       const salary = r2(emp.salary || 0);
       const commData = isMensual ? getAgentCommissions(emp.id, month, year) : { total_crc: 0, missing_tc_count: 0 };
@@ -2400,11 +2426,17 @@ export default function App() {
       const ccssAmt = r2(grossQ * ccss / 100);
 
       let rentAmt = 0;
+      let monthlyGrossForEmployer = grossQ;
       if (isMensual) {
         // Renta sobre salario mensual bruto (Q1 + Q2 con comisiones en colones)
         const monthlyGross = salary + salary + comms;
         rentAmt = calcRent(monthlyGross, emp.pension_deduction || 0);
+        monthlyGrossForEmployer = monthlyGross;
       }
+
+      // Cargas patronales y aguinaldo: solo en planilla mensual (no aplica en quincenas)
+      const employerChargesAmount = isMensual ? r2(monthlyGrossForEmployer * employerPct / 100) : 0;
+      const aguinaldoAmount = isMensual ? r2(monthlyGrossForEmployer / 12) : 0;
 
       const netPay = r2(grossQ - ccssAmt - rentAmt);
       return {
@@ -2413,24 +2445,58 @@ export default function App() {
         rent_base: isMensual ? r2(salary * 2 + comms) : 0,
         pension_deduction: r2(emp.pension_deduction || 0),
         rent_amount: rentAmt, net_pay: netPay,
+        employer_charges_amount: employerChargesAmount,
+        aguinaldo_amount: aguinaldoAmount,
         missing_tc_count: commData.missing_tc_count,
       };
     });
 
-    const totals = lines.reduce((t, l) => ({
-      gross: r2(t.gross + l.gross_total), ccss: r2(t.ccss + l.ccss_amount),
-      rent: r2(t.rent + l.rent_amount), net: r2(t.net + l.net_pay), comms: r2(t.comms + l.commissions),
-    }), { gross: 0, ccss: 0, rent: 0, net: 0, comms: 0 });
+    // Dietas directores (solo mensual)
+    const directors = appSettings.directors || [];
+    const dietaRetentionPct = parseFloat(appSettings.dieta_retention_pct) || 0;
+    const totalDietas = isMensual ? directors.reduce((s, d) => s + (parseFloat(d.dieta_monthly) || 0), 0) : 0;
+    const dietasRetencion = r2(totalDietas * dietaRetentionPct / 100);
+    const dietasNeto = r2(totalDietas - dietasRetencion);
 
-    return { type, name: periodLabel, lines, totals };
+    const totals = lines.reduce((t, l) => ({
+      gross: r2(t.gross + l.gross_total),
+      ccss: r2(t.ccss + l.ccss_amount),
+      rent: r2(t.rent + l.rent_amount),
+      net: r2(t.net + l.net_pay),
+      comms: r2(t.comms + l.commissions),
+      employer_charges: r2(t.employer_charges + l.employer_charges_amount),
+      aguinaldo: r2(t.aguinaldo + l.aguinaldo_amount),
+    }), { gross: 0, ccss: 0, rent: 0, net: 0, comms: 0, employer_charges: 0, aguinaldo: 0 });
+
+    totals.dietas = totalDietas;
+    totals.dietas_retencion = dietasRetencion;
+    totals.dietas_neto = dietasNeto;
+
+    return {
+      type,
+      name: periodLabel,
+      lines,
+      totals,
+      directors_snapshot: isMensual ? directors : [],
+    };
   };
 
   const savePayroll = async (preview) => {
     const { data: pr, error } = await supabase.from('payrolls').insert({
-      name: preview.name, period_type: preview.type,
-      total_gross: preview.totals.gross, total_ccss: preview.totals.ccss,
-      total_rent: preview.totals.rent, total_net: preview.totals.net,
-      total_commissions: preview.totals.comms, status: 'draft',
+      name: preview.name,
+      period_type: preview.type,
+      total_gross: preview.totals.gross,
+      total_ccss: preview.totals.ccss,
+      total_rent: preview.totals.rent,
+      total_net: preview.totals.net,
+      total_commissions: preview.totals.comms,
+      total_employer_charges: preview.totals.employer_charges || 0,
+      total_aguinaldo: preview.totals.aguinaldo || 0,
+      total_dietas: preview.totals.dietas || 0,
+      total_dietas_retencion: preview.totals.dietas_retencion || 0,
+      total_dietas_neto: preview.totals.dietas_neto || 0,
+      directors_snapshot: preview.directors_snapshot || [],
+      status: 'draft',
     }).select().single();
     if (error) { alert("Error: " + error.message); return; }
     const rows = preview.lines.map(l => {
@@ -3053,7 +3119,7 @@ export default function App() {
       <div>
         <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Settings</h1>
         <div style={{display:"flex",gap:8,marginBottom:16}}>
-          {[["employees","Empleados"],["ccss","CCSS Obrero"],["employer","Cargas Patronales"],["dietas","Dietas Directores"],["rent","Tramos de Renta"]].map(([v,l])=>(
+          {[["employees","Empleados"],["ccss","CCSS Obrero"],["employer","Cargas Patronales"],["dietas","Dietas Directores"],["rent","Tramos de Renta"],["accounts","Cuentas Contables"]].map(([v,l])=>(
             <button key={v} onClick={()=>setSettingsTab(v)} style={{...S.sel,background:settingsTab===v?"#4f8cff20":"#1e2130",color:settingsTab===v?"#4f8cff":"#8b8fa4",fontWeight:settingsTab===v?600:400}}>{l}</button>
           ))}
         </div>
@@ -3349,6 +3415,44 @@ export default function App() {
                 saveSetting('rent_brackets', nb);
                 alert("Tramos guardados");
               }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none",fontSize:12}}>Guardar tramos</button>
+            </div>
+          </div>
+        )}
+
+        {settingsTab === "accounts" && (
+          <div style={{...S.card,padding:"18px 20px"}}>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:6}}>Mapeo de Cuentas Contables Alegra</div>
+            <div style={{fontSize:12,color:"#8b8fa4",marginBottom:14}}>
+              Cada concepto de la planilla debe apuntar a una cuenta en Alegra.
+              El ID lo obtenés de Alegra → Configuración → Plan de cuentas → seleccionás la cuenta → el ID aparece en la URL (ej: <code style={{color:"#4f8cff"}}>.../accounts/edit/12345</code> → el ID es <code style={{color:"#4f8cff"}}>12345</code>).
+            </div>
+
+            {accountingConfig.map((row) => (
+              <div key={row.id} style={{display:"grid",gridTemplateColumns:"1fr 160px 100px",gap:10,marginBottom:8,alignItems:"center",padding:"8px 12px",background:"#1e2130",borderRadius:6}}>
+                <div>
+                  <div style={{fontWeight:600,fontSize:13}}>{row.account_name}</div>
+                  <div style={{fontSize:10,color:"#8b8fa4",marginTop:2}}>concepto: <code style={{color:"#4f8cff"}}>{row.concept}</code></div>
+                </div>
+                <input
+                  type="number"
+                  defaultValue={row.alegra_account_id || ''}
+                  id={`acc-${row.concept}`}
+                  placeholder="ID Alegra"
+                  style={{...S.inp,textAlign:"center"}}
+                />
+                <button
+                  onClick={()=>{
+                    const val = document.getElementById(`acc-${row.concept}`).value;
+                    const id = val ? parseInt(val) : null;
+                    saveAccountingMapping(row.concept, id);
+                  }}
+                  style={{...S.sel,background:row.alegra_account_id?"#10b98118":"#4f8cff18",color:row.alegra_account_id?"#10b981":"#4f8cff",fontWeight:600,fontSize:11}}
+                >{row.alegra_account_id ? "Actualizar" : "Guardar"}</button>
+              </div>
+            ))}
+
+            <div style={{marginTop:14,padding:"10px 14px",background:"#f59e0b18",border:"1px solid #f59e0b44",borderRadius:6,fontSize:12,color:"#f59e0b"}}>
+              ⚠️ Faltan {accountingConfig.filter(r => !r.alegra_account_id).length} cuentas por configurar antes de poder enviar asientos a Alegra.
             </div>
           </div>
         )}
