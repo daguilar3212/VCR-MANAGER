@@ -2532,6 +2532,97 @@ export default function App() {
     await loadPayrolls(); setPickedPay(null);
   };
 
+  const [sendingJournal, setSendingJournal] = useState(false);
+  const [showJournalPreview, setShowJournalPreview] = useState(false);
+
+  // Calcula el asiento contable localmente (igual al que generará el backend) para mostrar preview
+  const buildJournalPreview = (payroll) => {
+    if (!payroll || !payroll.lines) return null;
+    const lines = payroll.lines;
+    const accMap = {};
+    accountingConfig.forEach(a => { accMap[a.concept] = a; });
+
+    const totalSueldos = lines.reduce((s, l) => s + parseFloat(l.salary || 0), 0);
+    const totalComisiones = lines.reduce((s, l) => s + parseFloat(l.commissions || 0), 0);
+    const totalCCSSObrero = lines.reduce((s, l) => s + parseFloat(l.ccss_amount || 0), 0);
+    const totalCCSSPatronal = lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
+    const totalCargasSociales = totalCCSSObrero + totalCCSSPatronal;
+    const totalRentaISR = lines.reduce((s, l) => s + parseFloat(l.rent_amount || 0), 0);
+    const totalNetoEmpleados = lines.reduce((s, l) => s + parseFloat(l.net_pay || 0), 0);
+    const totalAguinaldo = lines.reduce((s, l) => s + parseFloat(l.aguinaldo_amount || 0), 0);
+    const totalDietas = parseFloat(payroll.total_dietas || 0);
+    const totalDietasRet = parseFloat(payroll.total_dietas_retencion || 0);
+    const totalDietasNeto = parseFloat(payroll.total_dietas_neto || 0);
+
+    const debits = [];
+    const credits = [];
+
+    if (totalSueldos > 0) debits.push({ concept: 'sueldos_gasto', label: 'Sueldos', amount: totalSueldos });
+    if (totalComisiones > 0) debits.push({ concept: 'comisiones_gasto', label: 'Comisiones', amount: totalComisiones });
+    if (totalDietas > 0) debits.push({ concept: 'dietas_gasto', label: 'Dietas a Directores', amount: totalDietas });
+    if (totalCargasSociales > 0) debits.push({ concept: 'cargas_sociales_gasto', label: 'Cargas Sociales (obrero + patronal)', amount: totalCargasSociales });
+    if (totalAguinaldo > 0) debits.push({ concept: 'aguinaldos_gasto', label: 'Aguinaldos (provisión)', amount: totalAguinaldo });
+
+    if (totalNetoEmpleados > 0) credits.push({ concept: 'sueldos_por_pagar', label: 'Sueldos por Pagar', amount: totalNetoEmpleados });
+    if (totalCargasSociales > 0) credits.push({ concept: 'cargas_sociales_por_pagar', label: 'Cargas Sociales por Pagar', amount: totalCargasSociales });
+    if (totalRentaISR > 0) credits.push({ concept: 'retencion_isr_empleados', label: 'Retención de ISR Empleados', amount: totalRentaISR });
+    if (totalDietasNeto > 0) credits.push({ concept: 'dietas_por_pagar', label: 'Dietas por Pagar', amount: totalDietasNeto });
+    if (totalDietasRet > 0) credits.push({ concept: 'retencion_dietas_por_pagar', label: 'Retención DIETAS', amount: totalDietasRet });
+    if (totalAguinaldo > 0) credits.push({ concept: 'aguinaldos_por_pagar', label: 'Aguinaldos por Pagar', amount: totalAguinaldo });
+
+    // Marcar qué cuenta está configurada y cuál no
+    const enriched = (list) => list.map(e => ({
+      ...e,
+      alegra_id: accMap[e.concept]?.alegra_account_id || null,
+      configured: !!accMap[e.concept]?.alegra_account_id,
+    }));
+
+    const d = enriched(debits);
+    const c = enriched(credits);
+    const totalDebit = d.reduce((s, e) => s + e.amount, 0);
+    const totalCredit = c.reduce((s, e) => s + e.amount, 0);
+    const balanced = Math.abs(totalDebit - totalCredit) < 0.02;
+    const missing = [...d, ...c].filter(e => !e.configured).map(e => e.concept);
+
+    return { debits: d, credits: c, totalDebit, totalCredit, balanced, missing };
+  };
+
+  const sendJournalToAlegra = async (payrollId) => {
+    const preview = buildJournalPreview(pickedPay);
+    if (!preview) return;
+    if (!preview.balanced) {
+      alert(`❌ Asiento descuadrado\nDébitos: ${fmt2(preview.totalDebit)}\nCréditos: ${fmt2(preview.totalCredit)}\nDiferencia: ${fmt2(preview.totalDebit - preview.totalCredit)}`);
+      return;
+    }
+    if (preview.missing.length > 0) {
+      alert(`❌ Faltan ${preview.missing.length} cuentas por configurar en Settings → Cuentas Contables:\n\n${preview.missing.join('\n')}`);
+      return;
+    }
+    if (!confirm(`¿Enviar asiento contable a Alegra?\n\nDébitos: ${fmt2(preview.totalDebit)}\nCréditos: ${fmt2(preview.totalCredit)}\n\nEsta acción no se puede deshacer.`)) return;
+
+    setSendingJournal(true);
+    try {
+      const res = await fetch('/api/alegra-create-journal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payroll_id: payrollId }),
+      });
+      const j = await res.json();
+      if (j.ok) {
+        alert(`✅ Asiento enviado a Alegra\nID del asiento: #${j.alegra_journal_id}`);
+        await loadPayrolls();
+        setPickedPay(prev => prev ? { ...prev, alegra_journal_id: j.alegra_journal_id } : null);
+        setShowJournalPreview(false);
+      } else {
+        alert(`❌ Error: ${j.error || 'No se pudo enviar'}${j.missing_concepts ? '\n\nFaltan: ' + j.missing_concepts.join(', ') : ''}`);
+      }
+    } catch (e) {
+      alert(`❌ Error de red: ${e.message}`);
+    } finally {
+      setSendingJournal(false);
+    }
+  };
+
   const [editingPayroll, setEditingPayroll] = useState(null);
 
   const saveEditPayroll = async () => {
@@ -7066,8 +7157,104 @@ export default function App() {
                   {pickedPay.status === "confirmed" && !payPayForm && (
                     <button onClick={()=>setPayPayForm({bank:"",reference:"",date:new Date().toISOString().split('T')[0]})} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Registrar Pago</button>
                   )}
+                  {(pickedPay.status === "confirmed" || pickedPay.status === "paid") && !pickedPay.alegra_journal_id && (
+                    <button onClick={()=>setShowJournalPreview(true)} style={{...S.sel,background:"#8b5cf6",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>📊 Ver Asiento Contable</button>
+                  )}
+                  {pickedPay.alegra_journal_id && (
+                    <div style={{...S.sel,background:"#10b98118",color:"#10b981",fontWeight:700,padding:"10px 16px",display:"flex",alignItems:"center",gap:6}}>
+                      ✅ Asiento Alegra #{pickedPay.alegra_journal_id}
+                    </div>
+                  )}
                   <button onClick={()=>{setPrintPay(pickedPay);setPickedPay(null);}} style={{...S.sel,background:"#4f8cff18",color:"#4f8cff",fontWeight:600}}>Imprimir</button>
                 </div>
+
+                {/* JOURNAL PREVIEW MODAL */}
+                {showJournalPreview && (() => {
+                  const preview = buildJournalPreview(pickedPay);
+                  if (!preview) return null;
+                  return (
+                    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={() => !sendingJournal && setShowJournalPreview(false)}>
+                      <div style={{background:"#1a1d2b",borderRadius:12,padding:24,maxWidth:820,width:"100%",maxHeight:"90vh",overflowY:"auto"}} onClick={e => e.stopPropagation()}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                          <h2 style={{fontSize:20,fontWeight:800,margin:0}}>📊 Asiento Contable</h2>
+                          <button onClick={()=>setShowJournalPreview(false)} disabled={sendingJournal} style={{background:"transparent",border:"none",color:"#8b8fa4",fontSize:24,cursor:"pointer"}}>×</button>
+                        </div>
+
+                        <div style={{fontSize:12,color:"#8b8fa4",marginBottom:14,padding:"10px 12px",background:"#2a2d3d",borderRadius:6}}>
+                          Planilla: <strong style={{color:"#e8eaf0"}}>{pickedPay.name}</strong> · Estado: {pickedPay.status}
+                        </div>
+
+                        {preview.missing.length > 0 && (
+                          <div style={{fontSize:12,color:"#e11d48",marginBottom:12,padding:"10px 14px",background:"#e11d4815",border:"1px solid #e11d4840",borderRadius:6}}>
+                            ⚠️ Faltan {preview.missing.length} cuentas por configurar en Settings → Cuentas Contables:<br/>
+                            <code style={{fontSize:10}}>{preview.missing.join(', ')}</code>
+                          </div>
+                        )}
+
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,marginBottom:14}}>
+                          <thead><tr style={{background:"#1e2130"}}>
+                            <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",fontWeight:700,textTransform:"uppercase",letterSpacing:0.5}}>Cuenta Contable</th>
+                            <th style={{padding:"8px 10px",textAlign:"right",fontSize:10,color:"#8b8fa4",fontWeight:700,textTransform:"uppercase",letterSpacing:0.5}}>Débito</th>
+                            <th style={{padding:"8px 10px",textAlign:"right",fontSize:10,color:"#8b8fa4",fontWeight:700,textTransform:"uppercase",letterSpacing:0.5}}>Crédito</th>
+                          </tr></thead>
+                          <tbody>
+                            {preview.debits.map((e,i) => (
+                              <tr key={'d'+i} style={{borderBottom:"1px solid #2a2d3d"}}>
+                                <td style={{padding:"8px 10px"}}>
+                                  <div style={{fontWeight:600,color:"#e8eaf0"}}>{e.label}</div>
+                                  <div style={{fontSize:10,color:e.configured?"#10b981":"#e11d48",marginTop:2}}>
+                                    {e.configured ? `✓ Alegra #${e.alegra_id}` : "✗ Sin configurar"}
+                                  </div>
+                                </td>
+                                <td style={{padding:"8px 10px",textAlign:"right",fontWeight:700,color:"#10b981"}}>{fmt2(e.amount)}</td>
+                                <td style={{padding:"8px 10px",textAlign:"right",color:"#8b8fa4"}}>-</td>
+                              </tr>
+                            ))}
+                            {preview.credits.map((e,i) => (
+                              <tr key={'c'+i} style={{borderBottom:"1px solid #2a2d3d"}}>
+                                <td style={{padding:"8px 10px"}}>
+                                  <div style={{fontWeight:600,color:"#e8eaf0"}}>{e.label}</div>
+                                  <div style={{fontSize:10,color:e.configured?"#10b981":"#e11d48",marginTop:2}}>
+                                    {e.configured ? `✓ Alegra #${e.alegra_id}` : "✗ Sin configurar"}
+                                  </div>
+                                </td>
+                                <td style={{padding:"8px 10px",textAlign:"right",color:"#8b8fa4"}}>-</td>
+                                <td style={{padding:"8px 10px",textAlign:"right",fontWeight:700,color:"#4f8cff"}}>{fmt2(e.amount)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr style={{background:"#1e2130",fontWeight:800}}>
+                              <td style={{padding:"10px",color:"#e8eaf0"}}>TOTAL</td>
+                              <td style={{padding:"10px",textAlign:"right",color:"#10b981"}}>{fmt2(preview.totalDebit)}</td>
+                              <td style={{padding:"10px",textAlign:"right",color:"#4f8cff"}}>{fmt2(preview.totalCredit)}</td>
+                            </tr>
+                          </tfoot>
+                        </table>
+
+                        <div style={{padding:"10px 14px",background:preview.balanced?"#10b98118":"#e11d4818",border:`1px solid ${preview.balanced?"#10b98140":"#e11d4840"}`,borderRadius:6,fontSize:13,marginBottom:14,display:"flex",justifyContent:"space-between"}}>
+                          <span style={{color:preview.balanced?"#10b981":"#e11d48",fontWeight:700}}>
+                            {preview.balanced ? "✅ Asiento balanceado" : "❌ Asiento descuadrado"}
+                          </span>
+                          {!preview.balanced && (
+                            <span style={{color:"#e11d48"}}>Diferencia: {fmt2(preview.totalDebit - preview.totalCredit)}</span>
+                          )}
+                        </div>
+
+                        <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+                          <button onClick={()=>setShowJournalPreview(false)} disabled={sendingJournal} style={{...S.sel,color:"#8b8fa4",fontWeight:600}}>Cerrar</button>
+                          <button
+                            onClick={()=>sendJournalToAlegra(pickedPay.id)}
+                            disabled={sendingJournal || !preview.balanced || preview.missing.length > 0}
+                            style={{...S.sel,background:(!preview.balanced || preview.missing.length > 0)?"#8b5cf677":"#8b5cf6",color:"#fff",fontWeight:700,border:"none",padding:"10px 20px"}}
+                          >
+                            {sendingJournal ? "⏳ Enviando..." : "📤 Enviar a Alegra"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* EDIT PAYROLL MODAL */}
                 {editingPayroll && (
