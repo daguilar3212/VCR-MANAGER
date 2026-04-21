@@ -717,7 +717,37 @@ export default function App() {
   const [payPayForm, setPayPayForm] = useState(null);
 
   // ===== SETTINGS STATE =====
-  const [appSettings, setAppSettings] = useState({ ccss_pct: 10.83, rent_brackets: [{ from: 0, to: 918000, pct: 0 },{ from: 918000, to: 1347000, pct: 10 },{ from: 1347000, to: 2364000, pct: 15 },{ from: 2364000, to: 4727000, pct: 20 },{ from: 4727000, to: 999999999, pct: 25 }] });
+  const [appSettings, setAppSettings] = useState({
+    ccss_pct: 10.83,
+    rent_brackets: [
+      { from: 0, to: 918000, pct: 0 },
+      { from: 918000, to: 1347000, pct: 10 },
+      { from: 1347000, to: 2364000, pct: 15 },
+      { from: 2364000, to: 4727000, pct: 20 },
+      { from: 4727000, to: 999999999, pct: 25 }
+    ],
+    // Cargas sociales patronales (pagadas por la empresa, NO se descuentan al empleado)
+    // Se usan para el asiento contable de la planilla
+    employer_charges: [
+      { name: "SEM", pct: 9.25 },
+      { name: "IVM", pct: 5.42 },
+      { name: "Banco Popular (aporte patronal)", pct: 0.25 },
+      { name: "Asignaciones Familiares", pct: 5.00 },
+      { name: "IMAS", pct: 0.50 },
+      { name: "INA", pct: 1.50 },
+      { name: "Banco Popular (aporte)", pct: 0.25 },
+      { name: "ROP", pct: 2.00 },
+      { name: "FCL", pct: 1.50 },
+      { name: "INS (ROP)", pct: 1.00 }
+    ],
+    // Directores que cobran dietas mensuales + retencion fija
+    directors: [
+      { name: "Director 1", dieta_monthly: 250000 },
+      { name: "Director 2", dieta_monthly: 250000 },
+      { name: "Director 3", dieta_monthly: 250000 }
+    ],
+    dieta_retention_pct: 15
+  });
   const [settingsTab, setSettingsTab] = useState("employees");
   const [editingAgent, setEditingAgent] = useState(null);
 
@@ -3023,7 +3053,7 @@ export default function App() {
       <div>
         <h1 style={{fontSize:24,fontWeight:800,marginBottom:16}}>Settings</h1>
         <div style={{display:"flex",gap:8,marginBottom:16}}>
-          {[["employees","Empleados"],["ccss","Cargas Sociales"],["rent","Tramos de Renta"]].map(([v,l])=>(
+          {[["employees","Empleados"],["ccss","CCSS Obrero"],["employer","Cargas Patronales"],["dietas","Dietas Directores"],["rent","Tramos de Renta"]].map(([v,l])=>(
             <button key={v} onClick={()=>setSettingsTab(v)} style={{...S.sel,background:settingsTab===v?"#4f8cff20":"#1e2130",color:settingsTab===v?"#4f8cff":"#8b8fa4",fontWeight:settingsTab===v?600:400}}>{l}</button>
           ))}
         </div>
@@ -3113,6 +3143,179 @@ export default function App() {
             <div style={{fontSize:12,color:"#8b8fa4",marginTop:8}}>Se aplica al salario bruto de cada empleado en la planilla.</div>
           </div>
         )}
+
+        {settingsTab === "employer" && (() => {
+          const charges = appSettings.employer_charges || [];
+          const total = charges.reduce((s, c) => s + (parseFloat(c.pct) || 0), 0);
+          return (
+            <div style={{...S.card, padding:"18px 20px"}}>
+              <div style={{fontWeight:700, fontSize:14, marginBottom:6}}>Cargas Sociales Patronales</div>
+              <div style={{fontSize:12, color:"#8b8fa4", marginBottom:14}}>
+                Porcentajes que paga la empresa (no se descuentan al empleado). Se usan para el asiento contable de la planilla.
+              </div>
+
+              {charges.map((c, i) => (
+                <div key={i} style={{display:"grid", gridTemplateColumns:"1fr 100px 40px", gap:10, marginBottom:8, alignItems:"center"}}>
+                  <input
+                    type="text"
+                    defaultValue={c.name}
+                    id={`employer-name-${i}`}
+                    style={{...S.inp}}
+                    placeholder="Nombre (ej: SEM)"
+                  />
+                  <div style={{display:"flex", alignItems:"center", gap:4}}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      defaultValue={c.pct}
+                      id={`employer-pct-${i}`}
+                      style={{...S.inp, width:70, textAlign:"right"}}
+                    />
+                    <span style={{color:"#8b8fa4"}}>%</span>
+                  </div>
+                  <button
+                    onClick={()=>{
+                      const nb = [...charges]; nb.splice(i,1);
+                      saveSetting('employer_charges', nb);
+                    }}
+                    style={{background:"none", border:"none", color:"#e11d48", cursor:"pointer", fontSize:14}}
+                  >✕</button>
+                </div>
+              ))}
+
+              <div style={{display:"flex", gap:8, marginTop:14}}>
+                <button
+                  onClick={()=>{
+                    const nb = [...charges, {name:"Nuevo cargo", pct:0}];
+                    saveSetting('employer_charges', nb);
+                  }}
+                  style={{...S.sel, color:"#4f8cff", background:"#4f8cff10", fontWeight:600, fontSize:12}}
+                >+ Agregar cargo</button>
+                <button
+                  onClick={()=>{
+                    const nb = charges.map((c, i) => ({
+                      name: document.getElementById(`employer-name-${i}`).value || c.name,
+                      pct: parseFloat(document.getElementById(`employer-pct-${i}`).value) || 0
+                    }));
+                    saveSetting('employer_charges', nb);
+                    alert(`Guardado. Total: ${nb.reduce((s,c)=>s+c.pct,0).toFixed(2)}%`);
+                  }}
+                  style={{...S.sel, background:"#10b981", color:"#fff", fontWeight:600, border:"none", fontSize:12}}
+                >Guardar todos</button>
+              </div>
+
+              <div style={{marginTop:16, padding:"10px 14px", background:"#1e2130", borderRadius:6, display:"flex", justifyContent:"space-between"}}>
+                <span style={{fontSize:13, color:"#8b8fa4"}}>Total patronal:</span>
+                <span style={{fontSize:14, fontWeight:700, color:"#4f8cff"}}>{total.toFixed(2)}%</span>
+              </div>
+            </div>
+          );
+        })()}
+
+        {settingsTab === "dietas" && (() => {
+          const directors = appSettings.directors || [];
+          const retentionPct = parseFloat(appSettings.dieta_retention_pct) || 15;
+          const totalDietas = directors.reduce((s, d) => s + (parseFloat(d.dieta_monthly) || 0), 0);
+          const retencion = totalDietas * retentionPct / 100;
+          const netoDietas = totalDietas - retencion;
+          return (
+            <div style={{...S.card, padding:"18px 20px"}}>
+              <div style={{fontWeight:700, fontSize:14, marginBottom:6}}>Dietas a Directores</div>
+              <div style={{fontSize:12, color:"#8b8fa4", marginBottom:14}}>
+                Pagos mensuales a directores de la Junta Directiva. Se incluyen en el asiento contable como "Dietas" (débito) y generan retención de renta.
+              </div>
+
+              <div style={{marginBottom:14, padding:"10px 14px", background:"#1e2130", borderRadius:6, display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+                <span style={{fontSize:13, color:"#8b8fa4"}}>Retención sobre dietas:</span>
+                <div style={{display:"flex", alignItems:"center", gap:6}}>
+                  <input
+                    type="number"
+                    step="0.01"
+                    defaultValue={retentionPct}
+                    id="dieta-retention-input"
+                    style={{...S.inp, width:70, textAlign:"right"}}
+                  />
+                  <span style={{color:"#8b8fa4"}}>%</span>
+                  <button
+                    onClick={()=>{
+                      const val = parseFloat(document.getElementById('dieta-retention-input').value);
+                      if (isNaN(val) || val < 0 || val > 100) { alert("Valor inválido"); return; }
+                      saveSetting('dieta_retention_pct', val);
+                      alert("Retención guardada: " + val + "%");
+                    }}
+                    style={{...S.sel, background:"#10b981", color:"#fff", fontWeight:600, border:"none", fontSize:11}}
+                  >Guardar</button>
+                </div>
+              </div>
+
+              <div style={{fontSize:12, color:"#8b8fa4", marginBottom:8, fontWeight:600}}>DIRECTORES</div>
+              {directors.map((d, i) => (
+                <div key={i} style={{display:"grid", gridTemplateColumns:"1fr 140px 40px", gap:10, marginBottom:8, alignItems:"center"}}>
+                  <input
+                    type="text"
+                    defaultValue={d.name}
+                    id={`director-name-${i}`}
+                    style={{...S.inp}}
+                    placeholder="Nombre del director"
+                  />
+                  <div style={{display:"flex", alignItems:"center", gap:4}}>
+                    <span style={{color:"#8b8fa4", fontSize:12}}>₡</span>
+                    <input
+                      type="number"
+                      defaultValue={d.dieta_monthly}
+                      id={`director-dieta-${i}`}
+                      style={{...S.inp, textAlign:"right"}}
+                    />
+                  </div>
+                  <button
+                    onClick={()=>{
+                      const nb = [...directors]; nb.splice(i,1);
+                      saveSetting('directors', nb);
+                    }}
+                    style={{background:"none", border:"none", color:"#e11d48", cursor:"pointer", fontSize:14}}
+                  >✕</button>
+                </div>
+              ))}
+
+              <div style={{display:"flex", gap:8, marginTop:14}}>
+                <button
+                  onClick={()=>{
+                    const nb = [...directors, {name:"Nuevo director", dieta_monthly:250000}];
+                    saveSetting('directors', nb);
+                  }}
+                  style={{...S.sel, color:"#4f8cff", background:"#4f8cff10", fontWeight:600, fontSize:12}}
+                >+ Agregar director</button>
+                <button
+                  onClick={()=>{
+                    const nb = directors.map((d, i) => ({
+                      name: document.getElementById(`director-name-${i}`).value || d.name,
+                      dieta_monthly: parseFloat(document.getElementById(`director-dieta-${i}`).value) || 0
+                    }));
+                    saveSetting('directors', nb);
+                    alert("Directores guardados");
+                  }}
+                  style={{...S.sel, background:"#10b981", color:"#fff", fontWeight:600, border:"none", fontSize:12}}
+                >Guardar directores</button>
+              </div>
+
+              <div style={{marginTop:18, padding:"14px 16px", background:"#1e2130", borderRadius:8, fontSize:13}}>
+                <div style={{color:"#8b8fa4", fontSize:11, textTransform:"uppercase", letterSpacing:0.5, marginBottom:8, fontWeight:600}}>Cálculo Mensual (preview)</div>
+                <div style={{display:"flex", justifyContent:"space-between", marginBottom:4}}>
+                  <span style={{color:"#8b8fa4"}}>Total dietas ({directors.length} directores):</span>
+                  <span>{fmt2(totalDietas)}</span>
+                </div>
+                <div style={{display:"flex", justifyContent:"space-between", marginBottom:4, color:"#e11d48"}}>
+                  <span>Retención ({retentionPct}%):</span>
+                  <span>-{fmt2(retencion)}</span>
+                </div>
+                <div style={{display:"flex", justifyContent:"space-between", paddingTop:6, borderTop:"1px solid #2a2d3d", fontWeight:700, color:"#10b981"}}>
+                  <span>Neto a pagar directores:</span>
+                  <span>{fmt2(netoDietas)}</span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {settingsTab === "rent" && (
           <div style={{...S.card,padding:"18px 20px"}}>
