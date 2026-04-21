@@ -48,18 +48,20 @@ export default async function handler(req, res) {
   }
 
   const { invoice_id, vehicle_id, payroll_id } = req.body || {};
-  const type = req.query.type || 'bill'; // 'bill' | 'payment' | 'vehicle' | 'journal'
+  const type = req.query.type || 'bill'; // 'bill' | 'payment' | 'vehicle' | 'journal' | 'list-accounts'
 
   if (type === 'vehicle') {
     if (!vehicle_id) return res.status(400).json({ ok: false, error: 'Falta vehicle_id en el body' });
   } else if (type === 'journal') {
     if (!payroll_id) return res.status(400).json({ ok: false, error: 'Falta payroll_id en el body' });
+  } else if (type === 'list-accounts') {
+    // no requiere body
   } else {
     if (!invoice_id) return res.status(400).json({ ok: false, error: 'Falta invoice_id en el body' });
   }
 
-  if (type !== 'bill' && type !== 'payment' && type !== 'vehicle' && type !== 'journal') {
-    return res.status(400).json({ ok: false, error: 'type debe ser "bill", "payment", "vehicle" o "journal"' });
+  if (type !== 'bill' && type !== 'payment' && type !== 'vehicle' && type !== 'journal' && type !== 'list-accounts') {
+    return res.status(400).json({ ok: false, error: 'type debe ser "bill", "payment", "vehicle", "journal" o "list-accounts"' });
   }
 
   const email = process.env.ALEGRA_EMAIL;
@@ -777,6 +779,121 @@ export default async function handler(req, res) {
         total_debit: r2(totalDebit),
         total_credit: r2(totalCredit),
         entries_count: entries.length,
+      });
+
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // ============================================================
+  // LIST-ACCOUNTS: Busca cuentas contables en Alegra por nombre
+  // y sugiere mapeo con accounting_config
+  // POST /api/alegra-sync?type=list-accounts
+  // Retorna { matches: [{ concept, suggestions: [{id, name}] }] }
+  // ============================================================
+  if (type === 'list-accounts') {
+    try {
+      // Leer TODAS las cuentas contables de Alegra (paginadas)
+      const allAccounts = [];
+      let start = 0;
+      const limit = 30;
+
+      while (true) {
+        const res = await alegraFetch(`/categories/accounting?start=${start}&limit=${limit}`);
+        if (!res.ok) {
+          return res.status(502).json({
+            ok: false,
+            error: 'Error obteniendo cuentas de Alegra',
+            alegra_response: res.data
+          });
+        }
+        const batch = Array.isArray(res.data) ? res.data : (res.data.data || []);
+        if (batch.length === 0) break;
+        allAccounts.push(...batch);
+        if (batch.length < limit) break;
+        start += limit;
+        if (start > 5000) break; // seguridad para no hacer loop infinito
+      }
+
+      // Aplanar la jerarquia (las cuentas tienen subaccounts)
+      const flatAccounts = [];
+      function flatten(accounts) {
+        for (const a of accounts) {
+          flatAccounts.push({ id: a.id, name: a.name, type: a.type, parentId: a.parentId });
+          if (Array.isArray(a.children) && a.children.length > 0) flatten(a.children);
+          if (Array.isArray(a.subaccounts) && a.subaccounts.length > 0) flatten(a.subaccounts);
+        }
+      }
+      flatten(allAccounts);
+
+      // Leer conceptos de accounting_config
+      const { data: config, error: cErr } = await supabase
+        .from('accounting_config')
+        .select('*')
+        .order('id');
+
+      if (cErr) {
+        return res.status(500).json({ ok: false, error: 'Error leyendo accounting_config' });
+      }
+
+      // Para cada concepto, buscar coincidencias por nombre
+      const normalize = (s) => (s || '').toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quitar acentos
+        .replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+      // Keywords por cada concepto (en orden de prioridad)
+      const conceptKeywords = {
+        'sueldos_gasto': ['sueldos', 'salarios'],
+        'comisiones_gasto': ['comisiones'],
+        'dietas_gasto': ['dietas directores', 'dietas a directores', 'dietas'],
+        'cargas_sociales_gasto': ['cargas sociales'],
+        'aguinaldos_gasto': ['aguinaldos', 'aguinaldo'],
+        'sueldos_por_pagar': ['sueldos por pagar'],
+        'cargas_sociales_por_pagar': ['cargas sociales por pagar'],
+        'retencion_isr_empleados': ['retencion isr', 'retencion de isr', 'retencion renta empleados', 'retencion isr empleados'],
+        'dietas_por_pagar': ['dietas por pagar'],
+        'retencion_dietas_por_pagar': ['retencion dietas', 'retencion de dietas'],
+        'aguinaldos_por_pagar': ['aguinaldos por pagar']
+      };
+
+      const matches = (config || []).map(c => {
+        const keywords = conceptKeywords[c.concept] || [c.account_name];
+        const candidates = [];
+
+        for (const kw of keywords) {
+          const kwNorm = normalize(kw);
+          for (const acc of flatAccounts) {
+            const accNorm = normalize(acc.name);
+            if (accNorm.includes(kwNorm)) {
+              // Evitar duplicados
+              if (!candidates.find(x => x.id === acc.id)) {
+                candidates.push({
+                  id: acc.id,
+                  name: acc.name,
+                  score: kwNorm.length / accNorm.length // score por similitud
+                });
+              }
+            }
+          }
+          if (candidates.length > 0) break; // con el primer keyword que matchee ya basta
+        }
+
+        // Ordenar por score (mejor match primero)
+        candidates.sort((a, b) => b.score - a.score);
+
+        return {
+          concept: c.concept,
+          account_name: c.account_name,
+          current_alegra_id: c.alegra_account_id,
+          suggestions: candidates.slice(0, 5).map(({id, name}) => ({id, name})),
+        };
+      });
+
+      return res.status(200).json({
+        ok: true,
+        total_alegra_accounts: flatAccounts.length,
+        matches,
       });
 
     } catch (err) {
