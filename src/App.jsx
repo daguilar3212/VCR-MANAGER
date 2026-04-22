@@ -2033,6 +2033,32 @@ export default function App() {
     setPickedSale(prev => prev ? { ...prev, status: "rechazada" } : null);
   };
 
+  // Eliminar venta completa (solo admin). Borra sale + sale_agents + sale_deposits
+  const deleteSale = async (sale) => {
+    const confirm1 = confirm(`¿ELIMINAR la venta #${sale.sale_number}?\n\nCliente: ${sale.client_name}\nVehículo: ${sale.vehicle_brand} ${sale.vehicle_model} (${sale.vehicle_plate})\nPrecio: ${fmt(sale.sale_price, sale.sale_currency || 'CRC')}\n\nEsta acción NO se puede deshacer.`);
+    if (!confirm1) return;
+
+    const typed = prompt(`Para confirmar, escriba: ELIMINAR`);
+    if (typed !== "ELIMINAR") {
+      alert("Cancelado. Debe escribir exactamente 'ELIMINAR'");
+      return;
+    }
+
+    try {
+      // Borrar en orden: agents -> deposits -> sale
+      await supabase.from('sale_agents').delete().eq('sale_id', sale.id);
+      await supabase.from('sale_deposits').delete().eq('sale_id', sale.id);
+      const { error } = await supabase.from('sales').delete().eq('id', sale.id);
+      if (error) { alert("Error al eliminar: " + error.message); return; }
+
+      await loadSales();
+      setPickedSale(null);
+      alert(`✅ Venta #${sale.sale_number} eliminada`);
+    } catch (err) {
+      alert("Error: " + err.message);
+    }
+  };
+
   // Cambiar vendedor de una venta. Requiere PIN admin.
   // Borra TODOS los sale_agents anteriores y deja solo el nuevo vendedor con 100% de la comisión
   const changeSaleVendor = async (sale, newAgentId) => {
@@ -2630,29 +2656,40 @@ export default function App() {
     const accMap = {};
     accountingConfig.forEach(a => { accMap[a.concept] = a; });
 
-    const totalSueldos = lines.reduce((s, l) => s + parseFloat(l.salary || 0), 0);
     const totalComisiones = lines.reduce((s, l) => s + parseFloat(l.commissions || 0), 0);
     const totalCCSSObrero = lines.reduce((s, l) => s + parseFloat(l.ccss_amount || 0), 0);
     const totalCCSSPatronal = lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
-    const totalCargasSociales = totalCCSSObrero + totalCCSSPatronal;
+    const totalCCSSTotal = totalCCSSObrero + totalCCSSPatronal;
     const totalRentaISR = lines.reduce((s, l) => s + parseFloat(l.rent_amount || 0), 0);
     const totalNetoEmpleados = lines.reduce((s, l) => s + parseFloat(l.net_pay || 0), 0);
     const totalAguinaldo = lines.reduce((s, l) => s + parseFloat(l.aguinaldo_amount || 0), 0);
     const totalDietas = parseFloat(payroll.total_dietas || 0);
     const totalDietasRet = parseFloat(payroll.total_dietas_retencion || 0);
     const totalDietasNeto = parseFloat(payroll.total_dietas_neto || 0);
+    const directorsSnapshot = Array.isArray(payroll.directors_snapshot) ? payroll.directors_snapshot : [];
 
     const debits = [];
     const credits = [];
 
-    if (totalSueldos > 0) debits.push({ concept: 'sueldos_gasto', label: 'Sueldos', amount: totalSueldos });
+    // DEBITOS: sueldos desglosados por empleado
+    for (const l of lines) {
+      const salary = parseFloat(l.salary || 0);
+      if (salary > 0) debits.push({ concept: 'sueldos_gasto', label: `Sueldo ${l.agent_name}`, amount: salary });
+    }
     if (totalComisiones > 0) debits.push({ concept: 'comisiones_gasto', label: 'Comisiones', amount: totalComisiones });
-    if (totalDietas > 0) debits.push({ concept: 'dietas_gasto', label: 'Dietas a Directores', amount: totalDietas });
-    if (totalCargasSociales > 0) debits.push({ concept: 'cargas_sociales_gasto', label: 'Cargas Sociales (obrero + patronal)', amount: totalCargasSociales });
+    // Dietas desglosadas por director
+    for (const d of directorsSnapshot) {
+      const amount = parseFloat(d.dieta_monthly || 0);
+      if (amount > 0) debits.push({ concept: 'dietas_gasto', label: `Dieta ${d.name}`, amount });
+    }
+    // Solo cargas patronales como gasto (el obrero es retención del empleado)
+    if (totalCCSSPatronal > 0) debits.push({ concept: 'cargas_sociales_gasto', label: 'Cargas Sociales Patronales', amount: totalCCSSPatronal });
     if (totalAguinaldo > 0) debits.push({ concept: 'aguinaldos_gasto', label: 'Aguinaldos (provisión)', amount: totalAguinaldo });
 
+    // CREDITOS
     if (totalNetoEmpleados > 0) credits.push({ concept: 'sueldos_por_pagar', label: 'Sueldos por Pagar', amount: totalNetoEmpleados });
-    if (totalCargasSociales > 0) credits.push({ concept: 'cargas_sociales_por_pagar', label: 'Cargas Sociales por Pagar', amount: totalCargasSociales });
+    // CCSS por pagar: obrero + patronal juntos
+    if (totalCCSSTotal > 0) credits.push({ concept: 'cargas_sociales_por_pagar', label: 'Cargas Sociales por Pagar (obrero + patronal)', amount: totalCCSSTotal });
     if (totalRentaISR > 0) credits.push({ concept: 'retencion_isr_empleados', label: 'Retención de ISR Empleados', amount: totalRentaISR });
     if (totalDietasNeto > 0) credits.push({ concept: 'dietas_por_pagar', label: 'Dietas por Pagar', amount: totalDietasNeto });
     if (totalDietasRet > 0) credits.push({ concept: 'retencion_dietas_por_pagar', label: 'Retención DIETAS', amount: totalDietasRet });
@@ -6905,7 +6942,13 @@ export default function App() {
 
                 {/* Approval buttons */}
                 {pickedSale.status === "pendiente" && (
-                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
+                    {profile?.role === "admin" && (
+                      <button onClick={() => deleteSale(pickedSale)}
+                        style={{ ...S.sel, color: "#fff", background: "#991b1b", fontWeight: 600, padding: "12px 20px", border: "none" }}>
+                        🗑️ Eliminar
+                      </button>
+                    )}
                     <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
                       style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
                       Rechazar
@@ -6921,7 +6964,13 @@ export default function App() {
                   </div>
                 )}
                 {pickedSale.status === "reservado" && (
-                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
+                    {profile?.role === "admin" && (
+                      <button onClick={() => deleteSale(pickedSale)}
+                        style={{ ...S.sel, color: "#fff", background: "#991b1b", fontWeight: 600, padding: "12px 20px", border: "none" }}>
+                        🗑️ Eliminar
+                      </button>
+                    )}
                     <button onClick={() => { const r = prompt("Razón del rechazo (opcional):"); if (r !== null) rejectSale(pickedSale.id, r); }}
                       style={{ ...S.sel, color: "#e11d48", background: "#e11d4810", fontWeight: 600, padding: "12px 24px" }}>
                       Rechazar
@@ -6948,7 +6997,13 @@ export default function App() {
                   </div>
                 )}
                 {pickedSale.status === "aprobada" && (
-                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
+                  <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16, flexWrap: "wrap" }}>
+                    {profile?.role === "admin" && (
+                      <button onClick={() => deleteSale(pickedSale)}
+                        style={{ ...S.sel, color: "#fff", background: "#991b1b", fontWeight: 600, padding: "12px 20px", border: "none" }}>
+                        🗑️ Eliminar
+                      </button>
+                    )}
                     <button onClick={() => editSale(pickedSale)}
                       style={{ ...S.sel, color: "#f59e0b", background: "#f59e0b10", fontWeight: 600, padding: "12px 24px" }}>
                       Corregir
@@ -6978,6 +7033,14 @@ export default function App() {
                 {pickedSale.status === "rechazada" && pickedSale.rejected_reason && (
                   <div style={{ marginTop: 12, padding: "10px 14px", background: "#e11d4810", borderRadius: 8, fontSize: 12, color: "#e11d48" }}>
                     Rechazada: {pickedSale.rejected_reason}
+                  </div>
+                )}
+                {pickedSale.status === "rechazada" && profile?.role === "admin" && (
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+                    <button onClick={() => deleteSale(pickedSale)}
+                      style={{ ...S.sel, color: "#fff", background: "#991b1b", fontWeight: 600, padding: "10px 20px", border: "none" }}>
+                      🗑️ Eliminar venta
+                    </button>
                   </div>
                 )}
               </div>
