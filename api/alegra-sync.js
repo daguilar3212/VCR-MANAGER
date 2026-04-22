@@ -941,10 +941,7 @@ export default async function handler(req, res) {
         date: today,
         observations: `Planilla ${payroll.name} - VCR Manager`,
         entries: entriesForAlegra,
-        // Usar numeración con prefijo "NO" que Alegra autonumera
-        numberTemplate: {
-          prefix: "NO"
-        }
+        // Sin numberTemplate: Alegra usará la numeración default configurada en la cuenta
       };
 
       const journalRes = await alegraFetch('/journals', {
