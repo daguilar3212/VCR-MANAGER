@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { supabase } from './supabase.js';
+import { useAuth } from './AuthProvider.jsx';
 import * as XLSX from 'xlsx';
 
 // ==================================================================
@@ -620,6 +621,7 @@ const SignaturePad = ({ onSave, onCancel, existingSignature }) => {
 };
 
 export default function App() {
+  const { profile, signOut } = useAuth();
   const [tab, setTab] = useState("Dashboard");
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(null);
@@ -680,6 +682,8 @@ export default function App() {
   const [showSignatureModal, setShowSignatureModal] = useState(false);
   const [saleForm, setSaleForm] = useState(null);
   const [pickedSale, setPickedSale] = useState(null);
+  const [changingVendor, setChangingVendor] = useState(false);
+  const [newVendorId, setNewVendorId] = useState("");
   const [saleFilter, setSaleFilter] = useState("all");
   const [printSale, setPrintSale] = useState(null);
   const [expandedClient, setExpandedClient] = useState(null);
@@ -2027,6 +2031,67 @@ export default function App() {
     await supabase.from('sales').update({ status: "rechazada", rejected_reason: reason || "Rechazada" }).eq('id', id);
     await loadSales();
     setPickedSale(prev => prev ? { ...prev, status: "rechazada" } : null);
+  };
+
+  // Cambiar vendedor de una venta. Requiere PIN admin.
+  // Borra TODOS los sale_agents anteriores y deja solo el nuevo vendedor con 100% de la comisión
+  const changeSaleVendor = async (sale, newAgentId) => {
+    if (!newAgentId) { alert("Seleccione un vendedor"); return; }
+
+    const pin = prompt("Ingrese su PIN de administrador para cambiar el vendedor:");
+    if (!pin) return;
+
+    // Validar PIN (el admin tiene PIN propio guardado en profiles o en una tabla, uso confirm simple si no)
+    const expectedPin = profile?.admin_pin || "1234"; // fallback
+    if (pin !== expectedPin) {
+      // Si no hay admin_pin configurado, al menos verificar con confirm
+      if (!profile?.admin_pin) {
+        if (!confirm(`¿Confirma cambiar el vendedor a ${agents.find(a => a.id === newAgentId)?.name}?\n\nEsto eliminará todos los agentes anteriores y dejará solo el nuevo con el 100% de la comisión.`)) {
+          return;
+        }
+      } else {
+        alert("PIN incorrecto");
+        return;
+      }
+    }
+
+    const newAgent = agents.find(a => a.id === newAgentId);
+    if (!newAgent) { alert("Agente no encontrado"); return; }
+
+    // Calcular nueva comisión con el fix de moneda
+    const salePrice = parseFloat(sale.sale_price) || 0;
+    const saleTC = parseFloat(sale.sale_exchange_rate) || 0;
+    const saleCurrency = sale.sale_currency || "CRC";
+    const commAmt = salePrice * 0.01; // 100% de la comisión para 1 solo vendedor
+    const commCrc = saleCurrency === "USD"
+      ? Math.round((commAmt * saleTC + Number.EPSILON) * 100) / 100
+      : Math.round((commAmt + Number.EPSILON) * 100) / 100;
+
+    // Borrar agentes anteriores e insertar el nuevo
+    await supabase.from('sale_agents').delete().eq('sale_id', sale.id);
+    await supabase.from('sale_agents').insert({
+      sale_id: sale.id,
+      agent_id: newAgentId,
+      agent_name: newAgent.name,
+      commission_pct: 1,
+      commission_amount: commAmt,
+      commission_crc: commCrc
+    });
+
+    await loadSales();
+    setPickedSale(prev => prev ? {
+      ...prev,
+      sale_agents: [{
+        agent_id: newAgentId,
+        agent_name: newAgent.name,
+        commission_pct: 1,
+        commission_amount: commAmt,
+        commission_crc: commCrc
+      }]
+    } : null);
+    setChangingVendor(false);
+    setNewVendorId("");
+    alert(`✅ Vendedor cambiado a ${newAgent.name}`);
   };
 
   const editSale = (sale) => {
@@ -6214,12 +6279,32 @@ export default function App() {
       )}
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}@media print{body{background:#fff!important}body *{visibility:hidden!important}#plan-de-ventas-print,#plan-de-ventas-print *,#print-area,#print-area *{visibility:visible!important}#plan-de-ventas-print,#print-area{position:fixed!important;inset:0!important;z-index:99999!important;background:#fff!important;padding:30px 40px!important;overflow:visible!important;color:#1a1a2e!important}#print-area table,#plan-de-ventas-print table{border-collapse:collapse!important}#print-area td,#print-area th,#plan-de-ventas-print td,#plan-de-ventas-print th{color:#1a1a2e!important;border-color:#ddd!important}.no-print,.no-print *{display:none!important;visibility:hidden!important}}`}</style>
       <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
-        <div style={{width:200,background:"#181a23",borderRight:"1px solid #2a2d3d",padding:"20px 8px",flexShrink:0,overflowY:"auto"}}>
+        <div style={{width:200,background:"#181a23",borderRight:"1px solid #2a2d3d",padding:"20px 8px",flexShrink:0,overflowY:"auto",display:"flex",flexDirection:"column"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 10px 20px",borderBottom:"1px solid #2a2d3d",marginBottom:12}}>
             <div style={{width:30,height:30,borderRadius:8,background:"linear-gradient(135deg,#e11d48,#f97316)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14}}>V</div>
             <div><div style={{fontSize:13,fontWeight:800}}>VCR Manager</div><div style={{fontSize:9,color:"#8b8fa4",letterSpacing:.5}}>VEHÍCULOS DE CR</div></div>
           </div>
-          {tabs.map(t=><button key={t} onClick={()=>setTab(t)} style={{width:"100%",textAlign:"left",padding:"9px 12px",borderRadius:8,border:"none",cursor:"pointer",background:tab===t?"#4f8cff14":"transparent",color:tab===t?"#4f8cff":"#8b8fa4",fontWeight:tab===t?600:400,fontSize:13,fontFamily:"inherit",marginBottom:2}}>{t}</button>)}
+          <div style={{flex:1}}>
+            {tabs.map(t=><button key={t} onClick={()=>setTab(t)} style={{width:"100%",textAlign:"left",padding:"9px 12px",borderRadius:8,border:"none",cursor:"pointer",background:tab===t?"#4f8cff14":"transparent",color:tab===t?"#4f8cff":"#8b8fa4",fontWeight:tab===t?600:400,fontSize:13,fontFamily:"inherit",marginBottom:2}}>{t}</button>)}
+          </div>
+          {/* Footer usuario + logout */}
+          <div style={{borderTop:"1px solid #2a2d3d",paddingTop:12,marginTop:12}}>
+            {profile && (
+              <div style={{padding:"0 10px 10px"}}>
+                <div style={{fontSize:10,color:"#8b8fa4",textTransform:"uppercase",letterSpacing:0.4,marginBottom:2}}>Conectado</div>
+                <div style={{fontSize:12,fontWeight:600,color:"#e8eaf0"}}>{profile.name || profile.email}</div>
+                {profile.role && <div style={{fontSize:10,color:"#4f8cff",textTransform:"uppercase",letterSpacing:0.4,marginTop:2}}>{profile.role}</div>}
+              </div>
+            )}
+            <button
+              onClick={()=>{
+                if (confirm("¿Cerrar sesión?")) signOut();
+              }}
+              style={{width:"100%",padding:"9px 12px",borderRadius:8,border:"1px solid #e11d4840",cursor:"pointer",background:"#e11d4810",color:"#e11d48",fontWeight:600,fontSize:12,fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}
+            >
+              🚪 Cerrar sesión
+            </button>
+          </div>
         </div>
         <main style={{flex:1,overflow:"auto",padding:22}}>
           {renderPage()}
@@ -6693,6 +6778,75 @@ export default function App() {
                       <span>Saldo total</span><span style={{ color: "#e11d48" }}>{fmt(pickedSale.total_balance, pickedSale.sale_currency === "CRC" ? "CRC" : "USD")}</span>
                     </div>
                   </div>
+                </div>
+
+                {/* Vendedor (con opción de cambiar si admin) */}
+                <div style={{ ...S.card, marginBottom: 12, padding: "10px 16px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#8b8fa4", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+                        Vendedor{pickedSale.sale_agents && pickedSale.sale_agents.length > 1 ? "es" : ""}
+                      </div>
+                      {pickedSale.sale_agents && pickedSale.sale_agents.length > 0 ? (
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#e8eaf0" }}>
+                          {pickedSale.sale_agents.map((a, i) => (
+                            <span key={i}>
+                              {i > 0 && <span style={{ color: "#8b8fa4" }}> + </span>}
+                              {a.agent_name}
+                              {pickedSale.sale_agents.length > 1 && <span style={{ fontSize: 11, color: "#8b8fa4", marginLeft: 4 }}>({(a.commission_pct * 100).toFixed(0)}%)</span>}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 13, color: "#e11d48" }}>Sin vendedor asignado</div>
+                      )}
+                      {pickedSale.sale_agents && pickedSale.sale_agents.length > 0 && (
+                        <div style={{ fontSize: 11, color: "#10b981", marginTop: 2 }}>
+                          Comisión total: {fmt2(pickedSale.sale_agents.reduce((s, a) => s + (a.commission_crc || 0), 0))}
+                        </div>
+                      )}
+                    </div>
+                    {profile?.role === "admin" && !changingVendor && (
+                      <button
+                        onClick={() => { setChangingVendor(true); setNewVendorId(""); }}
+                        style={{ ...S.sel, color: "#f97316", background: "#f9731610", fontWeight: 600, fontSize: 11 }}
+                      >
+                        ✏️ Cambiar vendedor
+                      </button>
+                    )}
+                  </div>
+                  {changingVendor && (
+                    <div style={{ marginTop: 10, padding: "10px 12px", background: "#1e2130", borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, color: "#f97316", marginBottom: 6, fontWeight: 600 }}>
+                        ⚠️ Al cambiar el vendedor se eliminarán todos los agentes anteriores. El nuevo vendedor se lleva el 100% de la comisión.
+                      </div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <select
+                          value={newVendorId}
+                          onChange={(e) => setNewVendorId(e.target.value)}
+                          style={{ ...S.inp, flex: 1 }}
+                        >
+                          <option value="">Seleccione nuevo vendedor...</option>
+                          {agents.filter(a => a.active).map(a => (
+                            <option key={a.id} value={a.id}>{a.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => changeSaleVendor(pickedSale, newVendorId)}
+                          disabled={!newVendorId}
+                          style={{ ...S.sel, background: newVendorId ? "#10b981" : "#10b98150", color: "#fff", fontWeight: 700, border: "none", fontSize: 11 }}
+                        >
+                          Confirmar
+                        </button>
+                        <button
+                          onClick={() => { setChangingVendor(false); setNewVendorId(""); }}
+                          style={{ ...S.sel, color: "#8b8fa4", fontSize: 11 }}
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Type + Payment + Deposit */}
