@@ -325,22 +325,31 @@ const SignaturePad = ({ onSave, onCancel, existingSignature }) => {
 // ============================================================
 const S = {
   body: { fontFamily: "system-ui, -apple-system, sans-serif", background: "#f4f4f5", minHeight: "100vh" },
-  header: { background: "#18181b", color: "#fff", padding: "1rem 2rem", display: "flex", justifyContent: "space-between", alignItems: "center" },
-  headerTitle: { fontSize: "1.25rem", fontWeight: 700 },
-  headerRight: { display: "flex", gap: "1rem", alignItems: "center" },
-  headerUser: { fontSize: "0.9rem", color: "#a1a1aa" },
+  header: { background: "#18181b", color: "#fff", padding: "1rem 1rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" },
+  headerTitle: { fontSize: "1rem", fontWeight: 700 },
+  headerRight: { display: "flex", gap: "0.6rem", alignItems: "center", flexWrap: "wrap" },
+  headerUser: { fontSize: "0.85rem", color: "#a1a1aa" },
   tab: (active) => ({
-    padding: "0.6rem 1.2rem",
+    padding: "0.6rem 1rem",
     background: active ? "#fff" : "transparent",
     color: active ? "#18181b" : "#71717a",
     border: "none",
     borderBottom: active ? "3px solid #4f8cff" : "3px solid transparent",
     cursor: "pointer",
     fontWeight: 600,
-    fontSize: "0.95rem",
+    fontSize: "0.9rem",
+    whiteSpace: "nowrap",
+    flexShrink: 0,
   }),
-  tabBar: { background: "#fff", padding: "0 2rem", display: "flex", borderBottom: "1px solid #e4e4e7" },
-  content: { padding: "2rem", maxWidth: 1400, margin: "0 auto" },
+  tabBar: {
+    background: "#fff",
+    padding: "0 0.5rem",
+    display: "flex",
+    borderBottom: "1px solid #e4e4e7",
+    overflowX: "auto",
+    WebkitOverflowScrolling: "touch",
+  },
+  content: { padding: "1rem", maxWidth: 1400, margin: "0 auto", overflowX: "auto" },
   card: { background: "#fff", borderRadius: 12, padding: "1.5rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", marginBottom: "1.5rem" },
   cardTitle: { fontSize: "1.1rem", fontWeight: 700, marginBottom: "1rem", color: "#18181b" },
   input: { padding: "0.5rem 0.75rem", border: "1px solid #d4d4d8", borderRadius: 6, fontSize: "0.95rem", width: "100%" },
@@ -349,9 +358,9 @@ const S = {
   btnGhost: { padding: "0.55rem 1.2rem", background: "transparent", color: "#71717a", border: "1px solid #d4d4d8", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: "0.95rem" },
   btnDanger: { padding: "0.55rem 1.2rem", background: "#e11d48", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600, fontSize: "0.95rem" },
   label: { fontSize: "0.85rem", fontWeight: 600, color: "#52525b", marginBottom: "0.35rem", display: "block" },
-  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" },
-  grid3: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1rem" },
-  grid4: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "1rem" },
+  grid2: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "1rem" },
+  grid3: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem" },
+  grid4: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem" },
   table: { width: "100%", borderCollapse: "collapse" },
   th: { padding: "0.75rem", textAlign: "left", fontSize: "0.85rem", fontWeight: 700, color: "#52525b", borderBottom: "2px solid #e4e4e7", background: "#fafafa" },
   td: { padding: "0.75rem", borderBottom: "1px solid #f4f4f5", fontSize: "0.9rem", color: "#18181b" },
@@ -384,13 +393,18 @@ function computeBreakdown(form) {
   const down = parseFloat(form.down_payment) || 0;
   const depsTotal = (form.deposits || []).reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
 
+  // Prima efectiva = MAX(down_payment, sum(deposits))
+  // Los depósitos son el desglose detallado de la prima. Si el usuario mete ambos,
+  // se toma el mayor para no contar doble.
+  const primaEfectiva = Math.max(down, depsTotal);
+
   // Traspaso: solo suma si está incluido pero NO en precio ni en financiamiento (es aparte)
   const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
   const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
 
-  const balance = salePrice + transferExtra - tradein - down - depsTotal;
+  const balance = salePrice + transferExtra - tradein - primaEfectiva;
 
-  return { salePrice, transferExtra, transferApart, tradein, down, depsTotal, balance };
+  return { salePrice, transferExtra, transferApart, tradein, down, depsTotal, primaEfectiva, balance };
 }
 
 const emptyForm = () => ({
@@ -1294,7 +1308,8 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
       {vehicles.length === 0 ? (
         <div style={S.empty}>No hay vehículos en esta categoría.</div>
       ) : (
-        <table style={S.table}>
+        <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+        <table style={{ ...S.table, minWidth: 800 }}>
           <thead>
             <tr>
               <th style={S.th}>Placa</th>
@@ -1355,6 +1370,7 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
             })}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -1439,7 +1455,8 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
         {sorted.length === 0 ? (
           <div style={S.empty}>No se encontraron vehículos disponibles.</div>
         ) : (
-          <table style={S.table}>
+          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+          <table style={{ ...S.table, minWidth: 900 }}>
             <thead>
               <tr>
                 <th style={S.th}>Estado</th>
@@ -1488,6 +1505,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 
@@ -2219,7 +2237,8 @@ function VentasListView({ sales, filter, setFilter, onNew, onPick }) {
       {sales.length === 0 ? (
         <div style={S.empty}>No tenés planes de venta todavía. Creá el primero desde el botón de arriba o desde el inventario.</div>
       ) : (
-        <table style={S.table}>
+        <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+        <table style={{ ...S.table, minWidth: 700 }}>
           <thead>
             <tr>
               <th style={S.th}>#</th>
@@ -2245,6 +2264,7 @@ function VentasListView({ sales, filter, setFilter, onNew, onPick }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   );
@@ -2656,6 +2676,9 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           <div>
             <label style={S.label}>Prima / Down payment ({form.sale_currency || "USD"})</label>
             <input style={S.input} type="number" value={form.down_payment} onChange={e => upd("down_payment", e.target.value)} />
+            <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.25rem" }}>
+              Poné el monto total de la prima acá, o dejalo vacío y detallá los depósitos abajo. No hace falta meter ambos: el sistema toma el mayor para no sumar doble.
+            </div>
           </div>
           <div>
             <label style={S.label}>Método de pago</label>
@@ -2996,7 +3019,8 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
       {sale.deposits && sale.deposits.length > 0 && (
         <div style={S.card}>
           <div style={S.cardTitle}>Depósitos detalle</div>
-          <table style={S.table}>
+          <div style={{ overflowX: "auto", WebkitOverflowScrolling: "touch" }}>
+          <table style={{ ...S.table, minWidth: 500 }}>
             <thead>
               <tr>
                 <th style={S.th}>Fecha</th>
@@ -3016,6 +3040,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
