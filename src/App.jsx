@@ -3378,7 +3378,7 @@ export default function App() {
                 if (!a) return null;
                 return (
                   <div style={{padding:"14px 18px",background:"#1e2130",borderBottom:"1px solid #2a2d3d"}}>
-                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10}}>
                       <div>
                         <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Nombre</div>
                         <input defaultValue={a.name} id="edit-agent-name" style={{...S.inp,width:"100%"}} />
@@ -3391,6 +3391,10 @@ export default function App() {
                         <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>Deducción pensión (₡)</div>
                         <input type="number" defaultValue={a.pension_deduction||0} id="edit-agent-pension" style={{...S.inp,width:"100%"}} />
                       </div>
+                      <div>
+                        <div style={{fontSize:10,color:"#8b8fa4",marginBottom:2}}>ID Contacto Alegra</div>
+                        <input type="number" defaultValue={a.alegra_contact_id||""} id="edit-agent-alegra" placeholder="ej: 271" style={{...S.inp,width:"100%"}} />
+                      </div>
                     </div>
                     <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:10}}>
                       <button onClick={()=>setEditingAgent(null)} style={{...S.sel,color:"#8b8fa4",fontSize:12}}>Cancelar</button>
@@ -3398,7 +3402,9 @@ export default function App() {
                         const name = document.getElementById('edit-agent-name').value;
                         const salary = parseFloat(document.getElementById('edit-agent-salary').value) || 0;
                         const pension = parseFloat(document.getElementById('edit-agent-pension').value) || 0;
-                        await supabase.from('agents').update({ name, salary, pension_deduction: pension }).eq('id', a.id);
+                        const alegraId = document.getElementById('edit-agent-alegra').value;
+                        const alegraContactId = alegraId ? parseInt(alegraId) : null;
+                        await supabase.from('agents').update({ name, salary, pension_deduction: pension, alegra_contact_id: alegraContactId }).eq('id', a.id);
                         await loadAgents(); setEditingAgent(null);
                       }} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:600,border:"none",fontSize:12}}>Guardar</button>
                     </div>
@@ -3532,7 +3538,7 @@ export default function App() {
 
               <div style={{fontSize:12, color:"#8b8fa4", marginBottom:8, fontWeight:600}}>DIRECTORES</div>
               {directors.map((d, i) => (
-                <div key={i} style={{display:"grid", gridTemplateColumns:"1fr 140px 40px", gap:10, marginBottom:8, alignItems:"center"}}>
+                <div key={i} style={{display:"grid", gridTemplateColumns:"1fr 140px 110px 40px", gap:10, marginBottom:8, alignItems:"center"}}>
                   <input
                     type="text"
                     defaultValue={d.name}
@@ -3549,6 +3555,13 @@ export default function App() {
                       style={{...S.inp, textAlign:"right"}}
                     />
                   </div>
+                  <input
+                    type="number"
+                    defaultValue={d.alegra_contact_id || ""}
+                    id={`director-alegra-${i}`}
+                    style={{...S.inp, textAlign:"center"}}
+                    placeholder="ID Alegra"
+                  />
                   <button
                     onClick={()=>{
                       const nb = [...directors]; nb.splice(i,1);
@@ -3562,7 +3575,7 @@ export default function App() {
               <div style={{display:"flex", gap:8, marginTop:14}}>
                 <button
                   onClick={()=>{
-                    const nb = [...directors, {name:"Nuevo director", dieta_monthly:250000}];
+                    const nb = [...directors, {name:"Nuevo director", dieta_monthly:250000, alegra_contact_id: null}];
                     saveSetting('directors', nb);
                   }}
                   style={{...S.sel, color:"#4f8cff", background:"#4f8cff10", fontWeight:600, fontSize:12}}
@@ -3571,7 +3584,8 @@ export default function App() {
                   onClick={()=>{
                     const nb = directors.map((d, i) => ({
                       name: document.getElementById(`director-name-${i}`).value || d.name,
-                      dieta_monthly: parseFloat(document.getElementById(`director-dieta-${i}`).value) || 0
+                      dieta_monthly: parseFloat(document.getElementById(`director-dieta-${i}`).value) || 0,
+                      alegra_contact_id: document.getElementById(`director-alegra-${i}`).value ? parseInt(document.getElementById(`director-alegra-${i}`).value) : null
                     }));
                     saveSetting('directors', nb);
                     alert("Directores guardados");
