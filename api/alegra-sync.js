@@ -293,10 +293,18 @@ export default async function handler(req, res) {
       const observations = `VCR #${invoice.consecutive || invoice.last_four}${plateStr}`;
 
       // 6) Payload del bill
+      // FIX: Alegra rechaza si dueDate < date. Si due_date del XML viene antes
+      // que emission_date (raro pero pasa), usamos emission_date como fallback.
+      const emissionDateStr = toDateOnly(invoice.emission_date);
+      let dueDateStr = toDateOnly(invoice.due_date) || emissionDateStr;
+      if (emissionDateStr && dueDateStr && dueDateStr < emissionDateStr) {
+        dueDateStr = emissionDateStr;
+      }
+
       const billPayload = {
         provider: contactId,
-        date: toDateOnly(invoice.emission_date),
-        dueDate: toDateOnly(invoice.due_date) || toDateOnly(invoice.emission_date),
+        date: emissionDateStr,
+        dueDate: dueDateStr,
         observations,
         warehouse: { id: "1" },
         decimalPrecision: 2,
