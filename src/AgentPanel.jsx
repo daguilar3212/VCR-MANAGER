@@ -880,31 +880,69 @@ export default function AgentPanel() {
   }
 
   async function searchClient() {
-    const cedula = (saleForm?.client_cedula || "").replace(/[\s-]/g, "").trim();
-    if (!cedula) { alert("Escribí la cédula primero."); return; }
+    const cedulaRaw = (saleForm?.client_cedula || "").replace(/[\s-]/g, "").trim();
+    if (!cedulaRaw) { alert("Escribí la cédula primero."); return; }
     setSearchingClient(true);
+
+    let foundName = "";
+    let foundInHacienda = false;
+
     try {
-      const foundLocal = await lookupClientByCedula(cedula);
-      if (foundLocal) { alert("✓ Cliente encontrado en ventas anteriores."); return; }
+      // UN SOLO call: devuelve Alegra + Hacienda en paralelo
       const res = await fetch('/api/alegra-lookup-client', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cedula })
+        body: JSON.stringify({ cedula: cedulaRaw })
       });
       const data = await res.json();
-      if (!data.ok) { alert(`Error buscando en Alegra: ${data.error || 'desconocido'}`); return; }
-      if (!data.found) { alert("Cliente no encontrado en Alegra. Llená los datos manualmente."); return; }
+
+      if (!data.ok) {
+        alert(`Error: ${data.error || 'desconocido'}`);
+        return;
+      }
+
+      // Procesar Hacienda primero (es la fuente oficial del nombre)
+      if (data.hacienda?.found) {
+        foundName = data.hacienda.nombre || "";
+        foundInHacienda = true;
+        const tipoMap = { "01": "fisica", "02": "juridica", "03": "dimex", "04": "extranjero" };
+        const tipoDetectado = tipoMap[data.hacienda.tipo_identificacion] || saleForm?.client_id_type || "fisica";
+        setSaleForm(prev => ({ ...prev, client_name: foundName, client_id_type: tipoDetectado }));
+      }
+
+      // Buscar en ventas anteriores locales (teléfonos, correo previos)
+      const foundLocal = await lookupClientByCedula(cedulaRaw);
+      if (foundLocal) {
+        alert(foundInHacienda
+          ? "✓ Nombre de Hacienda + datos de ventas anteriores cargados."
+          : "✓ Cliente encontrado en ventas anteriores.");
+        return;
+      }
+
+      // Procesar Alegra
+      if (!data.found) {
+        if (foundInHacienda) {
+          alert("✓ Nombre cargado de Hacienda. Completá teléfono, correo y otros datos manualmente.");
+        } else {
+          alert("Cliente no encontrado. Llená los datos manualmente.");
+        }
+        return;
+      }
+
+      // Cliente en Alegra: cargar contactos pero preservar nombre de Hacienda
       const c = data.client;
       setSaleForm(prev => ({
         ...prev,
-        client_id_type: c.client_id_type || prev.client_id_type || "fisica",
-        client_name: c.name || "",
+        client_id_type: foundInHacienda ? prev.client_id_type : (c.client_id_type || prev.client_id_type || "fisica"),
+        client_name: foundInHacienda ? foundName : (c.name || ""),
         client_phone1: c.phone1 || "",
         client_phone2: c.phone2 || "",
         client_email: c.email || "",
         client_address: c.address || "",
       }));
-      alert("✓ Cliente importado de Alegra. Completá los campos restantes.");
+      alert(foundInHacienda
+        ? "✓ Nombre de Hacienda + contactos de Alegra cargados."
+        : "✓ Cliente importado de Alegra. Completá los campos restantes.");
     } catch (e) {
       alert(`Error de red: ${e.message}`);
     } finally {
