@@ -627,6 +627,13 @@ const SignaturePad = ({ onSave, onCancel, existingSignature }) => {
 export default function App() {
   const { profile, signOut } = useAuth();
   const [tab, setTab] = useState("Dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false); // controlado por botón hamburguesa en móvil
+  const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 768);
+  useEffect(() => {
+    const handleResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(null);
   const [editingVehicle, setEditingVehicle] = useState(null);
@@ -6362,14 +6369,111 @@ export default function App() {
         </div>
       )}
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{margin:0;padding:0;box-sizing:border-box}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-thumb{background:#2a2d3d;border-radius:3px}select{appearance:auto}@media print{body{background:#fff!important}body *{visibility:hidden!important}#plan-de-ventas-print,#plan-de-ventas-print *,#print-area,#print-area *{visibility:visible!important}#plan-de-ventas-print,#print-area{position:fixed!important;inset:0!important;z-index:99999!important;background:#fff!important;padding:30px 40px!important;overflow:visible!important;color:#1a1a2e!important}#print-area table,#plan-de-ventas-print table{border-collapse:collapse!important}#print-area td,#print-area th,#plan-de-ventas-print td,#plan-de-ventas-print th{color:#1a1a2e!important;border-color:#ddd!important}.no-print,.no-print *{display:none!important;visibility:hidden!important}}`}</style>
-      <div style={{display:"flex",height:"100vh",overflow:"hidden"}}>
-        <div style={{width:200,background:"#181a23",borderRight:"1px solid #2a2d3d",padding:"20px 8px",flexShrink:0,overflowY:"auto",display:"flex",flexDirection:"column"}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,padding:"0 10px 20px",borderBottom:"1px solid #2a2d3d",marginBottom:12}}>
-            <div style={{width:30,height:30,borderRadius:8,background:"linear-gradient(135deg,#e11d48,#f97316)",display:"flex",alignItems:"center",justifyContent:"center",color:"#fff",fontWeight:800,fontSize:14}}>V</div>
-            <div><div style={{fontSize:13,fontWeight:800}}>VCR Manager</div><div style={{fontSize:9,color:"#8b8fa4",letterSpacing:.5}}>VEHÍCULOS DE CR</div></div>
+      <div style={{display:"flex",height:"100vh",overflow:"hidden",position:"relative"}}>
+        {/* BOTÓN HAMBURGUESA - solo visible en móvil */}
+        {isMobile && !sidebarOpen && (
+          <button
+            onClick={() => setSidebarOpen(true)}
+            style={{
+              position: "fixed",
+              top: 12,
+              left: 12,
+              zIndex: 1001,
+              width: 44,
+              height: 44,
+              borderRadius: 10,
+              background: "#181a23",
+              border: "1px solid #2a2d3d",
+              color: "#e8eaf0",
+              fontSize: 20,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            }}
+            aria-label="Abrir menú"
+          >
+            ☰
+          </button>
+        )}
+
+        {/* OVERLAY cuando sidebar está abierto en móvil */}
+        {isMobile && sidebarOpen && (
+          <div
+            onClick={() => setSidebarOpen(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.6)",
+              zIndex: 999,
+            }}
+          />
+        )}
+
+        {/* SIDEBAR */}
+        <div style={{
+          width: 220,
+          background: "#181a23",
+          borderRight: "1px solid #2a2d3d",
+          padding: "20px 8px",
+          flexShrink: 0,
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          // En móvil: oculto por default (off-screen), se muestra cuando sidebarOpen
+          position: isMobile ? "fixed" : "relative",
+          left: isMobile ? (sidebarOpen ? 0 : -240) : 0,
+          top: 0,
+          bottom: 0,
+          height: isMobile ? "100vh" : "auto",
+          zIndex: 1000,
+          transition: "left 0.25s ease-out",
+          boxShadow: isMobile && sidebarOpen ? "4px 0 16px rgba(0,0,0,0.4)" : "none",
+        }}>
+          {/* Logo VCR con botón cerrar en móvil */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"0 10px 20px",borderBottom:"1px solid #2a2d3d",marginBottom:12}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,flex:1,minWidth:0}}>
+              <img
+                src="/logo-vcr.png"
+                alt="VCR"
+                style={{
+                  height: 36,
+                  width: "auto",
+                  maxWidth: 150,
+                  objectFit: "contain",
+                  filter: "drop-shadow(0 1px 2px rgba(0,0,0,0.3))",
+                }}
+              />
+            </div>
+            {isMobile && (
+              <button
+                onClick={() => setSidebarOpen(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#8b8fa4",
+                  fontSize: 22,
+                  cursor: "pointer",
+                  padding: 4,
+                  lineHeight: 1,
+                }}
+                aria-label="Cerrar menú"
+              >
+                ×
+              </button>
+            )}
           </div>
           <div style={{flex:1}}>
-            {tabs.map(t=><button key={t} onClick={()=>setTab(t)} style={{width:"100%",textAlign:"left",padding:"9px 12px",borderRadius:8,border:"none",cursor:"pointer",background:tab===t?"#4f8cff14":"transparent",color:tab===t?"#4f8cff":"#8b8fa4",fontWeight:tab===t?600:400,fontSize:13,fontFamily:"inherit",marginBottom:2}}>{t}</button>)}
+            {tabs.map(t => (
+              <button
+                key={t}
+                onClick={() => { setTab(t); if (isMobile) setSidebarOpen(false); }}
+                style={{width:"100%",textAlign:"left",padding:"10px 12px",borderRadius:8,border:"none",cursor:"pointer",background:tab===t?"#4f8cff14":"transparent",color:tab===t?"#4f8cff":"#8b8fa4",fontWeight:tab===t?600:400,fontSize:13,fontFamily:"inherit",marginBottom:2}}
+              >
+                {t}
+              </button>
+            ))}
           </div>
           {/* Footer usuario + logout */}
           <div style={{borderTop:"1px solid #2a2d3d",paddingTop:12,marginTop:12}}>
@@ -6390,7 +6494,7 @@ export default function App() {
             </button>
           </div>
         </div>
-        <main style={{flex:1,overflow:"auto",padding:22}}>
+        <main style={{flex:1,overflow:"auto",padding: isMobile ? "60px 12px 12px" : 22, width: isMobile ? "100%" : "auto"}}>
           {renderPage()}
 
           {/* ======= GLOBAL INVOICE MODAL ======= */}
