@@ -43,10 +43,13 @@ const RAPIMAX_POL = {
   2021:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,spread:0.02,plazo_fijo:24,plazo_variable:60,plazo_max:84,comision:0.05},
   2020:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,spread:0.02,plazo_fijo:24,plazo_variable:60,plazo_max:84,comision:0.05},
   2019:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
+  2018:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
+  2017:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
+  2016:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
 };
 
 const RM_SEG_ACTIVO_USD = 71;
-const RM_SEG_ACTIVO_CRC = 35500;
+const RM_SEG_ACTIVO_CRC = 34100;
 const RM_FACTOR_SD = 0.37536;
 const RM_FACTOR_DES = 28.02297;
 const RM_FACTOR_MULT = 1000;
@@ -131,7 +134,7 @@ function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPick
 function cotizarRAPIMAX({ valorAuto, traspaso, moneda, anio, plazo, primaPct, incluirGPS = true, incluirDesempleo = true }) {
   const mon = moneda.toLowerCase();
   const pol = RAPIMAX_POL[anio];
-  if (!pol) return { error: 'RAPIMAX solo financia 2019-2027' };
+  if (!pol) return { error: 'RAPIMAX solo financia 2016-2027' };
   const precioTotal = valorAuto + traspaso;
   const primaMonto = precioTotal * primaPct;
   if (primaPct < pol.prima) return { error: `Prima mínima: ${(pol.prima*100).toFixed(0)}%` };
@@ -191,8 +194,9 @@ function cotizarCP({ valorAuto, traspaso, monedaAuto, tipoCambio }) {
 
 function bancosDispAnio(anio) {
   const b = [];
-  if (anio >= 2019 && anio <= 2027) { b.push('BAC'); b.push('RAPIMAX'); }
-  if (anio <= 2018) b.push('CP');
+  if (anio >= 2019 && anio <= 2027) b.push('BAC');
+  if (anio >= 2016 && anio <= 2027) b.push('RAPIMAX');
+  if (anio <= 2015) b.push('CP');
   return b;
 }
 
@@ -1685,17 +1689,24 @@ export default function App() {
   };
 
   // Cálculo completo del desglose de una venta
-  // Fórmula: precio + traspaso (solo si aparte) - trade-in - prima - señal - depósitos = saldo
+  // Fórmula: precio + traspaso (solo si aparte) - trade-in - prima_efectiva - señal = saldo
+  // IMPORTANTE: "prima_efectiva" = MAX(down_payment, sum(deposits))
+  // Los depósitos son el desglose detallado de la prima. Si el usuario mete ambos,
+  // se toma el mayor para no contar doble. Esto tolera casos donde:
+  //   - Solo se mete monto total en "Prima" (sin detallar depósitos)
+  //   - Solo se meten depósitos individuales (sin repetir total en "Prima")
+  //   - Se mete el total en "Prima" y además el desglose en depósitos (coinciden)
   const computeBreakdown = (form) => {
     const salePrice = parseFloat(form.sale_price) || 0;
     const tradein = parseFloat(form.tradein_amount) || 0;
     const down = parseFloat(form.down_payment) || 0;
     const signal = parseFloat(form.deposit_signal) || 0;
     const depsTotal = (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
+    const primaEfectiva = Math.max(down, depsTotal);
     const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
     const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
-    const balance = salePrice + transferExtra - tradein - down - signal - depsTotal;
-    return { salePrice, transferExtra, transferApart, tradein, down, signal, depsTotal, balance };
+    const balance = salePrice + transferExtra - tradein - primaEfectiva - signal;
+    return { salePrice, transferExtra, transferApart, tradein, down, signal, depsTotal, primaEfectiva, balance };
   };
 
   const calcBalance = (form) => {
@@ -1735,7 +1746,7 @@ export default function App() {
       } else {
         obs = `venta financiada de ${vehicle}`;
       }
-      const primaTotal = (parseFloat(form.down_payment) || 0) + depositsTotal(form);
+      const primaTotal = Math.max(parseFloat(form.down_payment) || 0, depositsTotal(form));
       if (primaTotal > 0) {
         obs += `, cliente aporta prima de ${fmt(primaTotal, form.sale_currency === "CRC" ? "CRC" : "USD")}`;
         if (depText) obs += ` en ${depText}`;
@@ -4897,6 +4908,9 @@ export default function App() {
                     {fld(`Vehículo recibido (${curSym})`, "tradein_amount", { inputType: "number" })}
                     {fld(`Prima (${curSym})`, "down_payment", { inputType: "number" })}
                     {fld(`Señal de trato (${curSym})`, "deposit_signal", { inputType: "number" })}
+                  </div>
+                  <div style={{ fontSize: 12, color: "#8b8fa4", marginTop: 6, marginBottom: 4, fontStyle: "italic" }}>
+                    Prima: poné el monto total o dejá el campo vacío y detallá los depósitos abajo. El sistema toma el mayor entre los dos para no sumar doble.
                   </div>
                   <div style={{ background: "#1e2130", borderRadius: 10, padding: "12px 16px", marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 13, color: "#8b8fa4" }}>Saldo total:</span>
