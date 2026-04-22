@@ -654,6 +654,14 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: 'La planilla debe estar confirmada o pagada' });
       }
 
+      if (payroll.period_type !== 'mensual') {
+        return res.status(400).json({
+          ok: false,
+          error: 'Solo las planillas mensuales generan asiento contable',
+          hint: 'Las quincenales pagan a empleados pero el asiento se genera al cierre mensual'
+        });
+      }
+
       // 2) Leer lineas
       const { data: lines, error: lErr } = await supabase
         .from('payroll_lines')
