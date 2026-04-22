@@ -941,7 +941,7 @@ export default async function handler(req, res) {
         date: today,
         observations: `Planilla ${payroll.name} - VCR Manager`,
         entries: entriesForAlegra,
-        journalType: {
+        category: {
           id: 99
         }
       };
