@@ -118,6 +118,124 @@ async function consultarHacienda(cedulaLimpia, supabase) {
   };
 }
 
+// ============================================================
+// TC HISTÓRICO DEL BCCR (con caché en Supabase)
+// ============================================================
+// Usa tipodecambio.paginasweb.cr que acepta fechas pasadas.
+// Formato de fecha de entrada: YYYY-MM-DD
+// Formato que pide el API: DD/MM/YYYY
+// ============================================================
+async function consultarTC(fechaYMD, supabase) {
+  // 1. Buscar en cache
+  if (supabase) {
+    try {
+      const { data: cached } = await supabase
+        .from('tc_historico')
+        .select('*')
+        .eq('fecha', fechaYMD)
+        .maybeSingle();
+
+      if (cached && cached.tc_venta) {
+        return {
+          found: true,
+          fecha: fechaYMD,
+          tc_compra: parseFloat(cached.tc_compra) || null,
+          tc_venta: parseFloat(cached.tc_venta),
+          fuente: cached.fuente || 'cache',
+          from_cache: true,
+        };
+      }
+    } catch (_) { /* cache falló, seguimos al BCCR */ }
+  }
+
+  // 2. Consultar BCCR (via tipodecambio.paginasweb.cr)
+  // Formato requerido: DD/MM/YYYY
+  const [y, m, d] = fechaYMD.split('-');
+  const fechaBCCR = `${d}/${m}/${y}`;
+
+  let resp;
+  try {
+    resp = await fetch(`https://tipodecambio.paginasweb.cr/api/${fechaBCCR}`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(6000),
+    });
+  } catch (err) {
+    // BCCR no responde → devolver último TC conocido
+    return await ultimoTcConocido(supabase, fechaYMD);
+  }
+
+  if (!resp.ok) {
+    return await ultimoTcConocido(supabase, fechaYMD);
+  }
+
+  let data;
+  try { data = await resp.json(); } catch { 
+    return await ultimoTcConocido(supabase, fechaYMD);
+  }
+
+  const compra = parseFloat(data.compra);
+  const venta = parseFloat(data.venta);
+
+  if (!venta || venta <= 0) {
+    return await ultimoTcConocido(supabase, fechaYMD);
+  }
+
+  // 3. Guardar en caché
+  if (supabase) {
+    try {
+      await supabase.from('tc_historico').upsert({
+        fecha: fechaYMD,
+        tc_compra: compra || null,
+        tc_venta: venta,
+        fuente: 'bccr',
+        fetched_at: new Date().toISOString(),
+      }, { onConflict: 'fecha' });
+    } catch (_) {}
+  }
+
+  return {
+    found: true,
+    fecha: fechaYMD,
+    tc_compra: compra || null,
+    tc_venta: venta,
+    fuente: 'bccr',
+    from_cache: false,
+  };
+}
+
+// Fallback: si BCCR falla, devolver el último TC conocido en caché
+async function ultimoTcConocido(supabase, fechaBuscada) {
+  if (!supabase) {
+    return { found: false, error: 'BCCR no disponible y no hay caché' };
+  }
+  try {
+    const { data } = await supabase
+      .from('tc_historico')
+      .select('*')
+      .lte('fecha', fechaBuscada)
+      .order('fecha', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data && data.tc_venta) {
+      return {
+        found: true,
+        fecha: data.fecha,
+        tc_compra: parseFloat(data.tc_compra) || null,
+        tc_venta: parseFloat(data.tc_venta),
+        fuente: data.fuente || 'cache',
+        from_cache: true,
+        warning: `BCCR no disponible. Usando último TC conocido del ${data.fecha}`,
+      };
+    }
+    return { found: false, error: 'BCCR no disponible y no hay TC en caché' };
+  } catch (err) {
+    return { found: false, error: err.message };
+  }
+}
+
+
 async function consultarAlegra(cleanCedula) {
   const email = process.env.ALEGRA_EMAIL;
   const token = process.env.ALEGRA_TOKEN;
@@ -187,14 +305,9 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
   }
 
-  const { cedula } = req.body || {};
-  if (!cedula || String(cedula).trim() === "") {
-    return res.status(400).json({ ok: false, error: 'Falta cedula' });
-  }
+  const body = req.body || {};
 
-  const cleanCedula = String(cedula).replace(/[\s-]/g, "").trim();
-
-  // Supabase opcional: si falla el caché, no rompe la consulta
+  // Supabase (compartido por ambas acciones)
   let supabase = null;
   try {
     if (process.env.VITE_SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY) {
@@ -205,6 +318,30 @@ export default async function handler(req, res) {
       );
     }
   } catch (_) {}
+
+  // ============================================================
+  // ACCIÓN: Consultar TC histórico
+  // Body: { action: 'tc', fecha: 'YYYY-MM-DD' }
+  // Si no se pasa fecha, usa hoy.
+  // ============================================================
+  if (body.action === 'tc') {
+    const fechaYMD = body.fecha || new Date().toISOString().slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaYMD)) {
+      return res.status(400).json({ ok: false, error: 'fecha debe ser YYYY-MM-DD' });
+    }
+    const tc = await consultarTC(fechaYMD, supabase);
+    return res.status(tc.found ? 200 : 404).json({ ok: tc.found, ...tc });
+  }
+
+  // ============================================================
+  // ACCIÓN DEFAULT: Buscar cliente por cédula (Alegra + Hacienda)
+  // ============================================================
+  const { cedula } = body;
+  if (!cedula || String(cedula).trim() === "") {
+    return res.status(400).json({ ok: false, error: 'Falta cedula' });
+  }
+
+  const cleanCedula = String(cedula).replace(/[\s-]/g, "").trim();
 
   // Consultamos Hacienda y Alegra EN PARALELO (más rápido)
   const [hacienda, alegra] = await Promise.all([
