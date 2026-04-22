@@ -2533,30 +2533,31 @@ export default function App() {
     const employerPct = employerCharges.reduce((s, c) => s + (parseFloat(c.pct) || 0), 0);
 
     const lines = employees.map(emp => {
-      const salary = r2(emp.salary || 0);
+      const salaryQ = r2(emp.salary || 0); // salario de UNA quincena
       const commData = isMensual ? getAgentCommissions(emp.id, month, year) : { total_crc: 0, missing_tc_count: 0 };
       const comms = r2(commData.total_crc);
-      const grossQ = r2(salary + comms);
-      const ccssAmt = r2(grossQ * ccss / 100);
+
+      // En MENSUAL: el bruto incluye Q1 + Q2 + comisiones
+      // En QUINCENAL: solo 1 quincena (sin comisiones)
+      const salary = isMensual ? r2(salaryQ * 2) : salaryQ;
+      const grossTotal = r2(salary + comms);
+      const ccssAmt = r2(grossTotal * ccss / 100);
 
       let rentAmt = 0;
-      let monthlyGrossForEmployer = grossQ;
       if (isMensual) {
-        // Renta sobre salario mensual bruto (Q1 + Q2 con comisiones en colones)
-        const monthlyGross = salary + salary + comms;
-        rentAmt = calcRent(monthlyGross, emp.pension_deduction || 0);
-        monthlyGrossForEmployer = monthlyGross;
+        // Renta sobre salario mensual bruto
+        rentAmt = calcRent(grossTotal, emp.pension_deduction || 0);
       }
 
       // Cargas patronales y aguinaldo: solo en planilla mensual (no aplica en quincenas)
-      const employerChargesAmount = isMensual ? r2(monthlyGrossForEmployer * employerPct / 100) : 0;
-      const aguinaldoAmount = isMensual ? r2(monthlyGrossForEmployer / 12) : 0;
+      const employerChargesAmount = isMensual ? r2(grossTotal * employerPct / 100) : 0;
+      const aguinaldoAmount = isMensual ? r2(grossTotal / 12) : 0;
 
-      const netPay = r2(grossQ - ccssAmt - rentAmt);
+      const netPay = r2(grossTotal - ccssAmt - rentAmt);
       return {
         agent_id: emp.id, agent_name: emp.name, salary, commissions: comms,
-        gross_total: grossQ, ccss_pct: ccss, ccss_amount: ccssAmt,
-        rent_base: isMensual ? r2(salary * 2 + comms) : 0,
+        gross_total: grossTotal, ccss_pct: ccss, ccss_amount: ccssAmt,
+        rent_base: isMensual ? grossTotal : 0,
         pension_deduction: r2(emp.pension_deduction || 0),
         rent_amount: rentAmt, net_pay: netPay,
         employer_charges_amount: employerChargesAmount,
@@ -7459,7 +7460,7 @@ export default function App() {
                   {pickedPay.status === "confirmed" && !payPayForm && (
                     <button onClick={()=>setPayPayForm({bank:"",reference:"",date:new Date().toISOString().split('T')[0]})} style={{...S.sel,background:"#10b981",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>Registrar Pago</button>
                   )}
-                  {(pickedPay.status === "confirmed" || pickedPay.status === "paid") && !pickedPay.alegra_journal_id && (
+                  {(pickedPay.status === "confirmed" || pickedPay.status === "paid") && !pickedPay.alegra_journal_id && pickedPay.period_type === "mensual" && (
                     <button onClick={()=>setShowJournalPreview(true)} style={{...S.sel,background:"#8b5cf6",color:"#fff",fontWeight:700,border:"none",padding:"10px 24px"}}>📊 Ver Asiento Contable</button>
                   )}
                   {pickedPay.alegra_journal_id && (
