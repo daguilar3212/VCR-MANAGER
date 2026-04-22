@@ -716,18 +716,32 @@ export default async function handler(req, res) {
       // 4) Calcular totales por concepto
       const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
-      // Por empleado: desglose completo (sueldo, comisiones, aguinaldo, neto) con alegra_contact_id
-      const empleadosData = lines.map(l => ({
-        agent_id: l.agent_id,
-        name: l.agent_name,
-        salary: parseFloat(l.salary || 0),
-        commissions: parseFloat(l.commissions || 0),
-        aguinaldo: parseFloat(l.aguinaldo_amount || 0),
-        net_pay: parseFloat(l.net_pay || 0),
-        rent: parseFloat(l.rent_amount || 0),
-        ccss_obrero: parseFloat(l.ccss_amount || 0),
-        alegra_contact_id: agentContactMap[l.agent_id] || null,
-      }));
+      // Por empleado: CONSOLIDAR todas las líneas del mismo agent_id en una sola
+      // (si una planilla tiene 2 quincenas para el mismo empleado, se suman)
+      const agentSummary = {};
+      for (const l of lines) {
+        const key = l.agent_id;
+        if (!agentSummary[key]) {
+          agentSummary[key] = {
+            agent_id: l.agent_id,
+            name: l.agent_name,
+            salary: 0,
+            commissions: 0,
+            aguinaldo: 0,
+            net_pay: 0,
+            rent: 0,
+            ccss_obrero: 0,
+            alegra_contact_id: agentContactMap[l.agent_id] || null,
+          };
+        }
+        agentSummary[key].salary += parseFloat(l.salary || 0);
+        agentSummary[key].commissions += parseFloat(l.commissions || 0);
+        agentSummary[key].aguinaldo += parseFloat(l.aguinaldo_amount || 0);
+        agentSummary[key].net_pay += parseFloat(l.net_pay || 0);
+        agentSummary[key].rent += parseFloat(l.rent_amount || 0);
+        agentSummary[key].ccss_obrero += parseFloat(l.ccss_amount || 0);
+      }
+      const empleadosData = Object.values(agentSummary);
 
       const totalCCSSObrero = lines.reduce((s, l) => s + parseFloat(l.ccss_amount || 0), 0);
       const totalCCSSPatronal = lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
@@ -737,8 +751,15 @@ export default async function handler(req, res) {
       // Desglose dietas por director (del snapshot guardado al confirmar)
       const directorsSnapshot = Array.isArray(payroll.directors_snapshot) ? payroll.directors_snapshot : [];
 
-      // Helper para agregar thirdParty si hay contacto
-      const withThirdParty = (contactId) => contactId ? { thirdParty: { id: contactId } } : {};
+      // Helper para agregar contacto/tercero a la entry.
+      // Alegra acepta el campo 'client' a nivel entry. Mando también 'thirdParty' por compatibilidad.
+      const withThirdParty = (contactId) => {
+        if (!contactId) return {};
+        return {
+          client: contactId,
+          thirdParty: { id: contactId }
+        };
+      };
 
       // 5) Armar entries del asiento
       const entries = [];
@@ -909,6 +930,9 @@ export default async function handler(req, res) {
         };
         if (e.type === 'debit') entry.debit = e.amount;
         else entry.credit = e.amount;
+        // Alegra acepta 'client' (ID directo) por entry para poblar la columna Contacto
+        if (e.client) entry.client = e.client;
+        // También mandamos thirdParty por compatibilidad con formato alternativo
         if (e.thirdParty) entry.thirdParty = e.thirdParty;
         return entry;
       });
