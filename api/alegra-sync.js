@@ -156,12 +156,33 @@ export default async function handler(req, res) {
           });
         }
 
-        const foundProvider = (Array.isArray(searchRes.data) ? searchRes.data : [])
+        const allFound = Array.isArray(searchRes.data) ? searchRes.data : [];
+        const foundProvider = allFound
           .find(c => Array.isArray(c.type) ? c.type.includes('provider') : c.type === 'provider');
 
         if (foundProvider) {
           contactId = foundProvider.id;
           contactSource = 'alegra_search';
+        } else if (allFound.length > 0) {
+          // Existe contacto con esa cédula pero no es provider (es client u otro tipo).
+          // Lo promovemos a provider manteniendo su tipo anterior.
+          const existing = allFound[0];
+          const currentTypes = Array.isArray(existing.type) ? existing.type : (existing.type ? [existing.type] : []);
+          const newTypes = currentTypes.includes('provider') ? currentTypes : [...currentTypes, 'provider'];
+
+          const updateRes = await alegraFetch(`/contacts/${existing.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ type: newTypes })
+          });
+
+          if (updateRes.ok) {
+            contactId = existing.id;
+            contactSource = 'alegra_promoted_to_provider';
+          } else {
+            // No pudo promover, usamos el contacto igual (Alegra a veces acepta bills con client)
+            contactId = existing.id;
+            contactSource = 'alegra_found_non_provider';
+          }
         } else {
           const idTypeCode = ID_TYPE_MAP[invoice.supplier_id_type] || 'CJ';
           const createPayload = {
@@ -182,12 +203,38 @@ export default async function handler(req, res) {
           });
 
           if (!createRes.ok) {
-            return res.status(502).json({
-              ok: false, step: 'create_contact', error: createRes.data, payload: createPayload
-            });
+            // Si Alegra rechazó porque ya existe (code 2006), aprovechar el contactId del error
+            const errData = createRes.data || {};
+            if (errData.code === 2006 && errData.contactId) {
+              contactId = errData.contactId;
+              contactSource = 'alegra_recovered_from_duplicate_error';
+
+              // Intentar promover a provider
+              try {
+                const getRes = await alegraFetch(`/contacts/${errData.contactId}`);
+                if (getRes.ok) {
+                  const existingContact = getRes.data || {};
+                  const currentTypes = Array.isArray(existingContact.type)
+                    ? existingContact.type
+                    : (existingContact.type ? [existingContact.type] : []);
+                  if (!currentTypes.includes('provider')) {
+                    const newTypes = [...currentTypes, 'provider'];
+                    await alegraFetch(`/contacts/${errData.contactId}`, {
+                      method: 'PUT',
+                      body: JSON.stringify({ type: newTypes })
+                    });
+                  }
+                }
+              } catch (_) { /* silencioso, ya tenemos el contactId */ }
+            } else {
+              return res.status(502).json({
+                ok: false, step: 'create_contact', error: createRes.data, payload: createPayload
+              });
+            }
+          } else {
+            contactId = createRes.data.id;
+            contactSource = 'alegra_created';
           }
-          contactId = createRes.data.id;
-          contactSource = 'alegra_created';
         }
 
         if (providerRow) {
