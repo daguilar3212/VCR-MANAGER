@@ -891,11 +891,12 @@ export default async function handler(req, res) {
 
       // 7) POST a Alegra
       // Formato correcto de Alegra para journals:
-      // { date, observations, entries: [{ accountId, debit, credit, observations, thirdParty }] }
+      // { date, observations, entries: [{ id, debit, credit, observations, thirdParty }] }
+      // donde 'id' es el account id (no accountId)
       const today = new Date().toISOString().slice(0, 10);
       const entriesForAlegra = entries.map(e => {
         const entry = {
-          accountId: e.account.id,
+          id: e.account.id,
           observations: e.observations || '',
         };
         if (e.type === 'debit') entry.debit = e.amount;
