@@ -890,11 +890,24 @@ export default async function handler(req, res) {
       }
 
       // 7) POST a Alegra
+      // Formato correcto de Alegra para journals:
+      // { date, observations, entries: [{ accountId, debit, credit, observations, thirdParty }] }
       const today = new Date().toISOString().slice(0, 10);
+      const entriesForAlegra = entries.map(e => {
+        const entry = {
+          accountId: e.account.id,
+          observations: e.observations || '',
+        };
+        if (e.type === 'debit') entry.debit = e.amount;
+        else entry.credit = e.amount;
+        if (e.thirdParty) entry.thirdParty = e.thirdParty;
+        return entry;
+      });
+
       const journalPayload = {
         date: today,
         observations: `Planilla ${payroll.name} - VCR Manager`,
-        items: entries,
+        entries: entriesForAlegra,
       };
 
       const journalRes = await alegraFetch('/journals', {
