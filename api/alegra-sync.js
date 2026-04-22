@@ -698,30 +698,59 @@ export default async function handler(req, res) {
 
       // 4) Calcular totales por concepto
       const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
-      const totalSueldos = lines.reduce((s, l) => s + parseFloat(l.salary || 0), 0);
+      // Por empleado (para desglose de sueldos)
+      const sueldosPorEmpleado = lines.map(l => ({
+        name: l.agent_name,
+        salary: parseFloat(l.salary || 0)
+      })).filter(x => x.salary > 0);
+
       const totalComisiones = lines.reduce((s, l) => s + parseFloat(l.commissions || 0), 0);
-      const totalCargasSociales = lines.reduce((s, l) =>
-        s + parseFloat(l.ccss_amount || 0) + parseFloat(l.employer_charges_amount || 0), 0);
+      const totalCCSSObrero = lines.reduce((s, l) => s + parseFloat(l.ccss_amount || 0), 0);
+      const totalCCSSPatronal = lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
+      const totalCCSSTotal = totalCCSSObrero + totalCCSSPatronal;
       const totalRetencionISR = lines.reduce((s, l) => s + parseFloat(l.rent_amount || 0), 0);
       const totalSueldosPorPagar = lines.reduce((s, l) => s + parseFloat(l.net_pay || 0), 0);
       const totalAguinaldos = lines.reduce((s, l) => s + parseFloat(l.aguinaldo_amount || 0), 0);
       const totalDietas = parseFloat(payroll.total_dietas || 0);
       const totalDietasRet = parseFloat(payroll.total_dietas_retencion || 0);
       const totalDietasNeto = parseFloat(payroll.total_dietas_neto || 0);
+      // Desglose dietas por director (del snapshot guardado al confirmar)
+      const directorsSnapshot = Array.isArray(payroll.directors_snapshot) ? payroll.directors_snapshot : [];
 
       // 5) Armar entries del asiento
       const entries = [];
 
       // DEBITOS
-      if (totalSueldos > 0) entries.push({ account: { id: accMap.sueldos_gasto }, type: 'debit', amount: r2(totalSueldos), observations: 'Sueldos ' + payroll.name });
+      // Sueldos desglosados por empleado
+      for (const emp of sueldosPorEmpleado) {
+        entries.push({
+          account: { id: accMap.sueldos_gasto },
+          type: 'debit',
+          amount: r2(emp.salary),
+          observations: `Sueldo ${emp.name} - ${payroll.name}`
+        });
+      }
       if (totalComisiones > 0) entries.push({ account: { id: accMap.comisiones_gasto }, type: 'debit', amount: r2(totalComisiones), observations: 'Comisiones ' + payroll.name });
-      if (totalDietas > 0) entries.push({ account: { id: accMap.dietas_gasto }, type: 'debit', amount: r2(totalDietas), observations: 'Dietas a Directores ' + payroll.name });
-      if (totalCargasSociales > 0) entries.push({ account: { id: accMap.cargas_sociales_gasto }, type: 'debit', amount: r2(totalCargasSociales), observations: 'Cargas sociales ' + payroll.name });
+      // Dietas desglosadas por director
+      for (const d of directorsSnapshot) {
+        const amount = parseFloat(d.dieta_monthly || 0);
+        if (amount > 0) {
+          entries.push({
+            account: { id: accMap.dietas_gasto },
+            type: 'debit',
+            amount: r2(amount),
+            observations: `Dieta ${d.name} - ${payroll.name}`
+          });
+        }
+      }
+      // Cargas Sociales: SOLO lo patronal (el obrero es retención del empleado, no gasto)
+      if (totalCCSSPatronal > 0) entries.push({ account: { id: accMap.cargas_sociales_gasto }, type: 'debit', amount: r2(totalCCSSPatronal), observations: 'Cargas sociales patronales ' + payroll.name });
       if (totalAguinaldos > 0) entries.push({ account: { id: accMap.aguinaldos_gasto }, type: 'debit', amount: r2(totalAguinaldos), observations: 'Provisión aguinaldo ' + payroll.name });
 
       // CREDITOS
       if (totalSueldosPorPagar > 0) entries.push({ account: { id: accMap.sueldos_por_pagar }, type: 'credit', amount: r2(totalSueldosPorPagar), observations: 'Sueldos por pagar ' + payroll.name });
-      if (totalCargasSociales > 0) entries.push({ account: { id: accMap.cargas_sociales_por_pagar }, type: 'credit', amount: r2(totalCargasSociales), observations: 'Cargas sociales por pagar ' + payroll.name });
+      // CCSS por pagar: obrero + patronal juntos
+      if (totalCCSSTotal > 0) entries.push({ account: { id: accMap.cargas_sociales_por_pagar }, type: 'credit', amount: r2(totalCCSSTotal), observations: 'Cargas sociales por pagar ' + payroll.name });
       if (totalRetencionISR > 0) entries.push({ account: { id: accMap.retencion_isr_empleados }, type: 'credit', amount: r2(totalRetencionISR), observations: 'Retención ISR ' + payroll.name });
       if (totalDietasNeto > 0) entries.push({ account: { id: accMap.dietas_por_pagar }, type: 'credit', amount: r2(totalDietasNeto), observations: 'Dietas por pagar ' + payroll.name });
       if (totalDietasRet > 0) entries.push({ account: { id: accMap.retencion_dietas_por_pagar }, type: 'credit', amount: r2(totalDietasRet), observations: 'Retención dietas ' + payroll.name });
