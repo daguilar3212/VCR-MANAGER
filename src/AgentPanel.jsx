@@ -1192,7 +1192,22 @@ export default function AgentPanel() {
     <div style={S.body}>
       {/* HEADER */}
       <div style={S.header}>
-        <div style={S.headerTitle}>VCR Manager - Panel Vendedor</div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flex: 1, minWidth: 0 }}>
+          <img
+            src="/logo-vcr.png"
+            alt="VCR"
+            style={{
+              height: 32,
+              width: "auto",
+              maxWidth: 130,
+              objectFit: "contain",
+              flexShrink: 0,
+            }}
+          />
+          <div style={{ ...S.headerTitle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            Panel Vendedor
+          </div>
+        </div>
         <div style={S.headerRight}>
           <span style={S.headerUser}>{profile.full_name || profile.email}</span>
           <button onClick={signOut} style={{ ...S.btnGhost, color: "#fff", borderColor: "#3f3f46" }}>
