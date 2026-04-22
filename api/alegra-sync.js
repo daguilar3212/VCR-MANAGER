@@ -54,14 +54,14 @@ export default async function handler(req, res) {
     if (!vehicle_id) return res.status(400).json({ ok: false, error: 'Falta vehicle_id en el body' });
   } else if (type === 'journal') {
     if (!payroll_id) return res.status(400).json({ ok: false, error: 'Falta payroll_id en el body' });
-  } else if (type === 'list-accounts') {
+  } else if (type === 'list-accounts' || type === 'list-numbertemplates') {
     // no requiere body
   } else {
     if (!invoice_id) return res.status(400).json({ ok: false, error: 'Falta invoice_id en el body' });
   }
 
-  if (type !== 'bill' && type !== 'payment' && type !== 'vehicle' && type !== 'journal' && type !== 'list-accounts') {
-    return res.status(400).json({ ok: false, error: 'type debe ser "bill", "payment", "vehicle", "journal" o "list-accounts"' });
+  if (type !== 'bill' && type !== 'payment' && type !== 'vehicle' && type !== 'journal' && type !== 'list-accounts' && type !== 'list-numbertemplates') {
+    return res.status(400).json({ ok: false, error: 'type debe ser "bill", "payment", "vehicle", "journal", "list-accounts" o "list-numbertemplates"' });
   }
 
   const email = process.env.ALEGRA_EMAIL;
@@ -942,7 +942,7 @@ export default async function handler(req, res) {
         observations: `Planilla ${payroll.name} - VCR Manager`,
         entries: entriesForAlegra,
         numberTemplate: {
-          prefix: "NO"
+          id: 99
         }
       };
 
@@ -1093,6 +1093,32 @@ export default async function handler(req, res) {
         total_alegra_accounts: flatAccounts.length,
         matches,
       });
+
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+
+  // ============================================================
+  // LIST-NUMBERTEMPLATES: Lista las numeraciones disponibles en Alegra
+  // Útil para encontrar el ID de la numeración de comprobantes contables
+  // ============================================================
+  if (type === 'list-numbertemplates') {
+    try {
+      // Intentar varios endpoints de numeración
+      const endpoints = [
+        '/number-templates',
+        '/number-templates?documentType=journal',
+        '/number-templates?type=journal',
+      ];
+
+      const results = {};
+      for (const ep of endpoints) {
+        const r = await alegraFetch(ep);
+        results[ep] = { status: r.status, data: r.data };
+      }
+
+      return res.status(200).json({ ok: true, results });
 
     } catch (err) {
       return res.status(500).json({ ok: false, error: err.message });
