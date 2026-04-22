@@ -664,6 +664,15 @@ export default async function handler(req, res) {
         return res.status(400).json({ ok: false, error: 'Planilla sin lineas de empleados' });
       }
 
+      // 2b) Leer agents para mapear agent_id -> alegra_contact_id
+      const { data: agentsData } = await supabase
+        .from('agents')
+        .select('id, name, alegra_contact_id');
+      const agentContactMap = {};
+      (agentsData || []).forEach(a => {
+        if (a.alegra_contact_id) agentContactMap[a.id] = a.alegra_contact_id;
+      });
+
       // 3) Leer accounting_config (mapeo conceptos -> alegra account id)
       const { data: accounts, error: aErr } = await supabase
         .from('accounting_config')
@@ -698,40 +707,62 @@ export default async function handler(req, res) {
 
       // 4) Calcular totales por concepto
       const r2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
-      // Por empleado (para desglose de sueldos)
-      const sueldosPorEmpleado = lines.map(l => ({
-        name: l.agent_name,
-        salary: parseFloat(l.salary || 0)
-      })).filter(x => x.salary > 0);
 
-      const totalComisiones = lines.reduce((s, l) => s + parseFloat(l.commissions || 0), 0);
+      // Por empleado: desglose completo (sueldo, comisiones, aguinaldo, neto) con alegra_contact_id
+      const empleadosData = lines.map(l => ({
+        agent_id: l.agent_id,
+        name: l.agent_name,
+        salary: parseFloat(l.salary || 0),
+        commissions: parseFloat(l.commissions || 0),
+        aguinaldo: parseFloat(l.aguinaldo_amount || 0),
+        net_pay: parseFloat(l.net_pay || 0),
+        rent: parseFloat(l.rent_amount || 0),
+        ccss_obrero: parseFloat(l.ccss_amount || 0),
+        alegra_contact_id: agentContactMap[l.agent_id] || null,
+      }));
+
       const totalCCSSObrero = lines.reduce((s, l) => s + parseFloat(l.ccss_amount || 0), 0);
       const totalCCSSPatronal = lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
       const totalCCSSTotal = totalCCSSObrero + totalCCSSPatronal;
-      const totalRetencionISR = lines.reduce((s, l) => s + parseFloat(l.rent_amount || 0), 0);
-      const totalSueldosPorPagar = lines.reduce((s, l) => s + parseFloat(l.net_pay || 0), 0);
-      const totalAguinaldos = lines.reduce((s, l) => s + parseFloat(l.aguinaldo_amount || 0), 0);
       const totalDietas = parseFloat(payroll.total_dietas || 0);
       const totalDietasRet = parseFloat(payroll.total_dietas_retencion || 0);
-      const totalDietasNeto = parseFloat(payroll.total_dietas_neto || 0);
       // Desglose dietas por director (del snapshot guardado al confirmar)
       const directorsSnapshot = Array.isArray(payroll.directors_snapshot) ? payroll.directors_snapshot : [];
+
+      // Helper para agregar thirdParty si hay contacto
+      const withThirdParty = (contactId) => contactId ? { thirdParty: { id: contactId } } : {};
 
       // 5) Armar entries del asiento
       const entries = [];
 
-      // DEBITOS
-      // Sueldos desglosados por empleado
-      for (const emp of sueldosPorEmpleado) {
-        entries.push({
-          account: { id: accMap.sueldos_gasto },
-          type: 'debit',
-          amount: r2(emp.salary),
-          observations: `Sueldo ${emp.name} - ${payroll.name}`
-        });
+      // ============ DEBITOS ============
+      // Sueldos desglosados por empleado (con tercero)
+      for (const emp of empleadosData) {
+        if (emp.salary > 0) {
+          entries.push({
+            account: { id: accMap.sueldos_gasto },
+            type: 'debit',
+            amount: r2(emp.salary),
+            observations: `Sueldo ${emp.name} - ${payroll.name}`,
+            ...withThirdParty(emp.alegra_contact_id)
+          });
+        }
       }
-      if (totalComisiones > 0) entries.push({ account: { id: accMap.comisiones_gasto }, type: 'debit', amount: r2(totalComisiones), observations: 'Comisiones ' + payroll.name });
-      // Dietas desglosadas por director
+
+      // Comisiones desglosadas por empleado (con tercero)
+      for (const emp of empleadosData) {
+        if (emp.commissions > 0) {
+          entries.push({
+            account: { id: accMap.comisiones_gasto },
+            type: 'debit',
+            amount: r2(emp.commissions),
+            observations: `Comisión ${emp.name} - ${payroll.name}`,
+            ...withThirdParty(emp.alegra_contact_id)
+          });
+        }
+      }
+
+      // Dietas desglosadas por director (con tercero)
       for (const d of directorsSnapshot) {
         const amount = parseFloat(d.dieta_monthly || 0);
         if (amount > 0) {
@@ -739,22 +770,111 @@ export default async function handler(req, res) {
             account: { id: accMap.dietas_gasto },
             type: 'debit',
             amount: r2(amount),
-            observations: `Dieta ${d.name} - ${payroll.name}`
+            observations: `Dieta ${d.name} - ${payroll.name}`,
+            ...withThirdParty(d.alegra_contact_id)
           });
         }
       }
-      // Cargas Sociales: SOLO lo patronal (el obrero es retención del empleado, no gasto)
-      if (totalCCSSPatronal > 0) entries.push({ account: { id: accMap.cargas_sociales_gasto }, type: 'debit', amount: r2(totalCCSSPatronal), observations: 'Cargas sociales patronales ' + payroll.name });
-      if (totalAguinaldos > 0) entries.push({ account: { id: accMap.aguinaldos_gasto }, type: 'debit', amount: r2(totalAguinaldos), observations: 'Provisión aguinaldo ' + payroll.name });
 
-      // CREDITOS
-      if (totalSueldosPorPagar > 0) entries.push({ account: { id: accMap.sueldos_por_pagar }, type: 'credit', amount: r2(totalSueldosPorPagar), observations: 'Sueldos por pagar ' + payroll.name });
-      // CCSS por pagar: obrero + patronal juntos
-      if (totalCCSSTotal > 0) entries.push({ account: { id: accMap.cargas_sociales_por_pagar }, type: 'credit', amount: r2(totalCCSSTotal), observations: 'Cargas sociales por pagar ' + payroll.name });
-      if (totalRetencionISR > 0) entries.push({ account: { id: accMap.retencion_isr_empleados }, type: 'credit', amount: r2(totalRetencionISR), observations: 'Retención ISR ' + payroll.name });
-      if (totalDietasNeto > 0) entries.push({ account: { id: accMap.dietas_por_pagar }, type: 'credit', amount: r2(totalDietasNeto), observations: 'Dietas por pagar ' + payroll.name });
-      if (totalDietasRet > 0) entries.push({ account: { id: accMap.retencion_dietas_por_pagar }, type: 'credit', amount: r2(totalDietasRet), observations: 'Retención dietas ' + payroll.name });
-      if (totalAguinaldos > 0) entries.push({ account: { id: accMap.aguinaldos_por_pagar }, type: 'credit', amount: r2(totalAguinaldos), observations: 'Aguinaldos por pagar ' + payroll.name });
+      // Cargas Sociales: SOLO lo patronal (el obrero es retención del empleado, no gasto)
+      // Sin tercero porque es un gasto global de la empresa
+      if (totalCCSSPatronal > 0) {
+        entries.push({
+          account: { id: accMap.cargas_sociales_gasto },
+          type: 'debit',
+          amount: r2(totalCCSSPatronal),
+          observations: 'Cargas sociales patronales ' + payroll.name
+        });
+      }
+
+      // Aguinaldo desglosado por empleado (con tercero)
+      for (const emp of empleadosData) {
+        if (emp.aguinaldo > 0) {
+          entries.push({
+            account: { id: accMap.aguinaldos_gasto },
+            type: 'debit',
+            amount: r2(emp.aguinaldo),
+            observations: `Aguinaldo ${emp.name} - ${payroll.name}`,
+            ...withThirdParty(emp.alegra_contact_id)
+          });
+        }
+      }
+
+      // ============ CREDITOS ============
+      // Sueldos por Pagar desglosados por empleado (con tercero)
+      for (const emp of empleadosData) {
+        if (emp.net_pay > 0) {
+          entries.push({
+            account: { id: accMap.sueldos_por_pagar },
+            type: 'credit',
+            amount: r2(emp.net_pay),
+            observations: `Sueldo por pagar ${emp.name} - ${payroll.name}`,
+            ...withThirdParty(emp.alegra_contact_id)
+          });
+        }
+      }
+
+      // CCSS por pagar: obrero + patronal juntos (sin tercero)
+      if (totalCCSSTotal > 0) {
+        entries.push({
+          account: { id: accMap.cargas_sociales_por_pagar },
+          type: 'credit',
+          amount: r2(totalCCSSTotal),
+          observations: 'Cargas sociales por pagar ' + payroll.name
+        });
+      }
+
+      // Retención ISR desglosada por empleado (con tercero)
+      for (const emp of empleadosData) {
+        if (emp.rent > 0) {
+          entries.push({
+            account: { id: accMap.retencion_isr_empleados },
+            type: 'credit',
+            amount: r2(emp.rent),
+            observations: `Retención ISR ${emp.name} - ${payroll.name}`,
+            ...withThirdParty(emp.alegra_contact_id)
+          });
+        }
+      }
+
+      // Dietas por Pagar desglosadas por director (neto = dieta - retención)
+      const dietaRetPct = parseFloat(payroll.total_dietas_retencion || 0) / (totalDietas || 1);
+      for (const d of directorsSnapshot) {
+        const dietaAmount = parseFloat(d.dieta_monthly || 0);
+        if (dietaAmount > 0) {
+          const dietaNet = r2(dietaAmount * (1 - dietaRetPct));
+          entries.push({
+            account: { id: accMap.dietas_por_pagar },
+            type: 'credit',
+            amount: dietaNet,
+            observations: `Dieta por pagar ${d.name} - ${payroll.name}`,
+            ...withThirdParty(d.alegra_contact_id)
+          });
+        }
+      }
+
+      // Retención DIETAS: total (sin tercero - es retención a Hacienda)
+      if (totalDietasRet > 0) {
+        entries.push({
+          account: { id: accMap.retencion_dietas_por_pagar },
+          type: 'credit',
+          amount: r2(totalDietasRet),
+          observations: 'Retención dietas ' + payroll.name
+        });
+      }
+
+      // Aguinaldo por pagar desglosado por empleado (con tercero)
+      for (const emp of empleadosData) {
+        if (emp.aguinaldo > 0) {
+          entries.push({
+            account: { id: accMap.aguinaldos_por_pagar },
+            type: 'credit',
+            amount: r2(emp.aguinaldo),
+            observations: `Aguinaldo por pagar ${emp.name} - ${payroll.name}`,
+            ...withThirdParty(emp.alegra_contact_id)
+          });
+        }
+      }
 
       // 6) Validar balance
       const totalDebit = entries.filter(e => e.type === 'debit').reduce((s, e) => s + e.amount, 0);
