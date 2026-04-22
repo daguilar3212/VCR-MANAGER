@@ -941,7 +941,9 @@ export default async function handler(req, res) {
         date: today,
         observations: `Planilla ${payroll.name} - VCR Manager`,
         entries: entriesForAlegra,
-        // Sin numberTemplate: Alegra usará la numeración default configurada en la cuenta
+        numberTemplate: {
+          prefix: "NO"
+        }
       };
 
       const journalRes = await alegraFetch('/journals', {
