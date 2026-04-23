@@ -1938,17 +1938,15 @@ export default function App() {
     } else {
       // targetStatus === "pendiente": validación completa de depósitos y saldo
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
-      // Cálculo previo para saber si trade-in o prima ya cubren
       const bd = computeBreakdown(saleForm);
-      const saldoCubiertoSinDepositos = bd.balance <= 0.01;
-      // Para ventas financiadas: si ya hay prima efectiva (trade-in o prima digitada),
-      // no se exigen depósitos adicionales — el trade-in o la prima ya cubren el
-      // aporte inicial del cliente. El banco financia el resto.
       const isFinanciado = saleForm.payment_method === "Financiamiento" || saleForm.payment_method === "Mixto";
-      const financiadoConPrima = isFinanciado && bd.primaEfectiva > 0.01;
-      const puedeOmitirDepositos = saldoCubiertoSinDepositos || financiadoConPrima;
+      const saldoCubiertoSinDepositos = bd.balance <= 0.01;
+      // Regla: Depósitos son obligatorios SOLO para ventas de contado con saldo > 0.
+      // - Financiamiento/Mixto: el banco cubre, el trade-in o prima son el aporte. Sin depósitos OK.
+      // - Contado con saldo 0: el trade-in ya cubre todo. Sin depósitos OK.
+      const puedeOmitirDepositos = saldoCubiertoSinDepositos || isFinanciado;
       if (validDeposits.length === 0 && !puedeOmitirDepositos) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total, o si es venta financiada con prima/trade-in, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total, o si es venta financiada, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
         return;
       }
       for (const d of validDeposits) {
@@ -5294,10 +5292,52 @@ export default function App() {
           <div style={{ ...S.card, padding: "18px 20px", marginBottom: 14 }}>
             <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: "#4f8cff" }}>Forma de Pago</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
-              {fld("Forma de pago", "payment_method", { type: "select", options: [{ v: "Contado", l: "Contado" }, { v: "Financiamiento", l: "Financiamiento" }, { v: "Mixto", l: "Mixto" }] })}
+              {fld("Forma de pago", "payment_method", {
+                type: "select",
+                options: [{ v: "Contado", l: "Contado" }, { v: "Financiamiento", l: "Financiamiento" }, { v: "Mixto", l: "Mixto" }],
+                onChange: (val) => {
+                  // Al cambiar a Financiamiento/Mixto, auto-calcular monto financiado = precio - prima efectiva
+                  if ((val === "Financiamiento" || val === "Mixto")) {
+                    const bd = computeBreakdown(saleForm);
+                    if (!saleForm.financing_amount || parseFloat(saleForm.financing_amount) <= 0) {
+                      uf("financing_amount", bd.balance > 0 ? String(Math.round(bd.balance * 100) / 100) : "");
+                    }
+                  }
+                }
+              })}
               {fld("Plazo (meses)", "financing_term_months", { inputType: "number" })}
               {fld("Interés (%)", "financing_interest_pct", { inputType: "number" })}
-              {fld(`Monto financiado (${F.sale_currency === "CRC" ? "₡" : "$"})`, "financing_amount", { inputType: "number" })}
+              {/* Monto financiado: se sugiere (precio - prima) automáticamente, pero es editable */}
+              <div style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>
+                  Monto financiado ({F.sale_currency === "CRC" ? "₡" : "$"}) <span style={{ color: "#f59e0b" }}>· auto: precio − prima</span>
+                </div>
+                <input
+                  type="number"
+                  value={F.financing_amount || ""}
+                  onChange={e => uf("financing_amount", e.target.value)}
+                  placeholder={(() => {
+                    const bd = computeBreakdown(F);
+                    return bd.balance > 0 ? String(Math.round(bd.balance * 100) / 100) : "";
+                  })()}
+                  style={{ ...S.inp, width: "100%" }}
+                />
+                {(F.payment_method === "Financiamiento" || F.payment_method === "Mixto") && (() => {
+                  const bd = computeBreakdown(F);
+                  const sugerido = Math.round(bd.balance * 100) / 100;
+                  const actual = parseFloat(F.financing_amount) || 0;
+                  const diff = Math.abs(sugerido - actual);
+                  if (!F.financing_amount || diff > 0.01) {
+                    return (
+                      <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 2, cursor: "pointer" }}
+                           onClick={() => uf("financing_amount", String(sugerido))}>
+                        💡 Sugerido: {sugerido.toLocaleString('es-CR', { minimumFractionDigits: 2 })} · click para usar
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
               {(F.payment_method === "Financiamiento" || F.payment_method === "Mixto") && fld("Días para cancelar saldo", "credit_due_days", { inputType: "number" })}
             </div>
 
