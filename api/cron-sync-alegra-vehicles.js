@@ -51,33 +51,57 @@ async function fetchTcBccr(fechaYMD) {
   }
 }
 
-async function fetchBccrIndicator(code, fechaYMD) {
-  const email = process.env.BCCR_EMAIL || '';
-  const token = process.env.BCCR_TOKEN || '';
-  if (!email || !token) return { ok: false, error: 'sin credenciales BCCR' };
+// Scrapear la página pública del BCCR que lista los TCs de ventanilla
+// de todos los bancos. Extraer específicamente la fila del BAC San José.
+// URL: https://gee.bccr.fi.cr/IndicadoresEconomicos/Cuadros/frmConsultaTCVentanilla.aspx
+// Esta página muestra los TCs VIGENTES (no históricos). Por eso el BAC solo
+// se guarda para la fecha "hoy" cuando el cron corre.
+async function fetchTcBac(fechaYMD) {
   try {
-    const fechaDMY = ymdToDMY(fechaYMD);
-    const url = `https://gee.bccr.fi.cr/Indicadores/Suscripciones/WS/wsindicadoreseconomicos.asmx/ObtenerIndicadoresEconomicos?Indicador=${code}&FechaInicio=${encodeURIComponent(fechaDMY)}&FechaFinal=${encodeURIComponent(fechaDMY)}&Nombre=VCRManager&SubNiveles=N&CorreoElectronico=${encodeURIComponent(email)}&Token=${encodeURIComponent(token)}`;
-    const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
+    const resp = await fetch('https://gee.bccr.fi.cr/IndicadoresEconomicos/Cuadros/frmConsultaTCVentanilla.aspx', {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 (compatible; VCRManager/1.0)',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
     if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
-    const xml = await resp.text();
-    const match = xml.match(/<NUM_VALOR>([0-9.,]+)<\/NUM_VALOR>/i);
-    if (!match) return { ok: false, error: 'sin NUM_VALOR' };
-    const val = parseFloat(match[1].replace(',', '.'));
-    if (!val || val <= 0) return { ok: false, error: 'valor inválido' };
-    return { ok: true, valor: val };
+    const html = await resp.text();
+
+    // La fila del BAC aparece como:
+    //   <td ...>Banco BAC San José S.A.</td>
+    //   <td ...>448,00</td>  <- compra
+    //   <td ...>462,00</td>  <- venta
+    //   <td ...>14,00</td>   <- diferencial
+    //   <td ...>21/04/2026    01:04 p.m.</td>
+    //
+    // Regex busca "BAC San Jos" (sin acento para ser robusto a encoding),
+    // luego salta el cierre </td>, y captura los dos siguientes números.
+    const bacRegex = /BAC San Jos[^<]*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*<\/td>/i;
+    const match = html.match(bacRegex);
+
+    if (!match) {
+      return { ok: false, error: 'No se encontró fila BAC San José en la página' };
+    }
+
+    // Formato CR: "448,00" -> parsear como 448.00
+    const parseNum = (s) => parseFloat(String(s).replace(/\./g, '').replace(',', '.'));
+    const compra = parseNum(match[1]);
+    const venta = parseNum(match[2]);
+
+    if (!compra || !venta || compra <= 0 || venta <= 0) {
+      return { ok: false, error: `Valores inválidos: compra=${match[1]}, venta=${match[2]}` };
+    }
+    if (compra >= venta) {
+      // Si compra >= venta, lo leímos al revés (defensa contra cambio de orden de columnas)
+      return { ok: false, error: `Orden inesperado: compra=${compra} venta=${venta}` };
+    }
+
+    return { ok: true, tc_compra: compra, tc_venta: venta };
   } catch (err) {
     return { ok: false, error: err.message };
   }
-}
-
-async function fetchTcBac(fechaYMD) {
-  const compraRes = await fetchBccrIndicator(1314, fechaYMD);
-  const ventaRes = await fetchBccrIndicator(1315, fechaYMD);
-  if (compraRes.ok && ventaRes.ok) {
-    return { ok: true, tc_compra: compraRes.valor, tc_venta: ventaRes.valor };
-  }
-  return { ok: false, error: compraRes.error || ventaRes.error };
 }
 
 async function guardarTc(supabase, fecha, fuente, tc_compra, tc_venta) {
