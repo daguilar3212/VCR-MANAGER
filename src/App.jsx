@@ -211,59 +211,27 @@ function plazoMaxRM(anio) { return RAPIMAX_POL[anio]?.plazo_max || null; }
 // Base imponible: el mayor entre valor fiscal y precio de venta.
 // Componentes:
 //   1. Impuesto de traspaso (DGT): 2.5% sobre base
-//   2. Timbres: tabla escalonada validada contra calculadora oficial
-//      del BCR (abril 2026). Se interpola linealmente entre puntos.
-//      La calculadora del BCR tiene saltos no lineales (posiblemente
-//      por declaración jurada en montos > $10k y topes en algunos
-//      timbres), por eso usamos interpolación en vez de fórmula única.
+//   2. Timbres: fórmula lineal calibrada contra la calculadora oficial
+//      del BCR (abril 2026):
+//        timbres = (base × 0.0077) + 3,026.80
+//      Incluye: Registro Nacional, Archivo Nacional, Colegio de Abogados,
+//      Timbre Fiscal, Agrario, Educación, Parques, Fauna, Cruz Roja.
+//      Nota: la calculadora del BCR tiene algunos puntos con saltos no
+//      lineales (posiblemente declaración jurada > $10k). Esta fórmula
+//      da un error de ~₡3-40k en algunos rangos. Para valores exactos
+//      al céntimo, consultar directamente la calculadora del BCR.
 //   3. Honorarios del notario: monto fijo configurable, IVA YA INCLUIDO
 //      (default ₡120,000)
-//
-// Puntos calibrados:
-//   2M → 18,426.80   |  10M → 246,628.80
-//   5M → 41,526.80   |  15M → 285,128.80
-//   7M → 60,028.80   |  27M → 219,198.80 (nota: BCR devuelve valores
-//                                          no monótonos arriba de 15M)
 // ==================================================================
 const TRASPASO_IMPUESTO_PCT = 0.025;      // 2.5% DGT Hacienda
+const TRASPASO_TIMBRES_PCT = 0.0077;      // 0.77% timbres BCR
+const TRASPASO_TIMBRES_FIJO = 3026.80;    // componente fijo timbres BCR
 const TRASPASO_HONORARIOS_DEFAULT = 120000;  // ₡ fijo, IVA incluido
-
-// Tabla de timbres BCR por base imponible (ordenada asc)
-const TRASPASO_TIMBRES_TABLA = [
-  { base: 0,          timbres: 3026.80 },
-  { base: 2000000,    timbres: 18426.80 },
-  { base: 5000000,    timbres: 41526.80 },
-  { base: 7000000,    timbres: 60028.80 },
-  { base: 10000000,   timbres: 246628.80 },
-  { base: 15000000,   timbres: 285128.80 },
-];
-
-// Interpola linealmente entre puntos de la tabla.
-// Para bases > último punto, extrapola con la pendiente del segmento final.
-function calcularTimbresBCR(baseImponibleCRC) {
-  const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
-  const tabla = TRASPASO_TIMBRES_TABLA;
-  if (base <= tabla[0].base) return tabla[0].timbres;
-  for (let i = 0; i < tabla.length - 1; i++) {
-    const a = tabla[i];
-    const b = tabla[i + 1];
-    if (base >= a.base && base <= b.base) {
-      const frac = (base - a.base) / (b.base - a.base);
-      return a.timbres + frac * (b.timbres - a.timbres);
-    }
-  }
-  // Extrapolación con pendiente del último segmento
-  const n = tabla.length;
-  const a = tabla[n - 2];
-  const b = tabla[n - 1];
-  const pendiente = (b.timbres - a.timbres) / (b.base - a.base);
-  return b.timbres + (base - b.base) * pendiente;
-}
 
 function calcularTraspaso({ baseImponibleCRC, honorariosCRC = TRASPASO_HONORARIOS_DEFAULT }) {
   const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
   const impuesto = base * TRASPASO_IMPUESTO_PCT;
-  const timbres = base > 0 ? calcularTimbresBCR(base) : 0;
+  const timbres = base > 0 ? (base * TRASPASO_TIMBRES_PCT + TRASPASO_TIMBRES_FIJO) : 0;
   const honorarios = parseFloat(honorariosCRC) || 0;
   const total = impuesto + timbres + honorarios;
   return {
@@ -7724,7 +7692,7 @@ export default function App() {
                         <span>₡{Math.round(traspasoDetalle.impuesto).toLocaleString('es-CR')}</span>
                       </div>
                       <div style={{display:"flex",justifyContent:"space-between",color:"#e8eaf0",marginBottom:2}}>
-                        <span>Timbres BCR <span style={{fontSize:8,color:"#5a5e72"}}>(tabla oficial)</span></span>
+                        <span>Timbres BCR <span style={{fontSize:8,color:"#5a5e72"}}>(0.77% + ₡3,027)</span></span>
                         <span>₡{Math.round(traspasoDetalle.timbres).toLocaleString('es-CR')}</span>
                       </div>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",color:"#e8eaf0",marginBottom:4}}>
