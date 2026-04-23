@@ -226,14 +226,24 @@ function calcularTraspaso({ baseImponibleCRC, honorariosCRC = TRASPASO_HONORARIO
 // ==================================================================
 
 // ============================================================
-// REGLA DE PLACA: MAYUSCULA sin guion, excepto CL que si lleva guion
+// ============================================================
+// REGLA DE PLACA:
+//   - Si empieza con CL: "CL-" + números (ej: CL-276558)
+//   - Si es placa normal: 3 letras + 3 números sin guion (ej: BRD442)
+//   - Todo en mayúsculas
 // ============================================================
 const formatPlate = (val) => {
   if (!val) return "";
-  const clean = String(val).toUpperCase().replace(/[\s-]/g, "");
+  // Quitar espacios, guiones, y cualquier caracter no alfanumérico. Mayúsculas.
+  const clean = String(val).toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (!clean) return "";
+  // Si empieza con CL: CL-<numeros>
   const clMatch = clean.match(/^CL(\d+)$/);
   if (clMatch) return `CL-${clMatch[1]}`;
+  // Placa normal: 3 letras + 3 números (pegados)
+  const normalMatch = clean.match(/^([A-Z]{3})(\d{3})$/);
+  if (normalMatch) return `${normalMatch[1]}${normalMatch[2]}`;
+  // Si no matchea, devolver lo que haya limpio
   return clean;
 };
 
@@ -1683,7 +1693,14 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
               </div>
               <div>
                 <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>PLACA *</label>
-                <input type="text" value={newCar.plate} onChange={e => setNewCar({ ...newCar, plate: e.target.value.toUpperCase() })} placeholder="BXX-123" style={S.input} />
+                <input
+                  type="text"
+                  value={newCar.plate}
+                  onChange={e => setNewCar({ ...newCar, plate: e.target.value.toUpperCase() })}
+                  onBlur={e => setNewCar({ ...newCar, plate: formatPlate(e.target.value) })}
+                  placeholder="BRD442 o CL-123456"
+                  style={S.input}
+                />
               </div>
               <div>
                 <label style={{ fontSize: "0.7rem", color: "#71717a", fontWeight: 600, display: "block", marginBottom: 3 }}>MARCA *</label>
