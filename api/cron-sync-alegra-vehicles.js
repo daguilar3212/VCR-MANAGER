@@ -1424,6 +1424,25 @@ export default async function handler(req, res) {
       paymentsResult = { skipped: true };
     }
 
+    // Recalcular campos derivados del showroom (Precio USD/CRC calc,
+    // Traspaso, Prima Mínima, Cuota, etc.) porque el TC cambia diario.
+    // Se puede saltar con ?skip_recalc=1
+    let recalcResult = null;
+    if (req.query.skip_recalc !== '1') {
+      try {
+        const baseUrl = process.env.APP_BASE_URL || 'https://vcr-manager.vercel.app';
+        const recalcRes = await fetch(`${baseUrl}/api/sync-showroom?action=recalc_all`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        recalcResult = await recalcRes.json().catch(() => ({ ok: false, error: 'Invalid JSON' }));
+      } catch (reErr) {
+        recalcResult = { ok: false, error: reErr.message };
+      }
+    } else {
+      recalcResult = { skipped: true };
+    }
+
     return res.status(200).json({
       ok: true,
       timestamp: new Date().toISOString(),
@@ -1431,6 +1450,7 @@ export default async function handler(req, res) {
       tc: tcResult,
       backup: backupResult,
       payments: paymentsResult,
+      recalc: recalcResult,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stats });
