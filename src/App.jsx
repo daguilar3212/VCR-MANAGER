@@ -830,7 +830,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); }, []);
 
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
   useEffect(() => {
@@ -874,6 +874,43 @@ export default function App() {
     } finally {
       setShowroomSyncing(false);
     }
+  };
+
+  // Conciliación bancaria: procesa el Sheet de pagos de Quicken
+  // y marca facturas como pagadas (Supabase + Alegra si corresponde)
+  const [processingPayments, setProcessingPayments] = useState(false);
+  const [paymentsResult, setPaymentsResult] = useState(null);
+  const [paymentImports, setPaymentImports] = useState([]);
+
+  const processBankPayments = async () => {
+    setProcessingPayments(true);
+    setPaymentsResult(null);
+    try {
+      // Llama al cron endpoint con ?manual=1 y saltando backup/vehicles para ir rápido
+      const res = await fetch('/api/cron-sync-alegra-vehicles?manual=1&skip_backup=1');
+      const j = await res.json();
+      if (j.ok && j.payments) {
+        setPaymentsResult(j.payments);
+        await loadPaymentImports();
+      } else {
+        setPaymentsResult({ ok: false, error: j.payments?.error || 'Error desconocido' });
+      }
+    } catch (e) {
+      setPaymentsResult({ ok: false, error: e.message });
+    } finally {
+      setProcessingPayments(false);
+    }
+  };
+
+  const loadPaymentImports = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('payment_imports')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (!error) setPaymentImports(data || []);
+    } catch (_) { /* tabla puede no existir aún */ }
   };
 
   const addCarToShowroom = async () => {
@@ -3826,6 +3863,133 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {/* PANEL CONCILIACIÓN BANCARIA (Quicken → Alegra) */}
+      <div style={{...S.card,padding:18,marginBottom:24}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12,marginBottom:14}}>
+          <div>
+            <div style={{fontSize:15,fontWeight:700,color:"#e8eaf0"}}>🏦 Conciliación Bancaria</div>
+            <div style={{fontSize:11,color:"#8b8fa4",marginTop:2}}>
+              Procesa los pagos del Sheet de Quicken y los aplica a Alegra automáticamente
+            </div>
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {paymentsResult?.sheet_url && (
+              <a href={paymentsResult.sheet_url} target="_blank" rel="noreferrer"
+                style={{...S.btnGhost,fontSize:11,padding:"6px 10px",textDecoration:"none",display:"inline-block"}}>
+                📄 Abrir Sheet
+              </a>
+            )}
+            <button
+              onClick={processBankPayments}
+              disabled={processingPayments}
+              style={{...S.btn,background:"#10b981",opacity:processingPayments?0.5:1,fontSize:12,padding:"8px 14px"}}
+            >
+              {processingPayments ? "⏳ Procesando..." : "▶ Procesar pagos"}
+            </button>
+          </div>
+        </div>
+
+        {paymentsResult && paymentsResult.ok && (
+          <>
+            {paymentsResult.created_new && (
+              <div style={{padding:"10px 14px",background:"#f59e0b18",border:"1px solid #f59e0b44",borderRadius:6,marginBottom:12}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#f59e0b",marginBottom:4}}>
+                  ⚠️ Sheet creado automáticamente
+                </div>
+                <div style={{fontSize:11,color:"#e8eaf0",marginBottom:6}}>
+                  Guardá este ID en Vercel como env var <code>PAYMENTS_SHEET_ID</code> para no crear uno nuevo cada vez:
+                </div>
+                <code style={{fontSize:11,background:"#0a0b0f",padding:"6px 10px",display:"block",borderRadius:4,color:"#4f8cff",userSelect:"all"}}>
+                  {paymentsResult.sheet_id}
+                </code>
+              </div>
+            )}
+
+            {/* Totales de la última corrida */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:14}}>
+              {[
+                ['✅ Aplicados Alegra','paid_alegra','#10b981'],
+                ['📝 Solo Supabase','paid_supabase_only','#4f8cff'],
+                ['🟡 Ambiguos','ambiguous','#f59e0b'],
+                ['❌ Sin match','unmatched','#e11d48'],
+                ['⚠️ Error','error','#e11d48'],
+                ['♻️ Duplicados','duplicate','#8b8fa4'],
+                ['⏭️ Ya procesados','already_processed','#8b8fa4'],
+              ].map(([lbl,key,color]) => (
+                <div key={key} style={{padding:"8px 10px",background:"#1e2130",borderRadius:6,border:`1px solid ${color}22`}}>
+                  <div style={{fontSize:9,color,textTransform:"uppercase",letterSpacing:.3}}>{lbl}</div>
+                  <div style={{fontSize:18,fontWeight:800,color}}>{paymentsResult.totals?.[key] || 0}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {paymentsResult && !paymentsResult.ok && (
+          <div style={{padding:"10px 14px",background:"#e11d4818",border:"1px solid #e11d4844",borderRadius:6,marginBottom:12,fontSize:12,color:"#e11d48"}}>
+            ❌ Error: {paymentsResult.error}
+          </div>
+        )}
+
+        {/* Tabla con últimos payment_imports */}
+        {paymentImports.length > 0 && (
+          <div style={{background:"#1e2130",borderRadius:6,overflow:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead>
+                <tr style={{background:"#12141c",borderBottom:"1px solid #2a2d3d"}}>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Estado</th>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Banco</th>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Fecha</th>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Beneficiario</th>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Memo</th>
+                  <th style={{padding:"8px 10px",textAlign:"right",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Monto</th>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Factura</th>
+                  <th style={{padding:"8px 10px",textAlign:"left",fontSize:10,color:"#8b8fa4",textTransform:"uppercase"}}>Notas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paymentImports.slice(0,25).map(p => {
+                  const statusColors = {
+                    paid_alegra: {bg:'#10b98120',fg:'#10b981',lbl:'✅ Alegra'},
+                    paid_supabase_only: {bg:'#4f8cff20',fg:'#4f8cff',lbl:'📝 Supabase'},
+                    ambiguous: {bg:'#f59e0b20',fg:'#f59e0b',lbl:'🟡 Ambiguo'},
+                    unmatched: {bg:'#e11d4820',fg:'#e11d48',lbl:'❌ Sin match'},
+                    error: {bg:'#e11d4820',fg:'#e11d48',lbl:'⚠️ Error'},
+                    duplicate: {bg:'#8b8fa420',fg:'#8b8fa4',lbl:'♻️ Duplicado'},
+                  };
+                  const sc = statusColors[p.status] || {bg:'#8b8fa420',fg:'#8b8fa4',lbl:p.status};
+                  return (
+                    <tr key={p.id} style={{borderBottom:"1px solid #2a2d3d"}}>
+                      <td style={{padding:"6px 10px"}}>
+                        <span style={{background:sc.bg,color:sc.fg,padding:"2px 6px",borderRadius:3,fontSize:10,fontWeight:600,whiteSpace:"nowrap"}}>
+                          {sc.lbl}
+                        </span>
+                      </td>
+                      <td style={{padding:"6px 10px",color:"#8b8fa4",fontSize:10}}>{p.bank_sheet}</td>
+                      <td style={{padding:"6px 10px",color:"#e8eaf0"}}>{p.row_date || '—'}</td>
+                      <td style={{padding:"6px 10px",color:"#e8eaf0",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.payee || '—'}</td>
+                      <td style={{padding:"6px 10px",color:"#8b8fa4",fontSize:10}}>{p.memo || '—'}</td>
+                      <td style={{padding:"6px 10px",textAlign:"right",color:"#e8eaf0",fontWeight:600}}>
+                        {p.currency === 'USD' ? '$' : '₡'}{Number(p.amount || 0).toLocaleString('es-CR')}
+                      </td>
+                      <td style={{padding:"6px 10px",color:"#4f8cff",fontSize:10}}>{p.matched_invoice_consecutive || '—'}</td>
+                      <td style={{padding:"6px 10px",color:"#8b8fa4",fontSize:10,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.notes || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {!paymentsResult && paymentImports.length === 0 && (
+          <div style={{padding:"20px 14px",textAlign:"center",fontSize:12,color:"#8b8fa4"}}>
+            Aún no hay pagos procesados. Presioná "▶ Procesar pagos" para empezar.
+          </div>
+        )}
+      </div>
+
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14}}>
         <div style={S.card}>
           <div style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",fontWeight:700,fontSize:14}}>Vehículos</div>
