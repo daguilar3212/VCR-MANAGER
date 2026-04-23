@@ -688,6 +688,12 @@ export default function App() {
   const [showDelete, setShowDelete] = useState(false);
   const [deletePin, setDeletePin] = useState("");
   const [deleteErr, setDeleteErr] = useState("");
+
+  // ============================================================
+  // TCs actuales (BCCR y BAC) - se cargan al abrir la app
+  // Estructura: { bccr: {compra, venta, fecha}, bac: {compra, venta, fecha} }
+  // ============================================================
+  const [tcRates, setTcRates] = useState({ bccr: null, bac: null });
   const [vehicleForm, setVehicleForm] = useState(null);
   const [vehicleFormLine, setVehicleFormLine] = useState(null); // which invoice line is selected
   const [completedVehicleLines, setCompletedVehicleLines] = useState(new Set()); // line indices already added
@@ -816,7 +822,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); }, []);
 
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
   useEffect(() => {
@@ -5797,6 +5803,58 @@ export default function App() {
     return { crc: amt, usd: amt / t };
   };
 
+  // ============================================================
+  // TCs con fuente (BCCR o BAC)
+  // ============================================================
+  // Carga los últimos TCs de cada fuente desde Supabase
+  const loadTcRates = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('tc_historico')
+        .select('fecha, fuente, tc_compra, tc_venta')
+        .order('fecha', { ascending: false })
+        .limit(20);
+      if (error) return;
+      const bccr = (data || []).find(r => r.fuente === 'bccr');
+      const bac = (data || []).find(r => r.fuente === 'bac');
+      setTcRates({
+        bccr: bccr ? { compra: parseFloat(bccr.tc_compra), venta: parseFloat(bccr.tc_venta), fecha: bccr.fecha } : null,
+        bac: bac ? { compra: parseFloat(bac.tc_compra), venta: parseFloat(bac.tc_venta), fecha: bac.fecha } : null,
+      });
+    } catch (_) { /* silent */ }
+  };
+
+  // Obtener TC aplicable según fuente y dirección
+  //   fuente: 'bccr' (costos) o 'bac' (ventas)
+  //   direction: 'usd_to_crc' usa venta, 'crc_to_usd' usa compra
+  // Fallback: si BAC no disponible, usa BCCR. Si nada, retorna 0.
+  const getTC = (fuente = 'bccr', direction = 'usd_to_crc') => {
+    const primary = tcRates[fuente];
+    const fallback = fuente === 'bac' ? tcRates.bccr : tcRates.bccr;
+    const src = primary || fallback;
+    if (!src) return { tc: 0, fecha: null, fuenteReal: null };
+    const tc = direction === 'usd_to_crc' ? src.venta : src.compra;
+    return {
+      tc: tc || 0,
+      fecha: src.fecha,
+      fuenteReal: primary ? fuente : (fuente === 'bac' ? 'bccr-fallback' : 'bccr'),
+    };
+  };
+
+  // Convierte un monto usando el TC correcto según dirección y fuente
+  // amount: número, currency: moneda original ('USD'|'CRC'), fuente: 'bccr'|'bac'
+  // Retorna: { crc, usd, tcUsado, fuenteReal, fecha }
+  const convertirConFuente = (amount, currency, fuente = 'bccr') => {
+    const amt = parseFloat(amount) || 0;
+    if (currency === 'USD') {
+      const { tc, fecha, fuenteReal } = getTC(fuente, 'usd_to_crc');
+      return { crc: tc > 0 ? amt * tc : 0, usd: amt, tcUsado: tc, fuenteReal, fecha };
+    } else {
+      const { tc, fecha, fuenteReal } = getTC(fuente, 'crc_to_usd');
+      return { crc: amt, usd: tc > 0 ? amt / tc : 0, tcUsado: tc, fuenteReal, fecha };
+    }
+  };
+
   // Render de monto dual currency: grande la moneda original, chiquito la conversión
   // props: { amount, currency, tc, align }
   const DualAmount = ({ amount, currency, tc, align = "left", bigSize = 18, smallSize = 11 }) => {
@@ -5812,6 +5870,29 @@ export default function App() {
         <div style={{ fontSize: smallSize, color: "#8b8fa4", marginTop: 2 }}>
           ≈ {altSymbol}{fmt0(altValue)} · TC {tc || "?"}
         </div>
+      </div>
+    );
+  };
+
+  // Render de monto mostrando SIEMPRE CRC y USD lado a lado.
+  // Usa TC del tcRates (BCCR para costos, BAC para precios de venta).
+  // props: { amount, currency, fuente ('bccr'|'bac'), align, size }
+  const MoneyBoth = ({ amount, currency, fuente = 'bccr', align = "right", size = 13, showSource = false }) => {
+    const { crc, usd, tcUsado, fuenteReal } = convertirConFuente(amount, currency, fuente);
+    const origIsUSD = currency === 'USD';
+    return (
+      <div style={{ textAlign: align, lineHeight: 1.2 }}>
+        <div style={{ fontSize: size, fontWeight: origIsUSD ? 400 : 700, color: origIsUSD ? "#8b8fa4" : "#e8eaf0" }}>
+          ₡{fmt0(crc)}
+        </div>
+        <div style={{ fontSize: size, fontWeight: origIsUSD ? 700 : 400, color: origIsUSD ? "#e8eaf0" : "#8b8fa4" }}>
+          ${fmt0(usd)}
+        </div>
+        {showSource && (
+          <div style={{ fontSize: 9, color: "#6b6f84", marginTop: 2 }}>
+            TC {fmt0(tcUsado)} · {fuenteReal || '—'}
+          </div>
+        )}
       </div>
     );
   };
@@ -6266,25 +6347,44 @@ export default function App() {
 
         {/* ==================== PANEL DE COSTOS (SOLO ADMIN) ==================== */}
         {isAdmin && (() => {
-          // Calcular totales
-          const costCur = vehicleCost?.purchase_cost_currency || "USD";
-          const costTc = parseFloat(vehicleCost?.purchase_cost_tc) || 0;
-          const costAmt = parseFloat(vehicleCost?.purchase_cost_amount) || 0;
-          const { crc: costCRC, usd: costUSD } = convertirMontos(costAmt, costCur, costTc);
+          // TC BCCR para costos (usar el del día o el guardado en el item)
+          const bccrVenta = tcRates.bccr?.venta || 0;
+          const bccrCompra = tcRates.bccr?.compra || 0;
+          // TC BAC para precios de venta (fallback a BCCR si no hay)
+          const bacVenta = tcRates.bac?.venta || tcRates.bccr?.venta || 0;
 
+          // Helper: convierte monto a CRC y USD usando TC BCCR del día
+          // Si el item trae su propio TC (histórico), lo respetamos para CRC/USD originales
+          const toBoth = (amt, cur, tcItem) => {
+            const a = parseFloat(amt) || 0;
+            // Si hay TC del item y coincide con la moneda, úsalo; sino, usa BCCR
+            if (cur === 'USD') {
+              const tc = parseFloat(tcItem) > 0 ? parseFloat(tcItem) : bccrVenta;
+              return { crc: tc > 0 ? a * tc : 0, usd: a, tc };
+            } else {
+              const tc = parseFloat(tcItem) > 0 ? parseFloat(tcItem) : bccrCompra;
+              return { crc: a, usd: tc > 0 ? a / tc : 0, tc };
+            }
+          };
+
+          // Costo de compra
+          const costCur = vehicleCost?.purchase_cost_currency || "USD";
+          const costTcItem = parseFloat(vehicleCost?.purchase_cost_tc) || 0;
+          const costAmt = parseFloat(vehicleCost?.purchase_cost_amount) || 0;
+          const { crc: costCRC, usd: costUSD } = toBoth(costAmt, costCur, costTcItem);
+
+          // Facturas
           let autoTotalCRC = 0, autoTotalUSD = 0;
           invoiceCosts.forEach(inv => {
-            const amt = parseFloat(inv.total) || 0;
-            const cur = inv.currency || "CRC";
-            const tc = parseFloat(inv.exchange_rate) || costTc || 500;
-            const { crc, usd } = convertirMontos(amt, cur, tc);
+            const { crc, usd } = toBoth(inv.total, inv.currency || "CRC", inv.exchange_rate);
             autoTotalCRC += crc;
             autoTotalUSD += usd;
           });
 
+          // Manuales
           let manualTotalCRC = 0, manualTotalUSD = 0;
           manualCosts.forEach(m => {
-            const { crc, usd } = convertirMontos(m.amount, m.currency, m.tc);
+            const { crc, usd } = toBoth(m.amount, m.currency, m.tc);
             manualTotalCRC += crc;
             manualTotalUSD += usd;
           });
@@ -6292,19 +6392,45 @@ export default function App() {
           const totalCostCRC = costCRC + autoTotalCRC + manualTotalCRC;
           const totalCostUSD = costUSD + autoTotalUSD + manualTotalUSD;
 
-          // Precio de venta (del showroom)
+          // Precio de venta: usar TC BAC (fallback BCCR)
           const ventaCur = v.currency || "USD";
           const ventaAmt = parseFloat(v.price) || 0;
-          const ventaTC = costTc || 500;
-          const { crc: ventaCRC, usd: ventaUSD } = convertirMontos(ventaAmt, ventaCur, ventaTC);
+          let ventaCRC = 0, ventaUSD = 0;
+          if (ventaCur === 'USD') {
+            ventaCRC = bacVenta > 0 ? ventaAmt * bacVenta : 0;
+            ventaUSD = ventaAmt;
+          } else {
+            ventaCRC = ventaAmt;
+            // Para CRC -> USD usar TC compra del BAC
+            const bacCompra = tcRates.bac?.compra || tcRates.bccr?.compra || 0;
+            ventaUSD = bacCompra > 0 ? ventaAmt / bacCompra : 0;
+          }
 
           const utilidadCRC = ventaCRC - totalCostCRC;
           const utilidadUSD = ventaUSD - totalCostUSD;
           const margenPct = ventaCRC > 0 ? (utilidadCRC / ventaCRC * 100) : 0;
 
+          // Badge de TCs en uso
+          const tcInfoLine = (
+            <div style={{fontSize: 10, color: "#8b8fa4", display: "flex", gap: 14, flexWrap: "wrap"}}>
+              <span>
+                TC BCCR costos: <b style={{color: "#e8eaf0"}}>
+                  {bccrVenta > 0 ? `₡${fmt0(bccrVenta)}` : "—"}
+                </b>
+                {tcRates.bccr?.fecha && <span style={{marginLeft: 4, color: "#6b6f84"}}>({tcRates.bccr.fecha})</span>}
+              </span>
+              <span>
+                TC BAC venta: <b style={{color: "#e8eaf0"}}>
+                  {tcRates.bac?.venta ? `₡${fmt0(tcRates.bac.venta)}` : "—"}
+                </b>
+                {!tcRates.bac && bacVenta > 0 && <span style={{color: "#f59e0b", marginLeft: 4}}>(usando BCCR)</span>}
+              </span>
+            </div>
+          );
+
           return (
             <div style={{...S.card, padding: 20, marginBottom: 16, border: "2px solid #4f8cff33"}}>
-              <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12}}>
+              <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8}}>
                 <div style={{display: "flex", alignItems: "center", gap: 10}}>
                   <span style={{fontSize: 16, fontWeight: 800, color: "#4f8cff"}}>💰 Panel de Costos (Admin)</span>
                   {loadingCosts && <span style={{fontSize: 12, color: "#8b8fa4"}}>Cargando...</span>}
@@ -6317,33 +6443,30 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Resumen siempre visible */}
+              <div style={{marginBottom: 12}}>
+                {tcInfoLine}
+              </div>
+
+              {/* Resumen siempre visible - TODAS las métricas con doble columna CRC/USD */}
               <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: showCostPanel ? 16 : 0}}>
                 <div style={{padding: 12, background: "#1e2130", borderRadius: 8}}>
-                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Precio Venta</div>
-                  <DualAmount amount={ventaAmt} currency={ventaCur} tc={ventaTC} bigSize={16} />
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Precio Venta</div>
+                  <div style={{fontSize: 15, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(ventaCRC)}</div>
+                  <div style={{fontSize: 13, fontWeight: 600, color: "#8b8fa4", marginTop: 2}}>${fmt0(ventaUSD)}</div>
                 </div>
                 <div style={{padding: 12, background: "#1e2130", borderRadius: 8}}>
-                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Costo Total</div>
-                  <div style={{fontSize: 16, fontWeight: 700, color: "#e8eaf0"}}>
-                    ₡{fmt0(totalCostCRC)}
-                  </div>
-                  <div style={{fontSize: 11, color: "#8b8fa4", marginTop: 2}}>
-                    ≈ ${fmt0(totalCostUSD)}
-                  </div>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Costo Total</div>
+                  <div style={{fontSize: 15, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(totalCostCRC)}</div>
+                  <div style={{fontSize: 13, fontWeight: 600, color: "#8b8fa4", marginTop: 2}}>${fmt0(totalCostUSD)}</div>
                 </div>
                 <div style={{padding: 12, background: utilidadCRC >= 0 ? "#10b98118" : "#e11d4818", borderRadius: 8}}>
-                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Utilidad</div>
-                  <div style={{fontSize: 16, fontWeight: 700, color: utilidadCRC >= 0 ? "#10b981" : "#e11d48"}}>
-                    ₡{fmt0(utilidadCRC)}
-                  </div>
-                  <div style={{fontSize: 11, color: "#8b8fa4", marginTop: 2}}>
-                    ≈ ${fmt0(utilidadUSD)}
-                  </div>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Utilidad</div>
+                  <div style={{fontSize: 15, fontWeight: 700, color: utilidadCRC >= 0 ? "#10b981" : "#e11d48"}}>₡{fmt0(utilidadCRC)}</div>
+                  <div style={{fontSize: 13, fontWeight: 600, color: utilidadUSD >= 0 ? "#10b981" : "#e11d48", opacity: 0.75, marginTop: 2}}>${fmt0(utilidadUSD)}</div>
                 </div>
                 <div style={{padding: 12, background: margenPct >= 10 ? "#10b98118" : margenPct >= 0 ? "#f59e0b18" : "#e11d4818", borderRadius: 8}}>
-                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Margen</div>
-                  <div style={{fontSize: 20, fontWeight: 800, color: margenPct >= 10 ? "#10b981" : margenPct >= 0 ? "#f59e0b" : "#e11d48"}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Margen</div>
+                  <div style={{fontSize: 22, fontWeight: 800, color: margenPct >= 10 ? "#10b981" : margenPct >= 0 ? "#f59e0b" : "#e11d48"}}>
                     {margenPct.toFixed(1)}%
                   </div>
                 </div>
@@ -6379,17 +6502,18 @@ export default function App() {
                       </button>
                     </div>
                     {vehicleCost ? (
-                      <div style={{padding: 12, background: "#1e2130", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
-                        <div>
-                          <DualAmount
-                            amount={vehicleCost.purchase_cost_amount}
-                            currency={vehicleCost.purchase_cost_currency}
-                            tc={vehicleCost.purchase_cost_tc}
-                            bigSize={18}
-                          />
-                          <div style={{fontSize: 10, color: "#8b8fa4", marginTop: 4}}>
+                      <div style={{padding: 12, background: "#1e2130", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12}}>
+                        <div style={{flex: 1}}>
+                          <div style={{fontSize: 11, color: "#8b8fa4"}}>
+                            Original: <b style={{color: "#e8eaf0"}}>{costCur === "USD" ? "$" : "₡"}{fmt0(costAmt)}</b> · TC registrado: {fmt0(costTcItem) || "—"}
+                          </div>
+                          <div style={{fontSize: 10, color: "#8b8fa4", marginTop: 2}}>
                             Fecha: {vehicleCost.purchase_cost_date}
                           </div>
+                        </div>
+                        <div style={{textAlign: "right", minWidth: 110}}>
+                          <div style={{fontSize: 15, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(costCRC)}</div>
+                          <div style={{fontSize: 12, color: "#8b8fa4"}}>${fmt0(costUSD)}</div>
                         </div>
                       </div>
                     ) : (
@@ -6411,14 +6535,21 @@ export default function App() {
                     ) : (
                       <div style={{background: "#1e2130", borderRadius: 8, overflow: "hidden"}}>
                         {invoiceCosts.map((inv, i) => {
-                          const tc = parseFloat(inv.exchange_rate) || costTc || 500;
+                          const { crc, usd, tc: tcU } = toBoth(inv.total, inv.currency || "CRC", inv.exchange_rate);
+                          const origCur = inv.currency || "CRC";
+                          const origAmt = parseFloat(inv.total) || 0;
                           return (
                             <div key={inv.id} style={{padding: "10px 12px", borderBottom: i < invoiceCosts.length - 1 ? "1px solid #2a2d3d" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10}}>
                               <div style={{flex: 1, minWidth: 0}}>
                                 <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{inv.supplier_name}</div>
-                                <div style={{fontSize: 10, color: "#8b8fa4"}}>{inv.emission_date?.slice(0, 10)}</div>
+                                <div style={{fontSize: 10, color: "#8b8fa4"}}>
+                                  {inv.emission_date?.slice(0, 10)} · orig {origCur === "USD" ? "$" : "₡"}{fmt0(origAmt)} · TC {fmt0(tcU)}
+                                </div>
                               </div>
-                              <DualAmount amount={inv.total} currency={inv.currency || "CRC"} tc={tc} align="right" bigSize={14} />
+                              <div style={{textAlign: "right", minWidth: 100}}>
+                                <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(crc)}</div>
+                                <div style={{fontSize: 11, color: "#8b8fa4"}}>${fmt0(usd)}</div>
+                              </div>
                             </div>
                           );
                         })}
@@ -6461,20 +6592,30 @@ export default function App() {
                       </div>
                     ) : (
                       <div style={{background: "#1e2130", borderRadius: 8, overflow: "hidden"}}>
-                        {manualCosts.map((m, i) => (
-                          <div key={m.id} style={{padding: "10px 12px", borderBottom: i < manualCosts.length - 1 ? "1px solid #2a2d3d" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10}}>
-                            <div style={{flex: 1, minWidth: 0}}>
-                              <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0"}}>{m.concept}</div>
-                              <div style={{fontSize: 10, color: "#8b8fa4"}}>{m.cost_date}{m.description ? ` · ${m.description}` : ""}</div>
+                        {manualCosts.map((m, i) => {
+                          const { crc, usd, tc: tcU } = toBoth(m.amount, m.currency, m.tc);
+                          const origAmt = parseFloat(m.amount) || 0;
+                          return (
+                            <div key={m.id} style={{padding: "10px 12px", borderBottom: i < manualCosts.length - 1 ? "1px solid #2a2d3d" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10}}>
+                              <div style={{flex: 1, minWidth: 0}}>
+                                <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0"}}>{m.concept}</div>
+                                <div style={{fontSize: 10, color: "#8b8fa4"}}>
+                                  {m.cost_date} · orig {m.currency === "USD" ? "$" : "₡"}{fmt0(origAmt)} · TC {fmt0(tcU)}
+                                  {m.description ? ` · ${m.description}` : ""}
+                                </div>
+                              </div>
+                              <div style={{textAlign: "right", minWidth: 100}}>
+                                <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(crc)}</div>
+                                <div style={{fontSize: 11, color: "#8b8fa4"}}>${fmt0(usd)}</div>
+                              </div>
+                              <button
+                                onClick={() => deleteManualCost(m.id, v.plate)}
+                                style={{background: "transparent", border: "none", color: "#e11d48", cursor: "pointer", fontSize: 16, padding: 4}}
+                                title="Borrar"
+                              >×</button>
                             </div>
-                            <DualAmount amount={m.amount} currency={m.currency} tc={m.tc} align="right" bigSize={14} />
-                            <button
-                              onClick={() => deleteManualCost(m.id, v.plate)}
-                              style={{background: "transparent", border: "none", color: "#e11d48", cursor: "pointer", fontSize: 16, padding: 4}}
-                              title="Borrar"
-                            >×</button>
-                          </div>
-                        ))}
+                          );
+                        })}
                         <div style={{padding: "10px 12px", background: "#2a2d3d", fontSize: 12, fontWeight: 700, display: "flex", justifyContent: "space-between"}}>
                           <span>Subtotal manuales:</span>
                           <span>₡{fmt0(manualTotalCRC)} · ${fmt0(manualTotalUSD)}</span>
