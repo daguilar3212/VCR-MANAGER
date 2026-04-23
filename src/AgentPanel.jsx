@@ -206,18 +206,44 @@ function plazoMaxRM(anio) { return RAPIMAX_POL[anio]?.plazo_max || null; }
 
 // ==================================================================
 // CALCULADORA DE TRASPASO VEHICULAR (CR)
-// 2.5% impuesto (DGT) + timbres BCR (0.77% + ₡3,026.80) + honorarios
-// Fórmula validada contra la calculadora oficial del BCR (abril 2026)
+// Tabla escalonada validada contra calculadora oficial del BCR.
+// Ver comentarios en App.jsx para detalles.
 // ==================================================================
 const TRASPASO_IMPUESTO_PCT = 0.025;
-const TRASPASO_TIMBRES_PCT = 0.0077;
-const TRASPASO_TIMBRES_FIJO = 3026.80;
 const TRASPASO_HONORARIOS_DEFAULT = 120000;
+
+const TRASPASO_TIMBRES_TABLA = [
+  { base: 0,          timbres: 3026.80 },
+  { base: 2000000,    timbres: 18426.80 },
+  { base: 5000000,    timbres: 41526.80 },
+  { base: 7000000,    timbres: 60028.80 },
+  { base: 10000000,   timbres: 246628.80 },
+  { base: 15000000,   timbres: 285128.80 },
+];
+
+function calcularTimbresBCR(baseImponibleCRC) {
+  const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
+  const tabla = TRASPASO_TIMBRES_TABLA;
+  if (base <= tabla[0].base) return tabla[0].timbres;
+  for (let i = 0; i < tabla.length - 1; i++) {
+    const a = tabla[i];
+    const b = tabla[i + 1];
+    if (base >= a.base && base <= b.base) {
+      const frac = (base - a.base) / (b.base - a.base);
+      return a.timbres + frac * (b.timbres - a.timbres);
+    }
+  }
+  const n = tabla.length;
+  const a = tabla[n - 2];
+  const b = tabla[n - 1];
+  const pendiente = (b.timbres - a.timbres) / (b.base - a.base);
+  return b.timbres + (base - b.base) * pendiente;
+}
 
 function calcularTraspaso({ baseImponibleCRC, honorariosCRC = TRASPASO_HONORARIOS_DEFAULT }) {
   const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
   const impuesto = base * TRASPASO_IMPUESTO_PCT;
-  const timbres = base > 0 ? (base * TRASPASO_TIMBRES_PCT + TRASPASO_TIMBRES_FIJO) : 0;
+  const timbres = base > 0 ? calcularTimbresBCR(base) : 0;
   const honorarios = parseFloat(honorariosCRC) || 0;
   const total = impuesto + timbres + honorarios;
   return { base, impuesto, timbres, honorarios, total };
@@ -2277,7 +2303,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
                       <span>₡{Math.round(traspasoDetalle.impuesto).toLocaleString('es-CR')}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", color: "#e8eaf0", marginBottom: 2 }}>
-                      <span>Timbres BCR <span style={{ fontSize: 8, color: "#5a5e72" }}>(0.77% + ₡3,027)</span></span>
+                      <span>Timbres BCR <span style={{ fontSize: 8, color: "#5a5e72" }}>(tabla oficial)</span></span>
                       <span>₡{Math.round(traspasoDetalle.timbres).toLocaleString('es-CR')}</span>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#e8eaf0", marginBottom: 4 }}>
