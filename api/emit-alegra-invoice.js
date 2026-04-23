@@ -231,7 +231,10 @@ export default async function handler(req, res) {
     }
 
     // 4. Datos para la factura
-    const isCredit = sale.payment_method === 'Financiamiento' || sale.payment_method === 'Mixto';
+    // Case-insensitive: AgentPanel guarda con minúscula ("financiamiento")
+    // y App.jsx con mayúscula ("Financiamiento"). Aceptamos ambos.
+    const pmLower = String(sale.payment_method || '').toLowerCase();
+    const isCredit = pmLower === 'financiamiento' || pmLower === 'mixto';
     const today = new Date();
     const dueDate = new Date(today);
     if (isCredit && sale.financing_term_months) {
@@ -309,9 +312,18 @@ export default async function handler(req, res) {
     }
 
     // Plazo del saldo restante (solo para venta a credito)
-    if (isCredit && sale.credit_due_days && parseInt(sale.credit_due_days) > 0) {
-      const dias = parseInt(sale.credit_due_days);
-      notasParts.push(`EL SALDO RESTANTE DEBERA CANCELARSE EN UN PLAZO MAXIMO DE ${dias} DIAS NATURALES A PARTIR DE LA EMISION DE ESTA FACTURA.`);
+    // Se calcula como meses del financiamiento × 30 = días naturales.
+    // Si hay credit_due_days digitado manualmente, tiene prioridad (back-compat).
+    if (isCredit) {
+      let diasPlazo = 0;
+      if (sale.credit_due_days && parseInt(sale.credit_due_days) > 0) {
+        diasPlazo = parseInt(sale.credit_due_days);
+      } else if (sale.financing_term_months && parseInt(sale.financing_term_months) > 0) {
+        diasPlazo = parseInt(sale.financing_term_months) * 30;
+      }
+      if (diasPlazo > 0) {
+        notasParts.push(`EL SALDO RESTANTE DEBERA CANCELARSE EN UN PLAZO MAXIMO DE ${diasPlazo} DIAS NATURALES A PARTIR DE LA EMISION DE ESTA FACTURA.`);
+      }
     }
 
     if (sale.observations) {
