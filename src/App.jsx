@@ -6412,18 +6412,28 @@ export default function App() {
 
           // Badge de TCs en uso
           const tcInfoLine = (
-            <div style={{fontSize: 10, color: "#8b8fa4", display: "flex", gap: 14, flexWrap: "wrap"}}>
-              <span>
-                TC BCCR costos: <b style={{color: "#e8eaf0"}}>
-                  {bccrVenta > 0 ? `₡${fmt0(bccrVenta)}` : "—"}
+            <div style={{fontSize: 10, color: "#8b8fa4", display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center"}}>
+              <span style={{background: "#1e2130", padding: "4px 8px", borderRadius: 4}}>
+                <span style={{color: "#6b6f84"}}>BCCR {tcRates.bccr?.fecha || "—"}:</span>{" "}
+                <b style={{color: "#e8eaf0"}}>
+                  {bccrVenta > 0 ? `₡${fmt0(bccrVenta)}` : "—"} v
                 </b>
-                {tcRates.bccr?.fecha && <span style={{marginLeft: 4, color: "#6b6f84"}}>({tcRates.bccr.fecha})</span>}
+                <span style={{color: "#6b6f84"}}> / </span>
+                <b style={{color: "#e8eaf0"}}>
+                  {bccrCompra > 0 ? `₡${fmt0(bccrCompra)}` : "—"} c
+                </b>
               </span>
-              <span>
-                TC BAC venta: <b style={{color: "#e8eaf0"}}>
-                  {tcRates.bac?.venta ? `₡${fmt0(tcRates.bac.venta)}` : "—"}
-                </b>
-                {!tcRates.bac && bacVenta > 0 && <span style={{color: "#f59e0b", marginLeft: 4}}>(usando BCCR)</span>}
+              <span style={{background: "#1e2130", padding: "4px 8px", borderRadius: 4}}>
+                <span style={{color: "#6b6f84"}}>BAC {tcRates.bac?.fecha || "—"}:</span>{" "}
+                {tcRates.bac ? (
+                  <>
+                    <b style={{color: "#e8eaf0"}}>₡{fmt0(tcRates.bac.venta)} v</b>
+                    <span style={{color: "#6b6f84"}}> / </span>
+                    <b style={{color: "#e8eaf0"}}>₡{fmt0(tcRates.bac.compra)} c</b>
+                  </>
+                ) : (
+                  <span style={{color: "#f59e0b"}}>no disponible (usando BCCR)</span>
+                )}
               </span>
             </div>
           );
@@ -6453,11 +6463,36 @@ export default function App() {
                   <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Precio Venta</div>
                   <div style={{fontSize: 15, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(ventaCRC)}</div>
                   <div style={{fontSize: 13, fontWeight: 600, color: "#8b8fa4", marginTop: 2}}>${fmt0(ventaUSD)}</div>
+                  {(() => {
+                    // TC BAC que se usó para la conversión del precio (según la dirección)
+                    const bacCompra = tcRates.bac?.compra || tcRates.bccr?.compra || 0;
+                    const tcUsadoVenta = ventaCur === 'USD' ? bacVenta : bacCompra;
+                    const labelTC = ventaCur === 'USD' ? 'venta' : 'compra';
+                    const isBacReal = !!tcRates.bac;
+                    return (
+                      <div style={{marginTop: 6, paddingTop: 6, borderTop: "1px dashed #2a2d3d"}}>
+                        <div style={{fontSize: 9, color: "#6b6f84"}}>
+                          TC {isBacReal ? 'BAC' : 'BCCR'} {labelTC}: <b style={{color: "#e8eaf0"}}>{fmt0(tcUsadoVenta)}</b>
+                          {!isBacReal && <span style={{color: "#f59e0b", marginLeft: 3}}>*</span>}
+                        </div>
+                        {bccrVenta > 0 && (
+                          <div style={{fontSize: 9, color: "#6b6f84", marginTop: 1}}>
+                            TC BCCR ref: ₡{fmt0(bccrVenta)} v / ₡{fmt0(bccrCompra)} c
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div style={{padding: 12, background: "#1e2130", borderRadius: 8}}>
                   <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Costo Total</div>
                   <div style={{fontSize: 15, fontWeight: 700, color: "#e8eaf0"}}>₡{fmt0(totalCostCRC)}</div>
                   <div style={{fontSize: 13, fontWeight: 600, color: "#8b8fa4", marginTop: 2}}>${fmt0(totalCostUSD)}</div>
+                  <div style={{marginTop: 6, paddingTop: 6, borderTop: "1px dashed #2a2d3d"}}>
+                    <div style={{fontSize: 9, color: "#6b6f84"}}>
+                      Cada ítem con su TC BCCR histórico
+                    </div>
+                  </div>
                 </div>
                 <div style={{padding: 12, background: utilidadCRC >= 0 ? "#10b98118" : "#e11d4818", borderRadius: 8}}>
                   <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 6, textTransform: "uppercase"}}>Utilidad</div>
