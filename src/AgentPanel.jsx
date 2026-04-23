@@ -1186,6 +1186,9 @@ export default function AgentPanel() {
         commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc });
     }
 
+    // DEFENSIVO: siempre borrar antes de insertar, sin importar si es nuevo o edit.
+    // Evita duplicados por re-submits, race conditions, o planes antiguos con agentes huérfanos.
+    await supabase.from('sale_agents').delete().eq('sale_id', saleId);
     const { error: agErr } = await supabase.from('sale_agents').insert(agentRows);
     if (agErr) { alert("Error guardando agentes: " + agErr.message); return; }
 
