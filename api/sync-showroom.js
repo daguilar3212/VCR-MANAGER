@@ -93,6 +93,178 @@ function processPhotos(s) {
   return thumbs.join(',');
 }
 
+// ============================================================
+// COTIZADORES Y CÁLCULO DE CAMPOS DERIVADOS PARA EL SHEETS
+// Duplicado sintético de la lógica del frontend para generar los
+// campos "Precio USD calc", "Precio CRC calc", "Traspaso",
+// "Prima Mínima", "Cuota mensual", "Plazo", "Entidad", "Financiable".
+// ============================================================
+
+// BAC planes (replicado de src/App.jsx)
+const BAC_PLANES = {
+  seminuevo: {
+    anios: [2023,2024,2025,2026,2027],
+    prima_min: 0.20, comision: 0.035,
+    usd: { tasa_fija: 0.08, plazo_max: 96 },
+    crc: { tasa_fija: 0.0925, plazo_max: 96 },
+  },
+  usado: {
+    anios: [2019,2020,2021,2022],
+    prima_min: 0.25, comision: 0.0325,
+    usd: { tasa_fija_inicial: 0.0865, plazo_max: 84 },
+    crc: { tasa_fija_inicial: 0.0925, plazo_max: 84 },
+  },
+};
+
+const RAPIMAX_POL = {
+  2027:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,plazo_max:96,comision:0.05},
+  2026:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,plazo_max:96,comision:0.05},
+  2025:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,plazo_max:96,comision:0.05},
+  2024:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,plazo_max:96,comision:0.05},
+  2023:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,plazo_max:96,comision:0.05},
+  2022:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,plazo_max:84,comision:0.05},
+  2021:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,plazo_max:84,comision:0.05},
+  2020:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,plazo_max:84,comision:0.05},
+  2019:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,plazo_max:60,comision:0.05},
+  2018:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,plazo_max:60,comision:0.05},
+  2017:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,plazo_max:60,comision:0.05},
+  2016:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,plazo_max:60,comision:0.05},
+};
+
+function cuotaAmort(P, tasaAnual, n) {
+  const r = tasaAnual / 12;
+  if (r === 0) return P / n;
+  return P * (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1);
+}
+
+// Obtener tipos de cambio BCCR y BAC del día (los más recientes)
+async function getTCsDelDia(supabase) {
+  const { data } = await supabase
+    .from('tc_historico')
+    .select('*')
+    .order('fecha', { ascending: false })
+    .limit(10);
+  const bccr = (data || []).find(r => r.fuente === 'bccr');
+  const bac = (data || []).find(r => r.fuente === 'bac');
+  return {
+    bccr: bccr ? { compra: parseFloat(bccr.tc_compra), venta: parseFloat(bccr.tc_venta) } : null,
+    bac: bac ? { compra: parseFloat(bac.tc_compra), venta: parseFloat(bac.tc_venta) } : null,
+  };
+}
+
+// Convertir precio a USD y CRC usando TCs con spread BAC
+function convertirPrecios(precio, currency, tcRates) {
+  const p = parseFloat(precio) || 0;
+  const bacCompra = tcRates?.bac?.compra || tcRates?.bccr?.compra || 500;
+  const bacVenta = tcRates?.bac?.venta || tcRates?.bccr?.venta || 510;
+  if (currency === 'USD') {
+    // Precio en USD: directo. CRC usa BAC venta (cuando uno vende al cliente)
+    return { usd: p, crc: p * bacVenta };
+  }
+  // Precio en CRC: directo. USD usa BAC compra (cuando uno compra dólares)
+  return { usd: bacCompra > 0 ? p / bacCompra : 0, crc: p };
+}
+
+// Calcular traspaso en CRC (base imponible en CRC)
+function calcularTraspasoCRC(baseCRC, honorarios = 120000) {
+  const base = Math.max(0, parseFloat(baseCRC) || 0);
+  const impuesto = base * 0.025;
+  const timbres = base > 0 ? (base * 0.0077 + 3026.80) : 0;
+  return impuesto + timbres + honorarios;
+}
+
+// Elegir banco por prioridad: BAC > RAPIMAX > CP
+function elegirBanco(anio) {
+  if (anio >= 2019 && anio <= 2027) return 'BAC';
+  if (anio >= 2016 && anio <= 2018) return 'RAPIMAX';
+  return 'CP';
+}
+
+// Obtener prima mínima y plazo máximo del banco elegido
+function getParamsBanco(banco, anio) {
+  if (banco === 'BAC') {
+    const plan = anio >= 2023 ? BAC_PLANES.seminuevo : (anio >= 2019 ? BAC_PLANES.usado : null);
+    if (!plan) return null;
+    return {
+      primaMin: plan.prima_min,
+      plazoMax: plan.usd.plazo_max,
+      tasa: plan.usd.tasa_fija ?? plan.usd.tasa_fija_inicial,
+      comision: plan.comision,
+    };
+  }
+  if (banco === 'RAPIMAX') {
+    const pol = RAPIMAX_POL[anio];
+    if (!pol) return null;
+    return {
+      primaMin: pol.prima,
+      plazoMax: pol.plazo_max,
+      tasa: pol.tasa_usd,
+      comision: pol.comision,
+    };
+  }
+  return null;
+}
+
+// Calcular cuota mensual (mes 1) con prima mínima del banco en USD
+function calcularCuotaUSD(precioUSD, banco, anio) {
+  const params = getParamsBanco(banco, anio);
+  if (!params) return 0;
+  // Traspaso en USD: aproximamos convirtiendo base CRC a USD con BCCR venta
+  // Para simplificar usamos 3.5% del precio USD (suficiente para cotización inicial)
+  const traspasoUSD = precioUSD * 0.035;
+  const precioTotal = precioUSD + traspasoUSD;
+  const prima = precioTotal * params.primaMin;
+  const comision = precioTotal * params.comision;
+  const montoFinanciar = precioTotal - prima + comision;
+  if (montoFinanciar <= 0) return 0;
+  return cuotaAmort(montoFinanciar, params.tasa, params.plazoMax);
+}
+
+// Calcular TODOS los campos derivados que escribimos al Sheets
+async function calcularCamposDerivados(car, supabase) {
+  const tcRates = await getTCsDelDia(supabase);
+  const anio = parseInt(car.year) || 0;
+  const { usd: precioUSD, crc: precioCRC } = convertirPrecios(car.price, car.currency, tcRates);
+  const traspaso = calcularTraspasoCRC(precioCRC);
+  const banco = elegirBanco(anio);
+  const params = getParamsBanco(banco, anio);
+
+  let primaMin = '';
+  let cuotaMensual = '';
+  let plazo = '';
+  let entidad = '';
+  let financiable = '';
+
+  if (banco === 'CP') {
+    primaMin = 'N/A';
+    cuotaMensual = '';
+    plazo = '';
+    entidad = 'Crédito Personal';
+    financiable = 'Solo asalariado (préstamo personal)';
+  } else if (params) {
+    const primaUSD = precioUSD * params.primaMin;
+    const cuotaUSD = calcularCuotaUSD(precioUSD, banco, anio);
+    primaMin = Math.round(primaUSD * 100) / 100; // USD
+    cuotaMensual = Math.round(cuotaUSD * 100) / 100;
+    plazo = params.plazoMax;
+    entidad = banco;
+    financiable = 'Asalariado / Independiente';
+  }
+
+  return {
+    precio_usd_calc: Math.round(precioUSD * 100) / 100,
+    precio_crc_calc: Math.round(precioCRC),
+    traspaso: Math.round(traspaso),
+    prima_minima: primaMin,
+    cuota_mensual: cuotaMensual,
+    plazo: plazo,
+    entidad: entidad,
+    financiable: financiable,
+  };
+}
+
+// ============================================================
+
 export default async function handler(req, res) {
   if (req.method !== 'POST' && req.method !== 'GET') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
@@ -117,6 +289,10 @@ export default async function handler(req, res) {
   }
   if (body.action === 'delete' && body.plate) {
     return await handleDeleteCar(req, res, supabase, body.plate);
+  }
+  // Acción para recalcular derivados de TODOS los carros (usado por el cron diario)
+  if (body.action === 'recalc_all' || (req.query && req.query.action === 'recalc_all')) {
+    return await handleRecalcAll(req, res, supabase);
   }
 
   // Caso default: sync desde Sheets
@@ -370,6 +546,15 @@ async function handleAddCar(req, res, supabase, car) {
       style: findHeader('estilo'),
       price: findHeader('precio preferencia', 'precio pref'),
       currency: findHeader('moneda preferencia', 'moneda pref'),
+      // Campos derivados (calculados por el endpoint)
+      precio_usd_calc: findHeader('precio usd calc', 'precio usd'),
+      precio_crc_calc: findHeader('precio crc calc', 'precio crc'),
+      traspaso: findHeader('traspaso'),
+      prima_minima: findHeader('prima mínima', 'prima minima'),
+      cuota_mensual: findHeader('cuota mensual', 'cuota'),
+      plazo: findHeader('plazo (meses)', 'plazo'),
+      entidad: findHeader('entidad'),
+      financiable: findHeader('financiable'),
     };
 
     // Leer columna estado y placa para encontrar la ultima fila con carro real
@@ -460,6 +645,15 @@ async function handleAddCar(req, res, supabase, car) {
         const errDetail = await appendDimensionRes.json();
         return res.status(502).json({ ok: false, error: 'No se pudo expandir el Sheets', detail: errDetail });
       }
+    }
+
+    // Calcular campos derivados (Precio USD/CRC calc, Traspaso, Prima, Cuota, etc.)
+    // antes de construir la fila, para que se escriban al Sheets.
+    try {
+      const derivados = await calcularCamposDerivados(car, supabase);
+      Object.assign(car, derivados);
+    } catch (e) {
+      console.warn('No se pudieron calcular derivados:', e.message);
     }
 
     // Construir la fila: array del tamaño total de headers
@@ -580,6 +774,15 @@ async function handleEditCar(req, res, supabase, car) {
       style: findHeader('estilo'),
       price: findHeader('precio preferencia', 'precio pref'),
       currency: findHeader('moneda preferencia', 'moneda pref'),
+      // Campos derivados (calculados por el endpoint)
+      precio_usd_calc: findHeader('precio usd calc', 'precio usd'),
+      precio_crc_calc: findHeader('precio crc calc', 'precio crc'),
+      traspaso: findHeader('traspaso'),
+      prima_minima: findHeader('prima mínima', 'prima minima'),
+      cuota_mensual: findHeader('cuota mensual', 'cuota'),
+      plazo: findHeader('plazo (meses)', 'plazo'),
+      entidad: findHeader('entidad'),
+      financiable: findHeader('financiable'),
     };
 
     const colLetter = (idx) => {
@@ -618,6 +821,15 @@ async function handleEditCar(req, res, supabase, car) {
     );
     const existingJson = await existingRes.json();
     const existingRow = (existingJson.values?.[0] || []);
+
+    // Calcular campos derivados (Precio USD/CRC calc, Traspaso, Prima, Cuota, etc.)
+    // antes de construir la fila, para que se escriban al Sheets.
+    try {
+      const derivados = await calcularCamposDerivados(car, supabase);
+      Object.assign(car, derivados);
+    } catch (e) {
+      console.warn('No se pudieron calcular derivados:', e.message);
+    }
 
     // Construir la nueva fila: preservar valores existentes, solo sobrescribir los que edit maneja
     const row = new Array(headers.length).fill('').map((_, i) => existingRow[i] || '');
@@ -817,6 +1029,153 @@ async function handleDeleteCar(req, res, supabase, plate) {
     await supabase.from('showroom_vehicles').delete().eq('plate', plateNormalizado);
 
     return res.status(200).json({ ok: true, deleted_row: rowIdx, plate: plateNormalizado });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+// ============================================================
+// RECALCULAR DERIVADOS DE TODOS LOS CARROS DEL SHEETS
+// Se usa desde el cron diario (6am y 11pm) para mantener actualizados
+// los campos Precio USD/CRC calc, Prima Mínima, Cuota mensual, etc.
+// cuando el TC del BCCR/BAC cambia.
+// ============================================================
+async function handleRecalcAll(req, res, supabase) {
+  try {
+    let accessToken;
+    try {
+      accessToken = await getGoogleAccessToken(supabase);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+
+    // 1. Leer headers
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Inventario!A1:AZ1`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const metaJson = await metaRes.json();
+    if (!metaRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer headers', detail: metaJson });
+    const headers = (metaJson.values?.[0] || []).map(h => (h || '').trim().toLowerCase());
+
+    const findHeader = (...names) => {
+      const lowerNames = names.map(n => n.toLowerCase());
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h === n); if (idx !== -1) return idx; }
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h.includes(n)); if (idx !== -1) return idx; }
+      return -1;
+    };
+
+    const colMap = {
+      plate: findHeader('id / placa', 'id/placa', 'placa'),
+      year: findHeader('año', 'ano'),
+      price: findHeader('precio preferencia', 'precio pref'),
+      currency: findHeader('moneda preferencia', 'moneda pref'),
+      precio_usd_calc: findHeader('precio usd calc', 'precio usd'),
+      precio_crc_calc: findHeader('precio crc calc', 'precio crc'),
+      traspaso: findHeader('traspaso'),
+      prima_minima: findHeader('prima mínima', 'prima minima'),
+      cuota_mensual: findHeader('cuota mensual', 'cuota'),
+      plazo: findHeader('plazo (meses)', 'plazo'),
+      entidad: findHeader('entidad'),
+      financiable: findHeader('financiable'),
+    };
+
+    if (colMap.plate === -1 || colMap.price === -1) {
+      return res.status(400).json({ ok: false, error: 'Faltan columnas clave (Placa o Precio preferencia) en el Sheets' });
+    }
+
+    // 2. Leer TODAS las filas (fila 2 en adelante, hasta 1000)
+    const colLetter = (idx) => {
+      let s = ''; let n = idx;
+      while (n >= 0) { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; }
+      return s;
+    };
+    const lastCol = colLetter(headers.length - 1);
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(`Inventario!A2:${lastCol}1000`)}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const readJson = await readRes.json();
+    if (!readRes.ok) return res.status(502).json({ ok: false, error: 'No se pudieron leer datos', detail: readJson });
+
+    const allRows = readJson.values || [];
+    const stats = { total: 0, recalculated: 0, skipped: 0, errors: [] };
+
+    // 3. Procesar cada fila y calcular derivados
+    const dataUpdates = []; // [{ range, values }] para batch update
+    for (let i = 0; i < allRows.length; i++) {
+      const r = allRows[i];
+      const plate = (r[colMap.plate] || '').trim();
+      const priceRaw = r[colMap.price] || '';
+      const currency = (r[colMap.currency] || '').trim().toUpperCase();
+      const year = parseInt(r[colMap.year] || '', 10);
+
+      // Saltar filas vacías
+      if (!plate || !priceRaw) { stats.skipped++; continue; }
+      stats.total++;
+
+      // Normalizar precio y moneda para el car object
+      const price = parseNumber(priceRaw);
+      if (!price || !year || !['USD', 'CRC'].includes(currency)) {
+        stats.skipped++;
+        stats.errors.push({ plate, reason: `Precio/moneda/año inválidos (price=${price}, currency=${currency}, year=${year})` });
+        continue;
+      }
+
+      try {
+        const derivados = await calcularCamposDerivados(
+          { price, currency, year },
+          supabase
+        );
+
+        // Armar una fila completa de solo las columnas derivadas
+        const rowNum = i + 2; // header es fila 1, datos desde fila 2
+        const fieldsToUpdate = ['precio_usd_calc', 'precio_crc_calc', 'traspaso', 'prima_minima', 'cuota_mensual', 'plazo', 'entidad', 'financiable'];
+        for (const field of fieldsToUpdate) {
+          const idx = colMap[field];
+          if (idx === -1) continue;
+          const val = derivados[field];
+          if (val == null) continue;
+          dataUpdates.push({
+            range: `Inventario!${colLetter(idx)}${rowNum}`,
+            values: [[String(val)]],
+          });
+        }
+        stats.recalculated++;
+      } catch (err) {
+        stats.errors.push({ plate, reason: err.message });
+      }
+    }
+
+    // 4. Escribir en batches para no saturar la API (50 por batch)
+    if (dataUpdates.length > 0) {
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < dataUpdates.length; i += BATCH_SIZE) {
+        const batch = dataUpdates.slice(i, i + BATCH_SIZE);
+        const batchRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchUpdate`,
+          {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              valueInputOption: 'USER_ENTERED',
+              data: batch,
+            }),
+          }
+        );
+        if (!batchRes.ok) {
+          const err = await batchRes.json();
+          stats.errors.push({ batch: i, reason: JSON.stringify(err).slice(0, 200) });
+        }
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      stats,
+      timestamp: new Date().toISOString(),
+    });
 
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
