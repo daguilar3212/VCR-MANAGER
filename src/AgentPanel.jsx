@@ -744,7 +744,11 @@ export default function AgentPanel() {
       });
       const j = await res.json();
       if (j.ok) {
-        await supabase.from('showroom_vehicles').delete().eq('plate', v.plate);
+        // Preservar el registro en Supabase con estado VENDIDO + sold_at para histórico
+        await supabase.from('showroom_vehicles').update({
+          estado: 'VENDIDO',
+          sold_at: new Date().toISOString(),
+        }).eq('plate', v.plate);
         alert(`✅ ${v.plate} marcado como VENDIDO`);
         await loadShowroomVehicles();
       } else {
