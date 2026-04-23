@@ -246,7 +246,7 @@ async function calcularCamposDerivados(car, supabase) {
   } else if (params) {
     const primaUSD = precioUSD * params.primaMin;
     const cuotaUSD = calcularCuotaUSD(precioUSD, banco, anio);
-    primaMin = Math.round(primaUSD * 100) / 100; // USD
+    primaMin = Math.round(primaUSD); // USD entero
     cuotaMensual = Math.round(cuotaUSD * 100) / 100;
     plazo = params.plazoMax;
     // Si aplica BAC (2019-2027), también aplica Rapimax → "BAC/Rapimax"
@@ -1253,12 +1253,15 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
   }
 
   // Prima y Cuota: formato depende de la entidad (CP→CRC, resto→USD)
-  // Hacer una request por cada celda (mas simple y robusto)
+  // Prima y Cuota: formato depende de la entidad (CP→CRC, resto→USD)
+  // Prima SIEMPRE sin decimales. Cuota con decimales en USD (precisión cuota),
+  // sin decimales en CRC (colones enteros).
   const primaIdx = colMap.prima_minima;
   const cuotaIdx = colMap.cuota_mensual;
   for (const { rowNum, entidad } of formatQueue) {
     const isCP = entidad === 'Cooperativa';
-    const fmtPrimaCuota = isCP ? FMT_CRC : FMT_USD;
+    const fmtPrima = isCP ? FMT_CRC : FMT_USD_INT;
+    const fmtCuota = isCP ? FMT_CRC : FMT_USD;
     if (primaIdx !== -1) {
       requests.push({
         repeatCell: {
@@ -1269,7 +1272,7 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
             startColumnIndex: primaIdx,
             endColumnIndex: primaIdx + 1,
           },
-          cell: { userEnteredFormat: { numberFormat: fmtPrimaCuota } },
+          cell: { userEnteredFormat: { numberFormat: fmtPrima } },
           fields: 'userEnteredFormat.numberFormat',
         },
       });
@@ -1284,7 +1287,7 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
             startColumnIndex: cuotaIdx,
             endColumnIndex: cuotaIdx + 1,
           },
-          cell: { userEnteredFormat: { numberFormat: fmtPrimaCuota } },
+          cell: { userEnteredFormat: { numberFormat: fmtCuota } },
           fields: 'userEnteredFormat.numberFormat',
         },
       });
