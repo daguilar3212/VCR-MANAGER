@@ -257,6 +257,60 @@ export default async function handler(req, res) {
       });
     }
 
+    // 9. Agregar al Showroom (Supabase + Sheets) para que aparezca en la vista
+    //    publica y en el inventario del agente. Precio 0 para que admin/agente
+    //    lo ajuste despues. Estado DISPONIBLE.
+    let showroomMsg = null;
+    let showroomErr = null;
+    try {
+      // Primero verificar que no exista ya en showroom_vehicles (por placa)
+      const { data: existingShowroom } = await supabase
+        .from('showroom_vehicles')
+        .select('id, plate')
+        .eq('plate', plateFormatted)
+        .maybeSingle();
+
+      if (existingShowroom) {
+        showroomMsg = `Ya estaba en Showroom`;
+      } else {
+        // Llamar al endpoint sync-showroom con action=add para meterlo al Sheets
+        // Y al mismo tiempo se inserta en showroom_vehicles como efecto secundario.
+        const baseUrl = process.env.APP_BASE_URL || 'https://vcr-manager.vercel.app';
+        const showroomCar = {
+          estado: 'DISPONIBLE',
+          plate: plateFormatted,
+          brand: (sale.tradein_brand || '').toUpperCase(),
+          model: (sale.tradein_model || '').toUpperCase(),
+          year: String(sale.tradein_year || ''),
+          transmission: sale.tradein_drive || '',
+          color: (sale.tradein_color || '').toUpperCase(),
+          km: sale.tradein_km ? String(sale.tradein_km) : '',
+          fuel: sale.tradein_fuel || '',
+          engine_cc: sale.tradein_engine_cc ? String(sale.tradein_engine_cc) : '',
+          cylinders: '',
+          origin: '',
+          drivetrain: sale.tradein_drive || '',
+          passengers: '',
+          style: sale.tradein_style || '',
+          price: '0',
+          currency: sale.sale_currency || 'USD',
+        };
+        const showroomRes = await fetch(`${baseUrl}/api/sync-showroom`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add', car: showroomCar }),
+        });
+        const showroomData = await showroomRes.json().catch(() => ({ ok: false }));
+        if (showroomData.ok) {
+          showroomMsg = `Agregado al Showroom (precio 0 - ajustar manualmente)`;
+        } else {
+          showroomErr = showroomData.error || 'No se pudo agregar al Showroom';
+        }
+      }
+    } catch (e) {
+      showroomErr = e.message;
+    }
+
     return res.status(200).json({
       ok: true,
       vehicle_id: inserted.id,
@@ -264,6 +318,8 @@ export default async function handler(req, res) {
       purchase_cost: inserted.purchase_cost,
       alegra_item_id: alegraItemId,
       alegra_error: alegraError,
+      showroom: showroomMsg,
+      showroom_error: showroomErr,
       message: alegraError
         ? 'Creado en inventario local. Fallo en Alegra (se puede sincronizar despues)'
         : 'Creado en inventario local Y en Alegra',
