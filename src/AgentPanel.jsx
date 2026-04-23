@@ -1838,10 +1838,19 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
     valorAutoC = precioOrig.val / cotTC;
   }
   const valorAuto = cotState.valorAuto != null ? cotState.valorAuto : valorAutoC;
-  // Traspaso: cálculo real CR (2.5% imp + 1.5% timbres + ₡120k honor + 13% IVA)
-  const valorAutoCRC = cotMoneda === 'CRC' ? valorAuto : valorAuto * cotTC;
+  // Traspaso: cálculo real CR (2.5% DGT + timbres BCR + honorarios)
+  // Base imponible en CRC convertida con TC BCCR del día (no el del cotizador)
+  // Es editable por el usuario (permite meter valor fiscal distinto)
+  const tcBccrVenta = tcRates?.bccr?.venta || cotTC || 500;
+  const precioEnCRC = precioOrig.cur === 'CRC'
+    ? precioOrig.val
+    : precioOrig.val * tcBccrVenta;
+  const baseImponibleAuto = Math.round(precioEnCRC);
+  const baseImponibleCRC = cotState.baseImponibleCRC != null
+    ? cotState.baseImponibleCRC
+    : baseImponibleAuto;
   const honorariosConfig = cotState.honorarios != null ? cotState.honorarios : TRASPASO_HONORARIOS_DEFAULT;
-  const traspasoDetalle = calcularTraspaso({ baseImponibleCRC: valorAutoCRC, honorariosCRC: honorariosConfig });
+  const traspasoDetalle = calcularTraspaso({ baseImponibleCRC, honorariosCRC: honorariosConfig });
   const traspasoTotalCRC = traspasoDetalle.total;
   const traspasoAuto = cotMoneda === 'CRC' ? traspasoTotalCRC : traspasoTotalCRC / cotTC;
   const traspaso = cotState.traspaso != null ? cotState.traspaso : traspasoAuto;
@@ -2247,9 +2256,22 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
                   <input type="number" value={Math.round(traspaso)} onChange={e => updCot({ traspaso: parseFloat(e.target.value) || 0 })} style={{ ...S.input, width: "100%" }} />
                   {/* Desglose del cálculo */}
                   <div style={{ marginTop: 6, padding: "8px 10px", background: "#0a0b0f", borderRadius: 6, border: "1px solid #2a2d3d", fontSize: 10 }}>
-                    <div style={{ color: "#8b8fa4", fontSize: 9, textTransform: "uppercase", marginBottom: 4, letterSpacing: .3 }}>
-                      Desglose (base: ₡{Math.round(valorAutoCRC).toLocaleString('es-CR')})
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#8b8fa4", fontSize: 9, textTransform: "uppercase", marginBottom: 6, letterSpacing: .3 }}>
+                      <span>Base imponible (₡)</span>
+                      <input
+                        type="number"
+                        value={baseImponibleCRC}
+                        onChange={e => updCot({ baseImponibleCRC: parseFloat(e.target.value) || 0 })}
+                        style={{ width: 130, background: "#1a1d2b", border: "1px solid #2a2d3d", color: "#e8eaf0", padding: "2px 6px", fontSize: 10, borderRadius: 3, textAlign: "right" }}
+                        title="Default: precio venta × TC BCCR. Podés editarlo para usar el valor fiscal."
+                      />
                     </div>
+                    {baseImponibleCRC !== baseImponibleAuto && (
+                      <div style={{ fontSize: 8, color: "#f59e0b", marginBottom: 4, textAlign: "right", cursor: "pointer" }}
+                           onClick={() => updCot({ baseImponibleCRC: null })}>
+                        ✎ Editado manualmente · click para resetear
+                      </div>
+                    )}
                     <div style={{ display: "flex", justifyContent: "space-between", color: "#e8eaf0", marginBottom: 2 }}>
                       <span>Impuesto 2.5%</span>
                       <span>₡{Math.round(traspasoDetalle.impuesto).toLocaleString('es-CR')}</span>
