@@ -460,6 +460,9 @@ export default function AgentPanel() {
   const [showroomSort, setShowroomSort] = useState("precio_desc");
   const [showroomPicked, setShowroomPicked] = useState(null);
   const [cotState, setCotState] = useState({});
+
+  // TCs del día (BCCR y BAC) para convertir precios del showroom
+  const [tcRates, setTcRates] = useState({ bccr: null, bac: null });
   const [fotoElegida, setFotoElegida] = useState(null);
   const [showAddCarModal, setShowAddCarModal] = useState(false);
   const [editingPlate, setEditingPlate] = useState(null);
@@ -562,8 +565,25 @@ export default function AgentPanel() {
 
   async function loadAll() {
     setLoading(true);
-    await Promise.all([loadVehicles(), loadSales(), loadAgents(), loadShowroomVehicles()]);
+    await Promise.all([loadVehicles(), loadSales(), loadAgents(), loadShowroomVehicles(), loadTcRates()]);
     setLoading(false);
+  }
+
+  async function loadTcRates() {
+    try {
+      const { data, error } = await supabase
+        .from('tc_historico')
+        .select('fecha, fuente, tc_compra, tc_venta')
+        .order('fecha', { ascending: false })
+        .limit(20);
+      if (error) return;
+      const bccr = (data || []).find(r => r.fuente === 'bccr');
+      const bac = (data || []).find(r => r.fuente === 'bac');
+      setTcRates({
+        bccr: bccr ? { compra: parseFloat(bccr.tc_compra), venta: parseFloat(bccr.tc_venta), fecha: bccr.fecha } : null,
+        bac: bac ? { compra: parseFloat(bac.tc_compra), venta: parseFloat(bac.tc_venta), fecha: bac.fecha } : null,
+      });
+    } catch (_) { /* silent */ }
   }
 
   async function loadVehicles() {
@@ -779,6 +799,12 @@ export default function AgentPanel() {
   // ============================================================
   function openNewSaleForm(vehicle = null) {
     const f = emptyForm();
+
+    // Auto-fill del TC BCCR venta (TC de referencia para Alegra al timbrar)
+    if (tcRates?.bccr?.venta) {
+      f.sale_exchange_rate = String(tcRates.bccr.venta);
+    }
+
     if (vehicle) {
       f.vehicle_id = vehicle.id;
       f.vehicle_plate = vehicle.plate || "";
@@ -1274,6 +1300,7 @@ export default function AgentPanel() {
           setCotState={setCotState}
           fotoElegida={fotoElegida}
           setFotoElegida={setFotoElegida}
+          tcRates={tcRates}
           showAddCarModal={showAddCarModal}
           setShowAddCarModal={setShowAddCarModal}
           newCar={newCar}
@@ -1320,6 +1347,7 @@ export default function AgentPanel() {
           searching={searchingClient}
           showSignatureModal={showSignatureModal}
           setShowSignatureModal={setShowSignatureModal}
+          tcRates={tcRates}
           onCancel={() => { setView("list"); setSaleForm(null); setEditingSaleId(null); }}
         />}
 
@@ -1432,7 +1460,7 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM (Inventario comercial con cotizador)
 // ============================================================
-function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, editingPlate, setEditingPlate, onEditCar, onOpenEditModal, onDeleteCar, onMarcarVendido, onSellVehicle }) {
+function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, tcRates, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, editingPlate, setEditingPlate, onEditCar, onOpenEditModal, onDeleteCar, onMarcarVendido, onSellVehicle }) {
   const fmt0 = (n, c) => {
     if (n == null || isNaN(n)) return "-";
     return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -1445,13 +1473,50 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
     return { val, cur };
   };
 
+  // Conversión del precio usando TC BAC (con fallback BCCR)
+  // Regla: USD -> CRC usa TC VENTA BAC ; CRC -> USD usa TC COMPRA BAC
+  const getConversion = (val, cur) => {
+    const bacVenta = tcRates?.bac?.venta || tcRates?.bccr?.venta || 0;
+    const bacCompra = tcRates?.bac?.compra || tcRates?.bccr?.compra || 0;
+    if (!val || val <= 0) return { altVal: 0, altCur: cur === "USD" ? "CRC" : "USD", tc: 0 };
+    if (cur === "USD") {
+      return { altVal: bacVenta > 0 ? val * bacVenta : 0, altCur: "CRC", tc: bacVenta };
+    }
+    return { altVal: bacCompra > 0 ? val / bacCompra : 0, altCur: "USD", tc: bacCompra };
+  };
+
+  // Render de precio: moneda ORIGINAL grande, conversión BAC chiquita atenuada
+  // size: 'sm' | 'md' | 'lg' | 'xl'
+  const PriceWithConversion = ({ val, cur, size = "md" }) => {
+    const { altVal, altCur, tc } = getConversion(val, cur);
+    const sizeMap = {
+      sm: { main: 14, sub: 10 },
+      md: { main: 16, sub: 11 },
+      lg: { main: 22, sub: 12 },
+      xl: { main: 30, sub: 14 },
+    };
+    const s = sizeMap[size] || sizeMap.md;
+    return (
+      <div style={{ lineHeight: 1.15 }}>
+        <div style={{ fontSize: s.main, fontWeight: 800, color: "#10b981" }}>
+          {fmt0(val, cur)}
+        </div>
+        {tc > 0 && altVal > 0 && (
+          <div style={{ fontSize: s.sub, fontWeight: 400, color: "#71717a", marginTop: 1 }}>
+            ≈ {fmt0(altVal, altCur)}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // Vista detalle (carro seleccionado)
   if (pickedId) {
     const v = vehicles.find(x => x.id === pickedId);
     if (!v) {
       return <div style={{ padding: "1rem", color: "#71717a" }}>Vehículo no encontrado. <button onClick={() => setPickedId(null)} style={S.btn}>Volver</button></div>;
     }
-    return <ShowroomDetailView v={v} cotState={cotState} setCotState={setCotState} fotoElegida={fotoElegida} setFotoElegida={setFotoElegida} onBack={() => { setPickedId(null); setCotState({}); setFotoElegida(null); }} onSellVehicle={onSellVehicle} fmt0={fmt0} getPrice={getPrice} />;
+    return <ShowroomDetailView v={v} cotState={cotState} setCotState={setCotState} fotoElegida={fotoElegida} setFotoElegida={setFotoElegida} onBack={() => { setPickedId(null); setCotState({}); setFotoElegida(null); }} onSellVehicle={onSellVehicle} fmt0={fmt0} getPrice={getPrice} tcRates={tcRates} PriceWithConversion={PriceWithConversion} />;
   }
 
   // Lista
@@ -1547,7 +1612,9 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
                     <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.km ? Number(v.km).toLocaleString("es-CR") : "-"}</td>
                     <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.color || "-"}</td>
                     <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>{v.fuel || "-"}</td>
-                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}><strong style={{ color: "#10b981" }}>{fmt0(pr.val, pr.cur)}</strong></td>
+                    <td style={{ ...S.td, cursor: "pointer" }} onClick={() => { setCotState({}); setFotoElegida(null); setPickedId(v.id); }}>
+                      <PriceWithConversion val={pr.val} cur={pr.cur} size="sm" />
+                    </td>
                     <td style={{ ...S.td, whiteSpace: "nowrap", textAlign: "center" }}>
                       <button onClick={(e) => { e.stopPropagation(); onMarcarVendido(v); }} style={{ background: "#10b981", border: "none", color: "#fff", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11, marginRight: 4 }} title="Marcar como vendido">💰</button>
                       <button onClick={(e) => { e.stopPropagation(); onOpenEditModal(v); }} style={{ background: "#4f8cff", border: "none", color: "#fff", padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 11, marginRight: 4 }} title="Editar">✏️</button>
@@ -1704,7 +1771,7 @@ function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId,
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM DETAIL (Ficha + Cotizador)
 // ============================================================
-function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoElegida, onBack, onSellVehicle, fmt0, getPrice }) {
+function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoElegida, onBack, onSellVehicle, fmt0, getPrice, tcRates, PriceWithConversion }) {
   if (!v) return <div style={{ padding: "1rem" }}>Cargando...</div>;
   const precioOrig = getPrice(v);
   const anioNum = parseInt(v.year) || 2020;
@@ -2062,9 +2129,26 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
           </div>
         )}
 
-        <div style={{ padding: "1rem 1.25rem", background: "#10b98118", border: "1px solid #10b981", borderRadius: 10, fontSize: "1.5rem", fontWeight: 800, color: "#10b981", marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
-          <div>💰 Precio: {fmt0(precioOrig.val, precioOrig.cur)}</div>
-          {v.web_url && <a href={v.web_url} target="_blank" rel="noreferrer" style={{ ...S.btnGhost, fontSize: "0.85rem", textDecoration: "none" }}>🌐 Ver en web</a>}
+        <div style={{ padding: "1rem 1.25rem", background: "#10b98118", border: "1px solid #10b981", borderRadius: 10, marginBottom: "1rem" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "0.75rem" }}>
+            <div>
+              <div style={{ fontSize: "0.75rem", color: "#10b981", fontWeight: 700, marginBottom: 4, opacity: 0.8 }}>💰 PRECIO ({precioOrig.cur})</div>
+              {PriceWithConversion ? (
+                <PriceWithConversion val={precioOrig.val} cur={precioOrig.cur} size="xl" />
+              ) : (
+                <div style={{ fontSize: "1.5rem", fontWeight: 800, color: "#10b981" }}>{fmt0(precioOrig.val, precioOrig.cur)}</div>
+              )}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+              {v.web_url && <a href={v.web_url} target="_blank" rel="noreferrer" style={{ ...S.btnGhost, fontSize: "0.85rem", textDecoration: "none" }}>🌐 Ver en web</a>}
+              {tcRates?.bac && (
+                <div style={{ fontSize: 10, color: "#71717a", textAlign: "right", lineHeight: 1.3 }}>
+                  <div>TC BAC {tcRates.bac.fecha}:</div>
+                  <div>₡{Number(tcRates.bac.venta).toLocaleString("es-CR")} venta / ₡{Number(tcRates.bac.compra).toLocaleString("es-CR")} compra</div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <button onClick={() => onSellVehicle(v)} style={S.btn}>Iniciar plan de venta</button>
@@ -2326,7 +2410,7 @@ function VentasListView({ sales, filter, setFilter, onNew, onPick }) {
 // ============================================================
 // SUBCOMPONENTE: FORMULARIO DE VENTA
 // ============================================================
-function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onCancel, onSearchClient, searching, showSignatureModal, setShowSignatureModal }) {
+function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onCancel, onSearchClient, searching, showSignatureModal, setShowSignatureModal, tcRates }) {
   if (!form) return null;
 
   const upd = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
@@ -2718,8 +2802,22 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           <div>
             <label style={S.label}>Tipo de cambio *</label>
             <input style={S.input} type="number" step="0.01" value={form.sale_exchange_rate} onChange={e => upd("sale_exchange_rate", e.target.value)} placeholder="ej: 510.50" />
-            <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.25rem" }}>
-              Siempre requerido. Se guarda como referencia para ver los montos en la otra moneda después.
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: "0.25rem", fontSize: "0.75rem", color: "#71717a", flexWrap: "wrap" }}>
+              <span>TC de referencia para Alegra al timbrar —</span>
+              {tcRates?.bccr?.venta ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => upd("sale_exchange_rate", String(tcRates.bccr.venta))}
+                    style={{ background: "#4f8cff18", color: "#4f8cff", border: "none", padding: "2px 8px", borderRadius: 4, fontSize: "0.75rem", cursor: "pointer", fontWeight: 600 }}
+                  >
+                    Usar BCCR venta ₡{Number(tcRates.bccr.venta).toLocaleString("es-CR")}
+                  </button>
+                  <span style={{ color: "#a1a1aa" }}>({tcRates.bccr.fecha})</span>
+                </>
+              ) : (
+                <span style={{ color: "#f59e0b" }}>BCCR no disponible</span>
+              )}
             </div>
           </div>
           <div>
