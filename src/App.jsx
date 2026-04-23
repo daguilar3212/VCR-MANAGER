@@ -987,6 +987,178 @@ export default function App() {
   };
 
   // ============================================================
+  // HELPERS DUAL CURRENCY (DEBEN estar antes de cualquier render function que los use)
+  // ============================================================
+  const fmt0 = (n) => {
+    if (n == null || isNaN(n)) return "0";
+    return Math.round(Number(n)).toLocaleString("es-CR");
+  };
+
+  const convertirMontos = (amount, currency, tc) => {
+    const amt = parseFloat(amount) || 0;
+    const t = parseFloat(tc) || 0;
+    if (!t || t <= 0) return { crc: currency === "CRC" ? amt : 0, usd: currency === "USD" ? amt : 0 };
+    if (currency === "USD") return { crc: amt * t, usd: amt };
+    return { crc: amt, usd: amt / t };
+  };
+
+  const DualAmount = ({ amount, currency, tc, align = "left", bigSize = 18, smallSize = 11 }) => {
+    const { crc, usd } = convertirMontos(amount, currency, tc);
+    const origSymbol = currency === "USD" ? "$" : "₡";
+    const altSymbol = currency === "USD" ? "₡" : "$";
+    const altValue = currency === "USD" ? crc : usd;
+    return (
+      <div style={{ textAlign: align }}>
+        <div style={{ fontSize: bigSize, fontWeight: 700, color: "#e8eaf0", lineHeight: 1.1 }}>
+          {origSymbol}{fmt0(amount)}
+        </div>
+        <div style={{ fontSize: smallSize, color: "#8b8fa4", marginTop: 2 }}>
+          ≈ {altSymbol}{fmt0(altValue)} · TC {tc || "?"}
+        </div>
+      </div>
+    );
+  };
+
+  const fetchTC = async (fechaYMD) => {
+    try {
+      const res = await fetch('/api/alegra-lookup-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'tc', fecha: fechaYMD })
+      });
+      const data = await res.json();
+      if (data.ok && data.tc_venta) return { tc: data.tc_venta, warning: data.warning || null };
+      return { tc: null, warning: data.error || 'TC no disponible' };
+    } catch (e) {
+      return { tc: null, warning: e.message };
+    }
+  };
+
+  const fetchTcBac = async () => {
+    try {
+      const res = await fetch('/api/alegra-lookup-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'tc_bac' })
+      });
+      const data = await res.json();
+      if (data.ok && data.tc_compra_bac && data.tc_venta_bac) {
+        setTcBac({
+          compra: parseFloat(data.tc_compra_bac),
+          venta: parseFloat(data.tc_venta_bac),
+          fecha: data.fecha,
+          from_cache: data.from_cache,
+          warning: data.warning || null,
+        });
+      } else {
+        setTcBac(null);
+      }
+    } catch (e) {
+      setTcBac(null);
+    }
+  };
+
+  const precioEquivalenteBac = (amount, currency) => {
+    if (!tcBac || !amount) return null;
+    const amt = parseFloat(amount) || 0;
+    if (amt <= 0) return null;
+    if (currency === "CRC") {
+      return { value: amt / tcBac.compra, currency: "USD", tc: tcBac.compra, tcTipo: "compra" };
+    } else if (currency === "USD") {
+      return { value: amt * tcBac.venta, currency: "CRC", tc: tcBac.venta, tcTipo: "venta" };
+    }
+    return null;
+  };
+
+  const loadShowroomCosts = async (plate) => {
+    if (!plate) return;
+    setLoadingCosts(true);
+    try {
+      const np = plate.toUpperCase().replace(/\s+/g, '-');
+      const { data: costData } = await supabase
+        .from('showroom_vehicle_costs')
+        .select('*')
+        .eq('plate', np)
+        .maybeSingle();
+      setVehicleCost(costData || null);
+
+      const { data: manuals } = await supabase
+        .from('vehicle_manual_costs')
+        .select('*')
+        .eq('plate', np)
+        .order('cost_date', { ascending: false });
+      setManualCosts(manuals || []);
+
+      const { data: invs } = await supabase
+        .from('invoices')
+        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate')
+        .eq('plate', np)
+        .order('emission_date', { ascending: false });
+      setInvoiceCosts(invs || []);
+    } catch (err) {
+      console.error('Error cargando costos:', err);
+    } finally {
+      setLoadingCosts(false);
+    }
+  };
+
+  const savePurchaseCost = async (plate, amount, currency, fecha) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    setSavingPurchaseCost(true);
+    try {
+      const np = plate.toUpperCase().replace(/\s+/g, '-');
+      const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
+      const tcResult = await fetchTC(fechaFinal);
+      if (!tcResult.tc) {
+        return { ok: false, error: `No se pudo obtener TC: ${tcResult.warning}` };
+      }
+      const row = {
+        plate: np,
+        purchase_cost_amount: parseFloat(amount) || 0,
+        purchase_cost_currency: currency,
+        purchase_cost_tc: tcResult.tc,
+        purchase_cost_date: fechaFinal,
+        updated_at: new Date().toISOString(),
+      };
+      const { error } = await supabase
+        .from('showroom_vehicle_costs')
+        .upsert(row, { onConflict: 'plate' });
+      if (error) return { ok: false, error: error.message };
+      await loadShowroomCosts(np);
+      return { ok: true, tc: tcResult.tc };
+    } finally {
+      setSavingPurchaseCost(false);
+    }
+  };
+
+  const addManualCost = async (plate, data) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    const np = plate.toUpperCase().replace(/\s+/g, '-');
+    const fechaFinal = data.cost_date || new Date().toISOString().slice(0, 10);
+    const tcResult = await fetchTC(fechaFinal);
+    const row = {
+      plate: np,
+      concept: data.concept,
+      description: data.description || null,
+      amount: parseFloat(data.amount) || 0,
+      currency: data.currency || 'CRC',
+      tc: tcResult.tc || null,
+      cost_date: fechaFinal,
+    };
+    const { error } = await supabase.from('vehicle_manual_costs').insert(row);
+    if (error) return { ok: false, error: error.message };
+    await loadShowroomCosts(np);
+    return { ok: true };
+  };
+
+  const deleteManualCost = async (id, plate) => {
+    if (!window.confirm("¿Borrar este costo manual?")) return;
+    const { error } = await supabase.from('vehicle_manual_costs').delete().eq('id', id);
+    if (error) { alert("Error: " + error.message); return; }
+    await loadShowroomCosts(plate);
+  };
+
+  // ============================================================
   // MARCAR VENDIDO (modal con formulario de datos de venta)
   // ============================================================
   const [soldModalOpen, setSoldModalOpen] = useState(false);
@@ -6149,212 +6321,6 @@ export default function App() {
         </>)}
       </div>
     );
-  };
-
-  // ============================================================
-  // HELPERS DUAL CURRENCY
-  // ============================================================
-  // Formatea un monto sin decimales (estilo CR)
-  const fmt0 = (n) => {
-    if (n == null || isNaN(n)) return "0";
-    return Math.round(Number(n)).toLocaleString("es-CR");
-  };
-
-  // Convierte un monto en una moneda a CRC y USD usando un TC dado
-  // Retorna: { crc: number, usd: number }
-  const convertirMontos = (amount, currency, tc) => {
-    const amt = parseFloat(amount) || 0;
-    const t = parseFloat(tc) || 0;
-    if (!t || t <= 0) return { crc: currency === "CRC" ? amt : 0, usd: currency === "USD" ? amt : 0 };
-    if (currency === "USD") return { crc: amt * t, usd: amt };
-    return { crc: amt, usd: amt / t };
-  };
-
-  // Render de monto dual currency: grande la moneda original, chiquito la conversión
-  // props: { amount, currency, tc, align }
-  const DualAmount = ({ amount, currency, tc, align = "left", bigSize = 18, smallSize = 11 }) => {
-    const { crc, usd } = convertirMontos(amount, currency, tc);
-    const origSymbol = currency === "USD" ? "$" : "₡";
-    const altSymbol = currency === "USD" ? "₡" : "$";
-    const altValue = currency === "USD" ? crc : usd;
-    return (
-      <div style={{ textAlign: align }}>
-        <div style={{ fontSize: bigSize, fontWeight: 700, color: "#e8eaf0", lineHeight: 1.1 }}>
-          {origSymbol}{fmt0(amount)}
-        </div>
-        <div style={{ fontSize: smallSize, color: "#8b8fa4", marginTop: 2 }}>
-          ≈ {altSymbol}{fmt0(altValue)} · TC {tc || "?"}
-        </div>
-      </div>
-    );
-  };
-
-  // Llama a la API de TC (histórico) por fecha YYYY-MM-DD
-  const fetchTC = async (fechaYMD) => {
-    try {
-      const res = await fetch('/api/alegra-lookup-client', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'tc', fecha: fechaYMD })
-      });
-      const data = await res.json();
-      if (data.ok && data.tc_venta) return { tc: data.tc_venta, warning: data.warning || null };
-      return { tc: null, warning: data.error || 'TC no disponible' };
-    } catch (e) {
-      return { tc: null, warning: e.message };
-    }
-  };
-
-  // ============================================================
-  // TC DEL BAC (una vez al día, cacheado en tc_historico)
-  // ============================================================
-  const fetchTcBac = async () => {
-    try {
-      const res = await fetch('/api/alegra-lookup-client', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'tc_bac' })
-      });
-      const data = await res.json();
-      if (data.ok && data.tc_compra_bac && data.tc_venta_bac) {
-        setTcBac({
-          compra: parseFloat(data.tc_compra_bac),
-          venta: parseFloat(data.tc_venta_bac),
-          fecha: data.fecha,
-          from_cache: data.from_cache,
-          warning: data.warning || null,
-        });
-      } else {
-        setTcBac(null);
-      }
-    } catch (e) {
-      setTcBac(null);
-    }
-  };
-
-  // Precio equivalente usando TC BAC con regla de spread:
-  // - Si el precio está en CRC y se convierte a USD → TC COMPRA (más bajo)
-  // - Si el precio está en USD y se convierte a CRC → TC VENTA (más alto)
-  // Si tcBac no está disponible, retorna null (no se muestra conversión).
-  const precioEquivalenteBac = (amount, currency) => {
-    if (!tcBac || !amount) return null;
-    const amt = parseFloat(amount) || 0;
-    if (amt <= 0) return null;
-    if (currency === "CRC") {
-      // Cliente quiere pagar en USD → usamos TC compra (más bajo)
-      return { value: amt / tcBac.compra, currency: "USD", tc: tcBac.compra, tcTipo: "compra" };
-    } else if (currency === "USD") {
-      // Cliente quiere pagar en CRC → usamos TC venta (más alto)
-      return { value: amt * tcBac.venta, currency: "CRC", tc: tcBac.venta, tcTipo: "venta" };
-    }
-    return null;
-  };
-
-  // ============================================================
-  // CARGA DE COSTOS DE UN VEHÍCULO DEL SHOWROOM (por plate)
-  // ============================================================
-  const loadShowroomCosts = async (plate) => {
-    if (!plate) return;
-    setLoadingCosts(true);
-    try {
-      const np = plate.toUpperCase().replace(/\s+/g, '-');
-
-      // 1. Costo de compra (tabla showroom_vehicle_costs)
-      const { data: costData } = await supabase
-        .from('showroom_vehicle_costs')
-        .select('*')
-        .eq('plate', np)
-        .maybeSingle();
-      setVehicleCost(costData || null);
-
-      // 2. Costos manuales (tabla vehicle_manual_costs)
-      const { data: manuals } = await supabase
-        .from('vehicle_manual_costs')
-        .select('*')
-        .eq('plate', np)
-        .order('cost_date', { ascending: false });
-      setManualCosts(manuals || []);
-
-      // 3. Facturas que tienen esa placa (tabla invoices)
-      const { data: invs } = await supabase
-        .from('invoices')
-        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate')
-        .eq('plate', np)
-        .order('emission_date', { ascending: false });
-      setInvoiceCosts(invs || []);
-    } catch (err) {
-      console.error('Error cargando costos:', err);
-    } finally {
-      setLoadingCosts(false);
-    }
-  };
-
-  // Guardar costo de compra (upsert por plate)
-  const savePurchaseCost = async (plate, amount, currency, fecha) => {
-    if (!plate) return { ok: false, error: 'Sin placa' };
-    setSavingPurchaseCost(true);
-    try {
-      const np = plate.toUpperCase().replace(/\s+/g, '-');
-      const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
-
-      // Obtener TC de esa fecha
-      const tcResult = await fetchTC(fechaFinal);
-      if (!tcResult.tc) {
-        return { ok: false, error: `No se pudo obtener TC: ${tcResult.warning}` };
-      }
-
-      const row = {
-        plate: np,
-        purchase_cost_amount: parseFloat(amount) || 0,
-        purchase_cost_currency: currency,
-        purchase_cost_tc: tcResult.tc,
-        purchase_cost_date: fechaFinal,
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase
-        .from('showroom_vehicle_costs')
-        .upsert(row, { onConflict: 'plate' });
-
-      if (error) return { ok: false, error: error.message };
-      await loadShowroomCosts(np);
-      return { ok: true, tc: tcResult.tc };
-    } finally {
-      setSavingPurchaseCost(false);
-    }
-  };
-
-  // Agregar costo manual
-  const addManualCost = async (plate, data) => {
-    if (!plate) return { ok: false, error: 'Sin placa' };
-    const np = plate.toUpperCase().replace(/\s+/g, '-');
-    const fechaFinal = data.cost_date || new Date().toISOString().slice(0, 10);
-
-    // TC del día del costo
-    const tcResult = await fetchTC(fechaFinal);
-
-    const row = {
-      plate: np,
-      concept: data.concept,
-      description: data.description || null,
-      amount: parseFloat(data.amount) || 0,
-      currency: data.currency || 'CRC',
-      tc: tcResult.tc || null,
-      cost_date: fechaFinal,
-    };
-
-    const { error } = await supabase.from('vehicle_manual_costs').insert(row);
-    if (error) return { ok: false, error: error.message };
-    await loadShowroomCosts(np);
-    return { ok: true };
-  };
-
-  // Borrar costo manual
-  const deleteManualCost = async (id, plate) => {
-    if (!window.confirm("¿Borrar este costo manual?")) return;
-    const { error } = await supabase.from('vehicle_manual_costs').delete().eq('id', id);
-    if (error) { alert("Error: " + error.message); return; }
-    await loadShowroomCosts(plate);
   };
 
   // ===== SHOWROOM - FICHA + COTIZADOR =====
