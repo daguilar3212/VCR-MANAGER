@@ -669,12 +669,6 @@ export default function App() {
   const [loadingCosts, setLoadingCosts] = useState(false);
   const [editingCost, setEditingCost] = useState(null);        // para editar/crear costo manual
   const [savingPurchaseCost, setSavingPurchaseCost] = useState(false);
-
-  // ============================================================
-  // TC DEL BAC (se usa SOLO para mostrar precio de venta equivalente)
-  // Los costos siguen con TC del BCCR, esto es aparte.
-  // ============================================================
-  const [tcBac, setTcBac] = useState(null);  // { compra, venta, fecha }
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
@@ -822,14 +816,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); fetchTcBac(); }, []);
-
-  // Cargar vendidos cuando se abre la tab o cambian filtros
-  useEffect(() => {
-    if (showSoldTab && isAdmin) {
-      loadSoldVehicles();
-    }
-  }, [showSoldTab, soldFilterFrom, soldFilterTo, soldFilterTipo, isAdmin]);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); }, []);
 
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
   useEffect(() => {
@@ -986,343 +973,28 @@ export default function App() {
     setShowAddCarModal(true);
   };
 
-  // ============================================================
-  // HELPERS DUAL CURRENCY (DEBEN estar antes de cualquier render function que los use)
-  // ============================================================
-  const fmt0 = (n) => {
-    if (n == null || isNaN(n)) return "0";
-    return Math.round(Number(n)).toLocaleString("es-CR");
-  };
-
-  const convertirMontos = (amount, currency, tc) => {
-    const amt = parseFloat(amount) || 0;
-    const t = parseFloat(tc) || 0;
-    if (!t || t <= 0) return { crc: currency === "CRC" ? amt : 0, usd: currency === "USD" ? amt : 0 };
-    if (currency === "USD") return { crc: amt * t, usd: amt };
-    return { crc: amt, usd: amt / t };
-  };
-
-  const DualAmount = ({ amount, currency, tc, align = "left", bigSize = 18, smallSize = 11 }) => {
-    const { crc, usd } = convertirMontos(amount, currency, tc);
-    const origSymbol = currency === "USD" ? "$" : "₡";
-    const altSymbol = currency === "USD" ? "₡" : "$";
-    const altValue = currency === "USD" ? crc : usd;
-    return (
-      <div style={{ textAlign: align }}>
-        <div style={{ fontSize: bigSize, fontWeight: 700, color: "#e8eaf0", lineHeight: 1.1 }}>
-          {origSymbol}{fmt0(amount)}
-        </div>
-        <div style={{ fontSize: smallSize, color: "#8b8fa4", marginTop: 2 }}>
-          ≈ {altSymbol}{fmt0(altValue)} · TC {tc || "?"}
-        </div>
-      </div>
-    );
-  };
-
-  const fetchTC = async (fechaYMD) => {
+  const marcarVendido = async (v) => {
+    const confirm1 = window.confirm(`¿Marcar ${v.brand} ${v.model} (${v.plate}) como VENDIDO?\n\nVa a desaparecer del Showroom y se marcará como VENDIDO en el Sheets.`);
+    if (!confirm1) return;
     try {
-      const res = await fetch('/api/alegra-lookup-client', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'tc', fecha: fechaYMD })
-      });
-      const data = await res.json();
-      if (data.ok && data.tc_venta) return { tc: data.tc_venta, warning: data.warning || null };
-      return { tc: null, warning: data.error || 'TC no disponible' };
-    } catch (e) {
-      return { tc: null, warning: e.message };
-    }
-  };
-
-  const fetchTcBac = async () => {
-    try {
-      const res = await fetch('/api/alegra-lookup-client', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'tc_bac' })
-      });
-      const data = await res.json();
-      if (data.ok && data.tc_compra_bac && data.tc_venta_bac) {
-        setTcBac({
-          compra: parseFloat(data.tc_compra_bac),
-          venta: parseFloat(data.tc_venta_bac),
-          fecha: data.fecha,
-          from_cache: data.from_cache,
-          warning: data.warning || null,
-        });
-      } else {
-        setTcBac(null);
-      }
-    } catch (e) {
-      setTcBac(null);
-    }
-  };
-
-  const precioEquivalenteBac = (amount, currency) => {
-    if (!tcBac || !amount) return null;
-    const amt = parseFloat(amount) || 0;
-    if (amt <= 0) return null;
-    if (currency === "CRC") {
-      return { value: amt / tcBac.compra, currency: "USD", tc: tcBac.compra, tcTipo: "compra" };
-    } else if (currency === "USD") {
-      return { value: amt * tcBac.venta, currency: "CRC", tc: tcBac.venta, tcTipo: "venta" };
-    }
-    return null;
-  };
-
-  const loadShowroomCosts = async (plate) => {
-    if (!plate) return;
-    setLoadingCosts(true);
-    try {
-      const np = plate.toUpperCase().replace(/\s+/g, '-');
-      const { data: costData } = await supabase
-        .from('showroom_vehicle_costs')
-        .select('*')
-        .eq('plate', np)
-        .maybeSingle();
-      setVehicleCost(costData || null);
-
-      const { data: manuals } = await supabase
-        .from('vehicle_manual_costs')
-        .select('*')
-        .eq('plate', np)
-        .order('cost_date', { ascending: false });
-      setManualCosts(manuals || []);
-
-      const { data: invs } = await supabase
-        .from('invoices')
-        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate')
-        .eq('plate', np)
-        .order('emission_date', { ascending: false });
-      setInvoiceCosts(invs || []);
-    } catch (err) {
-      console.error('Error cargando costos:', err);
-    } finally {
-      setLoadingCosts(false);
-    }
-  };
-
-  const savePurchaseCost = async (plate, amount, currency, fecha) => {
-    if (!plate) return { ok: false, error: 'Sin placa' };
-    setSavingPurchaseCost(true);
-    try {
-      const np = plate.toUpperCase().replace(/\s+/g, '-');
-      const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
-      const tcResult = await fetchTC(fechaFinal);
-      if (!tcResult.tc) {
-        return { ok: false, error: `No se pudo obtener TC: ${tcResult.warning}` };
-      }
-      const row = {
-        plate: np,
-        purchase_cost_amount: parseFloat(amount) || 0,
-        purchase_cost_currency: currency,
-        purchase_cost_tc: tcResult.tc,
-        purchase_cost_date: fechaFinal,
-        updated_at: new Date().toISOString(),
-      };
-      const { error } = await supabase
-        .from('showroom_vehicle_costs')
-        .upsert(row, { onConflict: 'plate' });
-      if (error) return { ok: false, error: error.message };
-      await loadShowroomCosts(np);
-      return { ok: true, tc: tcResult.tc };
-    } finally {
-      setSavingPurchaseCost(false);
-    }
-  };
-
-  const addManualCost = async (plate, data) => {
-    if (!plate) return { ok: false, error: 'Sin placa' };
-    const np = plate.toUpperCase().replace(/\s+/g, '-');
-    const fechaFinal = data.cost_date || new Date().toISOString().slice(0, 10);
-    const tcResult = await fetchTC(fechaFinal);
-    const row = {
-      plate: np,
-      concept: data.concept,
-      description: data.description || null,
-      amount: parseFloat(data.amount) || 0,
-      currency: data.currency || 'CRC',
-      tc: tcResult.tc || null,
-      cost_date: fechaFinal,
-    };
-    const { error } = await supabase.from('vehicle_manual_costs').insert(row);
-    if (error) return { ok: false, error: error.message };
-    await loadShowroomCosts(np);
-    return { ok: true };
-  };
-
-  const deleteManualCost = async (id, plate) => {
-    if (!window.confirm("¿Borrar este costo manual?")) return;
-    const { error } = await supabase.from('vehicle_manual_costs').delete().eq('id', id);
-    if (error) { alert("Error: " + error.message); return; }
-    await loadShowroomCosts(plate);
-  };
-
-  // ============================================================
-  // MARCAR VENDIDO (modal con formulario de datos de venta)
-  // ============================================================
-  const [soldModalOpen, setSoldModalOpen] = useState(false);
-  const [soldCar, setSoldCar] = useState(null);  // carro que se está vendiendo
-  const [soldForm, setSoldForm] = useState({
-    sold_price: '',
-    sold_currency: 'USD',
-    sold_at: new Date().toISOString().slice(0, 10),
-    tipo_operacion: 'propia',
-    client_name: '',
-    client_id: '',
-    commission_amount: '',
-    commission_currency: 'CRC',
-    notes: '',
-  });
-  const [savingSold, setSavingSold] = useState(false);
-
-  // ============================================================
-  // HISTÓRICO DE VENDIDOS (solo admin, solo se carga al clickear tab)
-  // ============================================================
-  const [showSoldTab, setShowSoldTab] = useState(false);
-  const [soldList, setSoldList] = useState([]);
-  const [soldLoading, setSoldLoading] = useState(false);
-  const [soldFilterFrom, setSoldFilterFrom] = useState('');
-  const [soldFilterTo, setSoldFilterTo] = useState('');
-  const [soldFilterTipo, setSoldFilterTipo] = useState('all');
-  const [soldDetailOpen, setSoldDetailOpen] = useState(null);  // un sold row para ver detalles
-
-  const marcarVendido = (v) => {
-    // Abre modal con formulario pre-llenado con datos del carro
-    setSoldCar(v);
-    setSoldForm({
-      sold_price: v.price || '',
-      sold_currency: v.currency || 'USD',
-      sold_at: new Date().toISOString().slice(0, 10),
-      tipo_operacion: 'propia',
-      client_name: '',
-      client_id: '',
-      commission_amount: '',
-      commission_currency: v.currency || 'CRC',
-      notes: '',
-    });
-    setSoldModalOpen(true);
-  };
-
-  // Guarda el registro de venta en el histórico y luego marca el carro como vendido (como antes)
-  const confirmarVenta = async () => {
-    if (!soldCar) return;
-    if (!soldForm.sold_price || parseFloat(soldForm.sold_price) <= 0) {
-      alert('Ingresá el precio final de venta'); return;
-    }
-    if (!soldForm.sold_at) { alert('Fecha obligatoria'); return; }
-
-    setSavingSold(true);
-    try {
-      const v = soldCar;
-
-      // 1. Calcular costos snapshot (solo tiene sentido en venta propia)
-      let purchaseCostCRC = 0, invoiceCostsCRC = 0, manualCostsCRC = 0;
-      if (soldForm.tipo_operacion === 'propia') {
-        // Traer costo de compra
-        const np = v.plate.toUpperCase().replace(/\s+/g, '-');
-        const { data: pcost } = await supabase.from('showroom_vehicle_costs').select('*').eq('plate', np).maybeSingle();
-        if (pcost && pcost.purchase_cost_amount) {
-          const amt = parseFloat(pcost.purchase_cost_amount);
-          const tc = parseFloat(pcost.purchase_cost_tc) || 1;
-          purchaseCostCRC = pcost.purchase_cost_currency === 'USD' ? amt * tc : amt;
-        }
-        // Traer facturas con esa placa
-        const { data: invs } = await supabase.from('invoices').select('total, currency, exchange_rate').eq('plate', np);
-        (invs || []).forEach(inv => {
-          const amt = parseFloat(inv.total) || 0;
-          const tc = parseFloat(inv.exchange_rate) || 1;
-          invoiceCostsCRC += inv.currency === 'USD' ? amt * tc : amt;
-        });
-        // Traer costos manuales
-        const { data: mans } = await supabase.from('vehicle_manual_costs').select('amount, currency, tc').eq('plate', np);
-        (mans || []).forEach(m => {
-          const amt = parseFloat(m.amount) || 0;
-          const tc = parseFloat(m.tc) || 1;
-          manualCostsCRC += m.currency === 'USD' ? amt * tc : amt;
-        });
-      }
-      const totalCostCRC = purchaseCostCRC + invoiceCostsCRC + manualCostsCRC;
-
-      // 2. Utilidad
-      const soldPrice = parseFloat(soldForm.sold_price) || 0;
-      const commissionAmt = parseFloat(soldForm.commission_amount) || 0;
-
-      // TC BAC del día para convertir
-      const tcBacCompra = tcBac?.compra || 0;
-      const tcBacVenta = tcBac?.venta || 0;
-
-      let utilityCRC = 0, utilityUSD = 0;
-      if (soldForm.tipo_operacion === 'propia') {
-        // Precio venta en CRC
-        const precioVentaCRC = soldForm.sold_currency === 'USD' ? soldPrice * (tcBacVenta || 500) : soldPrice;
-        utilityCRC = precioVentaCRC - totalCostCRC;
-        utilityUSD = tcBacVenta ? utilityCRC / tcBacVenta : 0;
-      } else {
-        // Consignación: utilidad = comisión
-        const commInCRC = soldForm.commission_currency === 'USD' ? commissionAmt * (tcBacVenta || 500) : commissionAmt;
-        utilityCRC = commInCRC;
-        utilityUSD = tcBacVenta ? commInCRC / tcBacVenta : 0;
-      }
-
-      // 3. Insertar en histórico
-      const record = {
-        plate: v.plate,
-        brand: v.brand, model: v.model, year: v.year,
-        color: v.color, km: v.km, fuel: v.fuel, transmission: v.transmission,
-        engine_cc: v.engine_cc, cylinders: v.cylinders, origin: v.origin,
-        drivetrain: v.drivetrain, passengers: v.passengers, style: v.style,
-
-        listed_price: parseFloat(v.price) || null,
-        listed_currency: v.currency || 'USD',
-        sold_price: soldPrice,
-        sold_currency: soldForm.sold_currency,
-
-        sold_tc_bac_compra: tcBacCompra || null,
-        sold_tc_bac_venta: tcBacVenta || null,
-        sold_tc_bccr: null,
-
-        sold_at: soldForm.sold_at,
-        tipo_operacion: soldForm.tipo_operacion,
-
-        client_name: soldForm.client_name || null,
-        client_id: soldForm.client_id || null,
-
-        agent_id: profile?.id || null,
-        agent_name: profile?.full_name || 'Admin',
-
-        sale_id: null,
-        sale_snapshot: null,
-
-        purchase_cost_crc: soldForm.tipo_operacion === 'propia' ? purchaseCostCRC : null,
-        invoice_costs_crc: soldForm.tipo_operacion === 'propia' ? invoiceCostsCRC : null,
-        manual_costs_crc: soldForm.tipo_operacion === 'propia' ? manualCostsCRC : null,
-        total_cost_crc: soldForm.tipo_operacion === 'propia' ? totalCostCRC : 0,
-
-        commission_amount: commissionAmt || null,
-        commission_currency: commissionAmt ? soldForm.commission_currency : null,
-        utility_crc: utilityCRC || null,
-        utility_usd: utilityUSD || null,
-
-        notes: soldForm.notes || null,
-        created_by: profile?.id || null,
-      };
-
-      const { error: histErr } = await supabase.from('sold_showroom_vehicles').insert(record);
-      if (histErr) {
-        alert(`Error guardando histórico: ${histErr.message}`);
-        setSavingSold(false);
-        return;
-      }
-
-      // 4. Marcar vendido en Sheet + borrar de showroom_vehicles
       const carUpdated = {
         estado: 'VENDIDO',
-        plate: v.plate, brand: v.brand, model: v.model, year: v.year,
-        transmission: v.transmission, color: v.color, km: v.km, fuel: v.fuel,
-        engine_cc: v.engine_cc, cylinders: v.cylinders, origin: v.origin,
-        drivetrain: v.drivetrain, passengers: v.passengers, style: v.style,
-        price: v.price, currency: v.currency
+        plate: v.plate,
+        brand: v.brand,
+        model: v.model,
+        year: v.year,
+        transmission: v.transmission,
+        color: v.color,
+        km: v.km,
+        fuel: v.fuel,
+        engine_cc: v.engine_cc,
+        cylinders: v.cylinders,
+        origin: v.origin,
+        drivetrain: v.drivetrain,
+        passengers: v.passengers,
+        style: v.style,
+        price: v.price,
+        currency: v.currency
       };
       const res = await fetch('/api/sync-showroom', {
         method: 'POST',
@@ -1331,34 +1003,15 @@ export default function App() {
       });
       const j = await res.json();
       if (j.ok) {
+        // Borrar también de Supabase para que desaparezca del Showroom inmediatamente
         await supabase.from('showroom_vehicles').delete().eq('plate', v.plate);
+        alert(`✅ ${v.plate} marcado como VENDIDO`);
         await loadShowroomVehicles();
-        setSoldModalOpen(false);
-        setSoldCar(null);
-        alert(`✅ ${v.plate} vendido y guardado en histórico`);
       } else {
-        alert(`⚠️ Histórico guardado, pero error al marcar en Sheets: ${j.error}`);
+        alert(`❌ Error: ${j.error || 'No se pudo marcar'}`);
       }
     } catch (e) {
-      alert(`Error: ${e.message}`);
-    } finally {
-      setSavingSold(false);
-    }
-  };
-
-  // Cargar vendidos (con filtros)
-  const loadSoldVehicles = async () => {
-    setSoldLoading(true);
-    try {
-      let q = supabase.from('sold_showroom_vehicles').select('*').order('sold_at', { ascending: false });
-      if (soldFilterFrom) q = q.gte('sold_at', soldFilterFrom);
-      if (soldFilterTo) q = q.lte('sold_at', soldFilterTo);
-      if (soldFilterTipo !== 'all') q = q.eq('tipo_operacion', soldFilterTipo);
-      const { data, error } = await q;
-      if (error) { console.error('Error cargando vendidos:', error); setSoldList([]); }
-      else setSoldList(data || []);
-    } finally {
-      setSoldLoading(false);
+      alert(`❌ Error de red: ${e.message}`);
     }
   };
   useEffect(() => {
@@ -5904,205 +5557,8 @@ export default function App() {
             >
               {showroomSyncing ? "⏳ Sincronizando..." : "🔄 Sincronizar con Google Sheets"}
             </button>
-            {isAdmin && (
-              <button
-                onClick={() => setShowSoldTab(!showSoldTab)}
-                style={{...S.btn, background: showSoldTab ? "#9333ea" : "#9333ea88"}}
-              >
-                {showSoldTab ? "🚗 Ver disponibles" : "📊 Ver vendidos"}
-              </button>
-            )}
           </div>
         </div>
-
-        {/* ===================== VISTA VENDIDOS (SOLO ADMIN) ===================== */}
-        {showSoldTab && isAdmin ? (
-          <div>
-            <div style={{...S.card, padding: 16, marginBottom: 16}}>
-              <div style={{fontSize: 13, fontWeight: 700, marginBottom: 10, color: "#9333ea"}}>📊 Histórico de ventas y consignaciones</div>
-              <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10}}>
-                <div>
-                  <div style={{fontSize: 10, color: "#8b8fa4", marginBottom: 4}}>DESDE</div>
-                  <input type="date" value={soldFilterFrom} onChange={e => setSoldFilterFrom(e.target.value)} style={{...S.input, width: "100%"}} />
-                </div>
-                <div>
-                  <div style={{fontSize: 10, color: "#8b8fa4", marginBottom: 4}}>HASTA</div>
-                  <input type="date" value={soldFilterTo} onChange={e => setSoldFilterTo(e.target.value)} style={{...S.input, width: "100%"}} />
-                </div>
-                <div>
-                  <div style={{fontSize: 10, color: "#8b8fa4", marginBottom: 4}}>TIPO</div>
-                  <select value={soldFilterTipo} onChange={e => setSoldFilterTipo(e.target.value)} style={{...S.select, width: "100%"}}>
-                    <option value="all">Todas</option>
-                    <option value="propia">Venta propia</option>
-                    <option value="consignacion_grupo">Consignación grupo (1%)</option>
-                    <option value="consignacion_externa">Consignación externa (5%)</option>
-                  </select>
-                </div>
-                <div style={{display: "flex", alignItems: "flex-end"}}>
-                  <button onClick={() => { setSoldFilterFrom(''); setSoldFilterTo(''); setSoldFilterTipo('all'); }} style={{...S.btnGhost, width: "100%"}}>Limpiar</button>
-                </div>
-              </div>
-            </div>
-
-            {/* Totales */}
-            {soldList.length > 0 && (() => {
-              const totalVentas = soldList.length;
-              const utilidadCRC = soldList.reduce((a, s) => a + (parseFloat(s.utility_crc) || 0), 0);
-              const utilidadUSD = soldList.reduce((a, s) => a + (parseFloat(s.utility_usd) || 0), 0);
-              const propias = soldList.filter(s => s.tipo_operacion === 'propia').length;
-              const consGrupo = soldList.filter(s => s.tipo_operacion === 'consignacion_grupo').length;
-              const consExt = soldList.filter(s => s.tipo_operacion === 'consignacion_externa').length;
-              return (
-                <div style={{...S.card, padding: 16, marginBottom: 16}}>
-                  <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12}}>
-                    <div>
-                      <div style={{fontSize: 11, color: "#8b8fa4"}}>OPERACIONES</div>
-                      <div style={{fontSize: 22, fontWeight: 800, color: "#4f8cff"}}>{totalVentas}</div>
-                      <div style={{fontSize: 10, color: "#8b8fa4"}}>{propias} propias · {consGrupo} grupo · {consExt} ext</div>
-                    </div>
-                    <div>
-                      <div style={{fontSize: 11, color: "#8b8fa4"}}>UTILIDAD TOTAL CRC</div>
-                      <div style={{fontSize: 22, fontWeight: 800, color: utilidadCRC >= 0 ? "#10b981" : "#e11d48"}}>₡{fmt0(utilidadCRC)}</div>
-                    </div>
-                    <div>
-                      <div style={{fontSize: 11, color: "#8b8fa4"}}>UTILIDAD TOTAL USD</div>
-                      <div style={{fontSize: 22, fontWeight: 800, color: utilidadUSD >= 0 ? "#10b981" : "#e11d48"}}>${fmt0(utilidadUSD)}</div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {soldLoading ? (
-              <div style={{...S.card, padding: 40, textAlign: "center", color: "#8b8fa4"}}>Cargando histórico...</div>
-            ) : soldList.length === 0 ? (
-              <div style={{...S.card, padding: 40, textAlign: "center", color: "#8b8fa4"}}>No hay ventas registradas con esos filtros.</div>
-            ) : (
-              <div style={{...S.card, padding: 0, overflow: "hidden"}}>
-                <div style={{overflowX: "auto"}}>
-                  <table style={{width: "100%", borderCollapse: "collapse", fontSize: 12}}>
-                    <thead>
-                      <tr style={{background: "#1e2130"}}>
-                        <th style={{padding: "10px 12px", textAlign: "left", color: "#8b8fa4", fontWeight: 700}}>FECHA</th>
-                        <th style={{padding: "10px 12px", textAlign: "left", color: "#8b8fa4", fontWeight: 700}}>VEHÍCULO</th>
-                        <th style={{padding: "10px 12px", textAlign: "left", color: "#8b8fa4", fontWeight: 700}}>PLACA</th>
-                        <th style={{padding: "10px 12px", textAlign: "left", color: "#8b8fa4", fontWeight: 700}}>TIPO</th>
-                        <th style={{padding: "10px 12px", textAlign: "left", color: "#8b8fa4", fontWeight: 700}}>CLIENTE</th>
-                        <th style={{padding: "10px 12px", textAlign: "right", color: "#8b8fa4", fontWeight: 700}}>PRECIO</th>
-                        <th style={{padding: "10px 12px", textAlign: "right", color: "#8b8fa4", fontWeight: 700}}>UTILIDAD/COMISIÓN</th>
-                        <th style={{padding: "10px 12px", textAlign: "center", color: "#8b8fa4", fontWeight: 700}}></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {soldList.map(s => {
-                        const tipoLabel = {
-                          propia: '🚗 Propia',
-                          consignacion_grupo: '🤝 Cons. Grupo',
-                          consignacion_externa: '🌐 Cons. Ext',
-                        }[s.tipo_operacion] || s.tipo_operacion;
-                        const priceSymbol = s.sold_currency === 'USD' ? '$' : '₡';
-                        return (
-                          <tr key={s.id} style={{borderBottom: "1px solid #2a2d3d"}}>
-                            <td style={{padding: "10px 12px"}}>{s.sold_at}</td>
-                            <td style={{padding: "10px 12px"}}>{s.brand} {s.model} {s.year || ''}</td>
-                            <td style={{padding: "10px 12px", color: "#4f8cff", fontWeight: 600}}>{s.plate}</td>
-                            <td style={{padding: "10px 12px", fontSize: 11}}>{tipoLabel}</td>
-                            <td style={{padding: "10px 12px", color: "#8b8fa4"}}>{s.client_name || "-"}</td>
-                            <td style={{padding: "10px 12px", textAlign: "right", fontWeight: 700, color: "#10b981"}}>
-                              {priceSymbol}{fmt0(s.sold_price)}
-                            </td>
-                            <td style={{padding: "10px 12px", textAlign: "right", fontWeight: 700, color: (parseFloat(s.utility_crc) || 0) >= 0 ? "#10b981" : "#e11d48"}}>
-                              ₡{fmt0(s.utility_crc || 0)}
-                              <div style={{fontSize: 10, color: "#8b8fa4"}}>${fmt0(s.utility_usd || 0)}</div>
-                            </td>
-                            <td style={{padding: "10px 12px", textAlign: "center"}}>
-                              <button onClick={() => setSoldDetailOpen(s)} style={{...S.btnGhost, fontSize: 11, padding: "4px 10px"}}>Ver</button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {/* Modal detalle de venta */}
-            {soldDetailOpen && (
-              <div style={{position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20}} onClick={() => setSoldDetailOpen(null)}>
-                <div style={{...S.card, maxWidth: 600, width: "100%", maxHeight: "90vh", overflowY: "auto", padding: 24}} onClick={e => e.stopPropagation()}>
-                  <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16}}>
-                    <div>
-                      <h2 style={{fontSize: 20, fontWeight: 800}}>{soldDetailOpen.brand} {soldDetailOpen.model} {soldDetailOpen.year || ''}</h2>
-                      <div style={{fontSize: 13, color: "#4f8cff", fontWeight: 700}}>{soldDetailOpen.plate}</div>
-                    </div>
-                    <button onClick={() => setSoldDetailOpen(null)} style={{background: "transparent", border: "none", color: "#8b8fa4", cursor: "pointer", fontSize: 24}}>×</button>
-                  </div>
-
-                  <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16}}>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>FECHA VENTA</div><div style={{fontWeight: 600}}>{soldDetailOpen.sold_at}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>TIPO</div><div style={{fontWeight: 600}}>{soldDetailOpen.tipo_operacion}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>CLIENTE</div><div style={{fontWeight: 600}}>{soldDetailOpen.client_name || "-"}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>CÉDULA</div><div style={{fontWeight: 600}}>{soldDetailOpen.client_id || "-"}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>AGENTE</div><div style={{fontWeight: 600}}>{soldDetailOpen.agent_name || "-"}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>PRECIO LISTADO</div><div style={{fontWeight: 600}}>{soldDetailOpen.listed_currency === 'USD' ? '$' : '₡'}{fmt0(soldDetailOpen.listed_price)}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>PRECIO VENDIDO</div><div style={{fontWeight: 700, color: "#10b981"}}>{soldDetailOpen.sold_currency === 'USD' ? '$' : '₡'}{fmt0(soldDetailOpen.sold_price)}</div></div>
-                    <div><div style={{fontSize: 10, color: "#8b8fa4"}}>TC BAC DEL DÍA</div><div style={{fontSize: 12}}>C:{soldDetailOpen.sold_tc_bac_compra || "-"} / V:{soldDetailOpen.sold_tc_bac_venta || "-"}</div></div>
-                  </div>
-
-                  {soldDetailOpen.tipo_operacion === 'propia' && (
-                    <div style={{background: "#1e2130", padding: 12, borderRadius: 8, marginBottom: 12}}>
-                      <div style={{fontSize: 12, fontWeight: 700, marginBottom: 8}}>Desglose de costos (CRC)</div>
-                      <div style={{display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4}}>
-                        <span style={{color: "#8b8fa4"}}>Costo compra:</span>
-                        <span>₡{fmt0(soldDetailOpen.purchase_cost_crc || 0)}</span>
-                      </div>
-                      <div style={{display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4}}>
-                        <span style={{color: "#8b8fa4"}}>Facturas:</span>
-                        <span>₡{fmt0(soldDetailOpen.invoice_costs_crc || 0)}</span>
-                      </div>
-                      <div style={{display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 8}}>
-                        <span style={{color: "#8b8fa4"}}>Costos manuales:</span>
-                        <span>₡{fmt0(soldDetailOpen.manual_costs_crc || 0)}</span>
-                      </div>
-                      <div style={{display: "flex", justifyContent: "space-between", fontSize: 13, fontWeight: 700, paddingTop: 8, borderTop: "1px solid #2a2d3d"}}>
-                        <span>Costo total:</span>
-                        <span>₡{fmt0(soldDetailOpen.total_cost_crc || 0)}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  {(soldDetailOpen.tipo_operacion === 'consignacion_grupo' || soldDetailOpen.tipo_operacion === 'consignacion_externa') && soldDetailOpen.commission_amount && (
-                    <div style={{background: "#1e2130", padding: 12, borderRadius: 8, marginBottom: 12}}>
-                      <div style={{display: "flex", justifyContent: "space-between", fontSize: 13}}>
-                        <span style={{color: "#8b8fa4"}}>Comisión cobrada:</span>
-                        <span style={{fontWeight: 700}}>{soldDetailOpen.commission_currency === 'USD' ? '$' : '₡'}{fmt0(soldDetailOpen.commission_amount)}</span>
-                      </div>
-                    </div>
-                  )}
-
-                  <div style={{display: "flex", justifyContent: "space-between", padding: 14, background: (parseFloat(soldDetailOpen.utility_crc) || 0) >= 0 ? "#10b98118" : "#e11d4818", borderRadius: 8}}>
-                    <div>
-                      <div style={{fontSize: 11, color: "#8b8fa4"}}>{soldDetailOpen.tipo_operacion === 'propia' ? 'UTILIDAD' : 'COMISIÓN EQUIVALENTE'}</div>
-                      <div style={{fontSize: 18, fontWeight: 800, color: (parseFloat(soldDetailOpen.utility_crc) || 0) >= 0 ? "#10b981" : "#e11d48"}}>₡{fmt0(soldDetailOpen.utility_crc || 0)}</div>
-                      <div style={{fontSize: 12, color: "#8b8fa4"}}>≈ ${fmt0(soldDetailOpen.utility_usd || 0)}</div>
-                    </div>
-                  </div>
-
-                  {soldDetailOpen.notes && (
-                    <div style={{marginTop: 12, padding: 10, background: "#1e2130", borderRadius: 8, fontSize: 12}}>
-                      <div style={{fontSize: 10, color: "#8b8fa4", marginBottom: 4}}>NOTAS</div>
-                      {soldDetailOpen.notes}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (<></>)}
-
-        {/* ===================== VISTA NORMAL DISPONIBLES ===================== */}
-        {!showSoldTab && (<>
 
         <div style={{...S.card,padding:16,marginBottom:16}}>
           <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
@@ -6318,9 +5774,169 @@ export default function App() {
             </div>
           </div>
         )}
-        </>)}
       </div>
     );
+  };
+
+  // ============================================================
+  // HELPERS DUAL CURRENCY
+  // ============================================================
+  // Formatea un monto sin decimales (estilo CR)
+  const fmt0 = (n) => {
+    if (n == null || isNaN(n)) return "0";
+    return Math.round(Number(n)).toLocaleString("es-CR");
+  };
+
+  // Convierte un monto en una moneda a CRC y USD usando un TC dado
+  // Retorna: { crc: number, usd: number }
+  const convertirMontos = (amount, currency, tc) => {
+    const amt = parseFloat(amount) || 0;
+    const t = parseFloat(tc) || 0;
+    if (!t || t <= 0) return { crc: currency === "CRC" ? amt : 0, usd: currency === "USD" ? amt : 0 };
+    if (currency === "USD") return { crc: amt * t, usd: amt };
+    return { crc: amt, usd: amt / t };
+  };
+
+  // Render de monto dual currency: grande la moneda original, chiquito la conversión
+  // props: { amount, currency, tc, align }
+  const DualAmount = ({ amount, currency, tc, align = "left", bigSize = 18, smallSize = 11 }) => {
+    const { crc, usd } = convertirMontos(amount, currency, tc);
+    const origSymbol = currency === "USD" ? "$" : "₡";
+    const altSymbol = currency === "USD" ? "₡" : "$";
+    const altValue = currency === "USD" ? crc : usd;
+    return (
+      <div style={{ textAlign: align }}>
+        <div style={{ fontSize: bigSize, fontWeight: 700, color: "#e8eaf0", lineHeight: 1.1 }}>
+          {origSymbol}{fmt0(amount)}
+        </div>
+        <div style={{ fontSize: smallSize, color: "#8b8fa4", marginTop: 2 }}>
+          ≈ {altSymbol}{fmt0(altValue)} · TC {tc || "?"}
+        </div>
+      </div>
+    );
+  };
+
+  // Llama a la API de TC (histórico) por fecha YYYY-MM-DD
+  const fetchTC = async (fechaYMD) => {
+    try {
+      const res = await fetch('/api/alegra-lookup-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'tc', fecha: fechaYMD })
+      });
+      const data = await res.json();
+      if (data.ok && data.tc_venta) return { tc: data.tc_venta, warning: data.warning || null };
+      return { tc: null, warning: data.error || 'TC no disponible' };
+    } catch (e) {
+      return { tc: null, warning: e.message };
+    }
+  };
+
+  // ============================================================
+  // CARGA DE COSTOS DE UN VEHÍCULO DEL SHOWROOM (por plate)
+  // ============================================================
+  const loadShowroomCosts = async (plate) => {
+    if (!plate) return;
+    setLoadingCosts(true);
+    try {
+      const np = plate.toUpperCase().replace(/\s+/g, '-');
+
+      // 1. Costo de compra (tabla showroom_vehicle_costs)
+      const { data: costData } = await supabase
+        .from('showroom_vehicle_costs')
+        .select('*')
+        .eq('plate', np)
+        .maybeSingle();
+      setVehicleCost(costData || null);
+
+      // 2. Costos manuales (tabla vehicle_manual_costs)
+      const { data: manuals } = await supabase
+        .from('vehicle_manual_costs')
+        .select('*')
+        .eq('plate', np)
+        .order('cost_date', { ascending: false });
+      setManualCosts(manuals || []);
+
+      // 3. Facturas que tienen esa placa (tabla invoices)
+      const { data: invs } = await supabase
+        .from('invoices')
+        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate')
+        .eq('plate', np)
+        .order('emission_date', { ascending: false });
+      setInvoiceCosts(invs || []);
+    } catch (err) {
+      console.error('Error cargando costos:', err);
+    } finally {
+      setLoadingCosts(false);
+    }
+  };
+
+  // Guardar costo de compra (upsert por plate)
+  const savePurchaseCost = async (plate, amount, currency, fecha) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    setSavingPurchaseCost(true);
+    try {
+      const np = plate.toUpperCase().replace(/\s+/g, '-');
+      const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
+
+      // Obtener TC de esa fecha
+      const tcResult = await fetchTC(fechaFinal);
+      if (!tcResult.tc) {
+        return { ok: false, error: `No se pudo obtener TC: ${tcResult.warning}` };
+      }
+
+      const row = {
+        plate: np,
+        purchase_cost_amount: parseFloat(amount) || 0,
+        purchase_cost_currency: currency,
+        purchase_cost_tc: tcResult.tc,
+        purchase_cost_date: fechaFinal,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('showroom_vehicle_costs')
+        .upsert(row, { onConflict: 'plate' });
+
+      if (error) return { ok: false, error: error.message };
+      await loadShowroomCosts(np);
+      return { ok: true, tc: tcResult.tc };
+    } finally {
+      setSavingPurchaseCost(false);
+    }
+  };
+
+  // Agregar costo manual
+  const addManualCost = async (plate, data) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    const np = plate.toUpperCase().replace(/\s+/g, '-');
+    const fechaFinal = data.cost_date || new Date().toISOString().slice(0, 10);
+
+    // TC del día del costo
+    const tcResult = await fetchTC(fechaFinal);
+
+    const row = {
+      plate: np,
+      concept: data.concept,
+      description: data.description || null,
+      amount: parseFloat(data.amount) || 0,
+      currency: data.currency || 'CRC',
+      tc: tcResult.tc || null,
+      cost_date: fechaFinal,
+    };
+
+    const { error } = await supabase.from('vehicle_manual_costs').insert(row);
+    if (error) return { ok: false, error: error.message };
+    await loadShowroomCosts(np);
+    return { ok: true };
+  };
+
+  // Borrar costo manual
+  const deleteManualCost = async (id, plate) => {
+    if (!window.confirm("¿Borrar este costo manual?")) return;
+    const { error } = await supabase.from('vehicle_manual_costs').delete().eq('id', id);
+    if (error) { alert("Error: " + error.message); return; }
+    await loadShowroomCosts(plate);
   };
 
   // ===== SHOWROOM - FICHA + COTIZADOR =====
@@ -6921,21 +6537,8 @@ export default function App() {
             </div>
           )}
 
-          <div style={{padding:"14px 18px",background:"#10b98122",border:"1px solid #10b981",borderRadius:10,display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
-            <div style={{flex:1}}>
-              <div style={{fontSize:22,fontWeight:800,color:"#10b981"}}>💰 Precio: {fmt(precioOrig.val, precioOrig.cur)}</div>
-              {(() => {
-                const eq = precioEquivalenteBac(precioOrig.val, precioOrig.cur);
-                if (!eq) return null;
-                const symbol = eq.currency === "USD" ? "$" : "₡";
-                return (
-                  <div style={{fontSize:13,color:"#8b8fa4",marginTop:4}}>
-                    Equivalente: <span style={{color:"#e8eaf0",fontWeight:600}}>{symbol}{fmt0(eq.value)}</span>
-                    <span style={{fontSize:11,marginLeft:6,opacity:0.7}}>(TC BAC {eq.tcTipo}: {eq.tc})</span>
-                  </div>
-                );
-              })()}
-            </div>
+          <div style={{padding:"14px 18px",background:"#10b98122",border:"1px solid #10b981",borderRadius:10,fontSize:22,fontWeight:800,color:"#10b981",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:12}}>
+            <div>💰 Precio: {fmt(precioOrig.val, precioOrig.cur)}</div>
             {v.web_url && <a href={v.web_url} target="_blank" rel="noreferrer" style={{...S.btnGhost,fontSize:13,textDecoration:"none"}}>🌐 Ver en web</a>}
           </div>
         </div>
@@ -7300,89 +6903,6 @@ export default function App() {
         </div>
         <main style={{flex:1,overflow:"auto",padding: isMobile ? "60px 12px 12px" : 22, width: isMobile ? "100%" : "auto"}}>
           {renderPage()}
-
-          {/* ======= MODAL CONFIRMAR VENTA ======= */}
-          {soldModalOpen && soldCar && (
-            <div style={S.modal} onClick={() => !savingSold && setSoldModalOpen(false)}>
-              <div style={{...S.mbox, maxWidth: 560}} onClick={e => e.stopPropagation()}>
-                <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14}}>
-                  <div>
-                    <h3 style={{fontSize: 17, fontWeight: 700, margin: 0}}>Confirmar venta</h3>
-                    <p style={{fontSize: 12, color: "#8b8fa4", marginTop: 4}}>{soldCar.brand} {soldCar.model} {soldCar.year} · {soldCar.plate}</p>
-                  </div>
-                  <button onClick={() => !savingSold && setSoldModalOpen(false)} style={{background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: 18}}>✕</button>
-                </div>
-
-                <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12}}>
-                  <div>
-                    <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>TIPO DE OPERACIÓN *</label>
-                    <select value={soldForm.tipo_operacion} onChange={e => setSoldForm({...soldForm, tipo_operacion: e.target.value})} style={{...S.sel, width: "100%"}}>
-                      <option value="propia">🚗 Venta propia</option>
-                      <option value="consignacion_grupo">🤝 Consignación grupo (1%)</option>
-                      <option value="consignacion_externa">🌐 Consignación externa (5%)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>FECHA VENTA *</label>
-                    <input type="date" value={soldForm.sold_at} onChange={e => setSoldForm({...soldForm, sold_at: e.target.value})} style={{...S.input, width: "100%"}} />
-                  </div>
-                </div>
-
-                <div style={{display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10, marginBottom: 12}}>
-                  <div>
-                    <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>PRECIO FINAL VENDIDO *</label>
-                    <input type="number" value={soldForm.sold_price} onChange={e => setSoldForm({...soldForm, sold_price: e.target.value})} placeholder="Precio al que se vendió" style={{...S.input, width: "100%"}} />
-                  </div>
-                  <div>
-                    <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>MONEDA</label>
-                    <select value={soldForm.sold_currency} onChange={e => setSoldForm({...soldForm, sold_currency: e.target.value})} style={{...S.sel, width: "100%"}}>
-                      <option value="USD">USD</option>
-                      <option value="CRC">CRC</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12}}>
-                  <div>
-                    <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>CLIENTE</label>
-                    <input type="text" value={soldForm.client_name} onChange={e => setSoldForm({...soldForm, client_name: e.target.value})} placeholder="Nombre completo" style={{...S.input, width: "100%"}} />
-                  </div>
-                  <div>
-                    <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>CÉDULA</label>
-                    <input type="text" value={soldForm.client_id} onChange={e => setSoldForm({...soldForm, client_id: e.target.value})} placeholder="Cédula" style={{...S.input, width: "100%"}} />
-                  </div>
-                </div>
-
-                {(soldForm.tipo_operacion === 'consignacion_grupo' || soldForm.tipo_operacion === 'consignacion_externa') && (
-                  <div style={{display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10, marginBottom: 12, padding: 10, background: "#4f8cff11", borderRadius: 8}}>
-                    <div>
-                      <label style={{fontSize: 11, color: "#4f8cff", marginBottom: 4, display: "block"}}>COMISIÓN COBRADA *</label>
-                      <input type="number" value={soldForm.commission_amount} onChange={e => setSoldForm({...soldForm, commission_amount: e.target.value})} placeholder={soldForm.tipo_operacion === 'consignacion_grupo' ? '1% del precio' : '5% del precio'} style={{...S.input, width: "100%"}} />
-                    </div>
-                    <div>
-                      <label style={{fontSize: 11, color: "#4f8cff", marginBottom: 4, display: "block"}}>MONEDA</label>
-                      <select value={soldForm.commission_currency} onChange={e => setSoldForm({...soldForm, commission_currency: e.target.value})} style={{...S.sel, width: "100%"}}>
-                        <option value="CRC">CRC</option>
-                        <option value="USD">USD</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                <div style={{marginBottom: 14}}>
-                  <label style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, display: "block"}}>NOTAS (opcional)</label>
-                  <textarea value={soldForm.notes} onChange={e => setSoldForm({...soldForm, notes: e.target.value})} placeholder="Cualquier detalle relevante de la venta..." rows={2} style={{...S.input, width: "100%", resize: "vertical"}} />
-                </div>
-
-                <div style={{display: "flex", gap: 8, justifyContent: "flex-end"}}>
-                  <button onClick={() => setSoldModalOpen(false)} disabled={savingSold} style={{...S.btnGhost}}>Cancelar</button>
-                  <button onClick={confirmarVenta} disabled={savingSold} style={{...S.btn, background: savingSold ? "#4f8cff77" : "#10b981"}}>
-                    {savingSold ? '⏳ Guardando...' : '✅ Confirmar venta'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* ======= GLOBAL INVOICE MODAL ======= */}
           {pickedInv && (
