@@ -1941,16 +1941,14 @@ export default function App() {
       // Cálculo previo para saber si trade-in o prima ya cubren
       const bd = computeBreakdown(saleForm);
       const saldoCubiertoSinDepositos = bd.balance <= 0.01;
-      // Para ventas financiadas, "cubierto" significa que el trade-in cubre la prima
-      // que exige el banco (down_payment). En ese caso no se necesitan depósitos
-      // adicionales — el trade-in ES la prima.
+      // Para ventas financiadas: si ya hay prima efectiva (trade-in o prima digitada),
+      // no se exigen depósitos adicionales — el trade-in o la prima ya cubren el
+      // aporte inicial del cliente. El banco financia el resto.
       const isFinanciado = saleForm.payment_method === "Financiamiento" || saleForm.payment_method === "Mixto";
-      const tradein = parseFloat(saleForm.tradein_amount) || 0;
-      const primaExigida = parseFloat(saleForm.down_payment) || 0;
-      const tradeinCubrePrima = isFinanciado && primaExigida > 0 && tradein >= primaExigida - 0.01;
-      const puedeOmitirDepositos = saldoCubiertoSinDepositos || tradeinCubrePrima;
+      const financiadoConPrima = isFinanciado && bd.primaEfectiva > 0.01;
+      const puedeOmitirDepositos = saldoCubiertoSinDepositos || financiadoConPrima;
       if (validDeposits.length === 0 && !puedeOmitirDepositos) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in ya cubre el precio total o la prima del banco, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total, o si es venta financiada con prima/trade-in, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
         return;
       }
       for (const d of validDeposits) {
@@ -2139,7 +2137,7 @@ export default function App() {
           alegraMsg = `\n⚠ No se pudo conectar con Alegra: ${e.message}`;
         }
 
-        // Si hay trade-in, crearlo en el inventario
+        // Si hay trade-in, crearlo en el inventario + showroom
         let tradeinMsg = "";
         try {
           const trRes = await fetch('/api/create-tradein-vehicle', {
@@ -2155,6 +2153,8 @@ export default function App() {
               tradeinMsg = `\n🚗 Trade-in ${trData.plate} ya estaba en inventario.`;
             } else {
               tradeinMsg = `\n🚗 Trade-in ${trData.plate} agregado al inventario como DISPONIBLE.`;
+              if (trData.showroom) tradeinMsg += `\n   🏬 ${trData.showroom}`;
+              if (trData.showroom_error) tradeinMsg += `\n   ⚠ Showroom: ${trData.showroom_error}`;
             }
           } else {
             tradeinMsg = `\n⚠ No se pudo agregar trade-in al inventario: ${trData.error || 'error'}`;
