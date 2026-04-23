@@ -519,23 +519,14 @@ export default async function handler(req, res) {
 
           if (plate) {
             const np = plate.toUpperCase().replace(/\s+/g, '-');
-            // 1. Buscar primero en vehicles (fleet Cartastic - si existe en este proyecto)
             const { data: vehicle } = await supabase.from('vehicles').select('id,plate').eq('plate', np).limit(1);
             if (vehicle && vehicle.length > 0) {
               assignStatus = 'assigned';
               vehicleId = vehicle[0].id;
               plate = np;
             } else {
-              // 2. Buscar en showroom_vehicles (dealership VCR)
-              const { data: showroomV } = await supabase.from('showroom_vehicles').select('id,plate').eq('plate', np).limit(1);
-              if (showroomV && showroomV.length > 0) {
-                assignStatus = 'assigned';
-                // No guardamos vehicle_id (esa columna apunta a 'vehicles'), pero la placa queda linkeada
-                plate = np;
-              } else {
-                assignStatus = 'warning';
-                plate = np;
-              }
+              assignStatus = 'warning';
+              plate = np;
             }
           }
 
