@@ -326,9 +326,10 @@ export default async function handler(req, res) {
       }
     }
 
-    if (sale.observations) {
-      notasParts.push(String(sale.observations));
-    }
+    // NOTA: las observaciones del plan de ventas NO van a la factura de Alegra.
+    // Se dejan solo en el PDF del plan de ventas para uso interno.
+    // (Históricamente se incluían, pero a veces contenían notas internas que
+    // no deben aparecer en la factura que ve el cliente.)
 
     const notasFinal = notasParts.join(' ').slice(0, 500);
 
