@@ -651,6 +651,14 @@ export default function App() {
   const [showroomLastSync, setShowroomLastSync] = useState(null);
   const [showAddCarModal, setShowAddCarModal] = useState(false);
   const [editingPlate, setEditingPlate] = useState(null);
+
+  // Subvista del Showroom: 'activos' (disponibles/reservados) o 'vendidos' (histórico)
+  const [showroomSubView, setShowroomSubView] = useState("activos");
+  // Filtros de fecha para vendidos (formato YYYY-MM-DD)
+  const [soldDateFrom, setSoldDateFrom] = useState("");
+  const [soldDateTo, setSoldDateTo] = useState("");
+  // Detalle del carro vendido elegido
+  const [soldDetail, setSoldDetail] = useState(null); // { vehicle, sale, deposits, costs }
   const [newCar, setNewCar] = useState({
     estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
     transmission: '', color: '', km: '', fuel: '', engine_cc: '',
@@ -1009,8 +1017,11 @@ export default function App() {
       });
       const j = await res.json();
       if (j.ok) {
-        // Borrar también de Supabase para que desaparezca del Showroom inmediatamente
-        await supabase.from('showroom_vehicles').delete().eq('plate', v.plate);
+        // Preservar el registro con estado VENDIDO + sold_at para el histórico
+        await supabase.from('showroom_vehicles').update({
+          estado: 'VENDIDO',
+          sold_at: new Date().toISOString(),
+        }).eq('plate', v.plate);
         alert(`✅ ${v.plate} marcado como VENDIDO`);
         await loadShowroomVehicles();
       } else {
@@ -5536,7 +5547,12 @@ export default function App() {
     const srSort = showroomSort;
     const srPicked = showroomPicked;
 
-    const filt = all.filter(v => {
+    // Excluir vendidos de la lista activa
+    // (la subvista "Vendidos" usa los vendidos por separado)
+    const activeCars = all.filter(v => v.estado !== 'VENDIDO');
+    const soldCars = all.filter(v => v.estado === 'VENDIDO');
+
+    const filt = activeCars.filter(v => {
       if (!srQ) return true;
       const qL = srQ.toLowerCase();
       return [v.plate, v.brand, v.model, v.color, String(v.year)].some(x => (x || "").toLowerCase().includes(qL));
@@ -5592,6 +5608,44 @@ export default function App() {
           </div>
         </div>
 
+        {/* Tabs: Activos / Vendidos */}
+        <div style={{display:"flex",gap:4,marginBottom:16,borderBottom:"1px solid #2a2d3d"}}>
+          <button
+            onClick={() => setShowroomSubView("activos")}
+            style={{
+              padding:"10px 18px",
+              background:"transparent",
+              border:"none",
+              borderBottom: showroomSubView === "activos" ? "2px solid #4f8cff" : "2px solid transparent",
+              color: showroomSubView === "activos" ? "#4f8cff" : "#8b8fa4",
+              fontWeight: showroomSubView === "activos" ? 700 : 500,
+              fontSize: 13,
+              cursor:"pointer",
+              marginBottom: -1
+            }}
+          >
+            🚗 Activos ({activeCars.length})
+          </button>
+          <button
+            onClick={() => setShowroomSubView("vendidos")}
+            style={{
+              padding:"10px 18px",
+              background:"transparent",
+              border:"none",
+              borderBottom: showroomSubView === "vendidos" ? "2px solid #10b981" : "2px solid transparent",
+              color: showroomSubView === "vendidos" ? "#10b981" : "#8b8fa4",
+              fontWeight: showroomSubView === "vendidos" ? 700 : 500,
+              fontSize: 13,
+              cursor:"pointer",
+              marginBottom: -1
+            }}
+          >
+            💰 Vendidos ({soldCars.length})
+          </button>
+        </div>
+
+        {showroomSubView === "activos" && (
+        <>
         <div style={{...S.card,padding:16,marginBottom:16}}>
           <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"center"}}>
             <input
@@ -5670,6 +5724,204 @@ export default function App() {
             </table>
           </div>
         )}
+        </>
+        )}
+
+        {showroomSubView === "vendidos" && (() => {
+          // Filtros de fecha
+          const fromTs = soldDateFrom ? new Date(soldDateFrom + "T00:00:00").getTime() : 0;
+          const toTs = soldDateTo ? new Date(soldDateTo + "T23:59:59").getTime() : Infinity;
+          const filteredSold = soldCars
+            .filter(v => {
+              const soldAt = v.sold_at ? new Date(v.sold_at).getTime() : 0;
+              if (!soldAt) return !soldDateFrom && !soldDateTo; // sin fecha → solo si no hay filtro
+              return soldAt >= fromTs && soldAt <= toTs;
+            })
+            .sort((a, b) => new Date(b.sold_at || 0).getTime() - new Date(a.sold_at || 0).getTime());
+
+          // Calcular totales del período usando los datos del snapshot
+          // Para propios: utilidad = precio_venta - costos (requiere cargar costos por cada carro, caro)
+          //   → acá solo calculamos INGRESO BRUTO del período, no utilidad neta
+          // Para consignaciones: ganancia = comisión neta al negocio
+          //   - grupo: 2% del precio (menos 1% del vendedor si aplica = 1% neto al neg.)
+          //   - externa: 5% del precio (menos 1% del vendedor = 4% neto al neg.)
+          // Simplificamos: mostramos comisión registrada al momento de la venta.
+          let totalVentasCRC = 0, totalVentasUSD = 0;
+          let gananciaConsigCRC = 0, gananciaConsigUSD = 0;
+          let countPropios = 0, countConsigGrupo = 0, countConsigExt = 0;
+
+          filteredSold.forEach(v => {
+            const price = parseFloat(v.sold_price_original) || 0;
+            const cur = v.sold_price_currency || v.currency || "USD";
+            const tc = parseFloat(v.sold_exchange_rate) || 0;
+            const inCRC = cur === "USD" ? (tc > 0 ? price * tc : 0) : price;
+            const inUSD = cur === "USD" ? price : (tc > 0 ? price / tc : 0);
+            totalVentasCRC += inCRC;
+            totalVentasUSD += inUSD;
+
+            const saleType = v.sold_sale_type || "propio";
+            if (saleType === "propio") countPropios++;
+            else if (saleType === "consignacion_grupo") {
+              countConsigGrupo++;
+              // 2% bruto → negocio se queda con 1% neto (1% vendedor)
+              gananciaConsigCRC += inCRC * 0.01;
+              gananciaConsigUSD += inUSD * 0.01;
+            } else if (saleType === "consignacion_externa") {
+              countConsigExt++;
+              // 5% bruto → negocio se queda con 4% neto (1% vendedor)
+              gananciaConsigCRC += inCRC * 0.04;
+              gananciaConsigUSD += inUSD * 0.04;
+            }
+          });
+
+          return (
+            <div>
+              {/* Filtros por fecha */}
+              <div style={{...S.card, padding: 16, marginBottom: 16}}>
+                <div style={{display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end"}}>
+                  <div>
+                    <label style={{fontSize: 10, color: "#8b8fa4", textTransform: "uppercase", display: "block", marginBottom: 4}}>Desde</label>
+                    <input type="date" value={soldDateFrom} onChange={e => setSoldDateFrom(e.target.value)} style={S.input} />
+                  </div>
+                  <div>
+                    <label style={{fontSize: 10, color: "#8b8fa4", textTransform: "uppercase", display: "block", marginBottom: 4}}>Hasta</label>
+                    <input type="date" value={soldDateTo} onChange={e => setSoldDateTo(e.target.value)} style={S.input} />
+                  </div>
+                  <div style={{display: "flex", gap: 6}}>
+                    <button onClick={() => {
+                      const now = new Date();
+                      const first = new Date(now.getFullYear(), now.getMonth(), 1);
+                      setSoldDateFrom(first.toISOString().slice(0, 10));
+                      setSoldDateTo(now.toISOString().slice(0, 10));
+                    }} style={{...S.btnGhost, fontSize: 11, padding: "6px 10px"}}>Este mes</button>
+                    <button onClick={() => {
+                      const now = new Date();
+                      const first = new Date(now.getFullYear(), 0, 1);
+                      setSoldDateFrom(first.toISOString().slice(0, 10));
+                      setSoldDateTo(now.toISOString().slice(0, 10));
+                    }} style={{...S.btnGhost, fontSize: 11, padding: "6px 10px"}}>Este año</button>
+                    <button onClick={() => { setSoldDateFrom(""); setSoldDateTo(""); }} style={{...S.btnGhost, fontSize: 11, padding: "6px 10px"}}>Limpiar</button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Métricas del período */}
+              <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 16}}>
+                <div style={{...S.card, padding: 14}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>Carros vendidos</div>
+                  <div style={{fontSize: 26, fontWeight: 800, color: "#e8eaf0"}}>{filteredSold.length}</div>
+                  <div style={{fontSize: 10, color: "#5a5e72", marginTop: 4}}>
+                    {countPropios} propios · {countConsigGrupo} cons. grupo · {countConsigExt} cons. ext.
+                  </div>
+                </div>
+                <div style={{...S.card, padding: 14}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>Ventas totales</div>
+                  <div style={{fontSize: 18, fontWeight: 800, color: "#e8eaf0"}}>₡{fmt0(totalVentasCRC)}</div>
+                  <div style={{fontSize: 12, fontWeight: 400, color: "#5a5e72", marginTop: 2}}>≈ ${fmt0(totalVentasUSD)}</div>
+                </div>
+                <div style={{...S.card, padding: 14, border: "1px solid #10b98144"}}>
+                  <div style={{fontSize: 11, color: "#10b981", textTransform: "uppercase", marginBottom: 6}}>Ganancia consignación (neta)</div>
+                  <div style={{fontSize: 18, fontWeight: 800, color: "#10b981"}}>₡{fmt0(gananciaConsigCRC)}</div>
+                  <div style={{fontSize: 12, fontWeight: 400, color: "#10b981aa", marginTop: 2}}>≈ ${fmt0(gananciaConsigUSD)}</div>
+                  <div style={{fontSize: 9, color: "#5a5e72", marginTop: 4}}>
+                    Grupo 1% + Externa 4% (descontando 1% vendedor)
+                  </div>
+                </div>
+                <div style={{...S.card, padding: 14, border: "1px solid #4f8cff44"}}>
+                  <div style={{fontSize: 11, color: "#4f8cff", textTransform: "uppercase", marginBottom: 6}}>Utilidad carros propios</div>
+                  <div style={{fontSize: 13, fontWeight: 600, color: "#8b8fa4"}}>Click un carro para ver detalle</div>
+                  <div style={{fontSize: 9, color: "#5a5e72", marginTop: 4}}>
+                    Propios requieren costos cargados por carro
+                  </div>
+                </div>
+              </div>
+
+              {/* Lista / detalle */}
+              {soldDetail ? (
+                <div style={{...S.card, padding: 20}}>
+                  <button onClick={() => setSoldDetail(null)} style={{...S.btnGhost, marginBottom: 12}}>
+                    ← Volver a lista
+                  </button>
+                  {soldDetail.loading ? (
+                    <div style={{color: "#8b8fa4"}}>Cargando...</div>
+                  ) : soldDetail.error ? (
+                    <div style={{color: "#e11d48"}}>Error: {soldDetail.error}</div>
+                  ) : (
+                    <SoldDetailView
+                      detail={soldDetail}
+                      tcRates={tcRates}
+                      fmt0={fmt0}
+                      CostMoney={CostMoney}
+                    />
+                  )}
+                </div>
+              ) : filteredSold.length === 0 ? (
+                <div style={{...S.card, padding: 40, textAlign: "center", color: "#8b8fa4"}}>
+                  {soldCars.length === 0
+                    ? "No hay carros vendidos aún. Cuando aprobés un plan de ventas, el carro aparecerá acá."
+                    : "No hay carros vendidos en ese rango de fechas."}
+                </div>
+              ) : (
+                <div style={{...S.card, overflow: "auto"}}>
+                  <table style={{width: "100%", borderCollapse: "collapse", fontSize: 13}}>
+                    <thead>
+                      <tr style={{background: "#1f2230", borderBottom: "1px solid #2a2d3d"}}>
+                        <th style={{padding: "10px 12px", textAlign: "left", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Fecha venta</th>
+                        <th style={{padding: "10px 12px", textAlign: "left", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Placa</th>
+                        <th style={{padding: "10px 12px", textAlign: "left", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Vehículo</th>
+                        <th style={{padding: "10px 12px", textAlign: "left", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Cliente</th>
+                        <th style={{padding: "10px 12px", textAlign: "left", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Tipo</th>
+                        <th style={{padding: "10px 12px", textAlign: "right", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Precio venta</th>
+                        <th style={{padding: "10px 12px", textAlign: "center", fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.4}}>Ver</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredSold.map(v => {
+                        const price = parseFloat(v.sold_price_original) || parseFloat(v.price) || 0;
+                        const cur = v.sold_price_currency || v.currency || "USD";
+                        const tc = parseFloat(v.sold_exchange_rate) || 0;
+                        const inCRC = cur === "USD" ? (tc > 0 ? price * tc : 0) : price;
+                        const inUSD = cur === "USD" ? price : (tc > 0 ? price / tc : 0);
+                        const saleType = v.sold_sale_type || "propio";
+                        const typeBadge = saleType === "propio" ? {color: "#6366f1", label: "Propio"} :
+                                          saleType === "consignacion_grupo" ? {color: "#8b5cf6", label: "Cons. Grupo 1%"} :
+                                          {color: "#f97316", label: "Cons. Ext. 5%"};
+                        return (
+                          <tr key={v.id} style={{borderBottom: "1px solid #2a2d3d"}}
+                              onMouseEnter={e => e.currentTarget.style.background = "#1f2230"}
+                              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            <td style={{padding: "10px 12px", cursor: "pointer"}} onClick={() => loadSoldDetail(v)}>
+                              {v.sold_at ? new Date(v.sold_at).toLocaleDateString("es-CR") : "—"}
+                            </td>
+                            <td style={{padding: "10px 12px", fontWeight: 700, color: "#4f8cff", cursor: "pointer"}} onClick={() => loadSoldDetail(v)}>{v.plate}</td>
+                            <td style={{padding: "10px 12px", cursor: "pointer"}} onClick={() => loadSoldDetail(v)}>{v.brand} {v.model} {v.year}</td>
+                            <td style={{padding: "10px 12px", color: "#8b8fa4", cursor: "pointer"}} onClick={() => loadSoldDetail(v)}>{v.sold_client_name || "—"}</td>
+                            <td style={{padding: "10px 12px", cursor: "pointer"}} onClick={() => loadSoldDetail(v)}>
+                              <span style={{...S.badge(typeBadge.color), fontSize: 10}}>{typeBadge.label}</span>
+                            </td>
+                            <td style={{padding: "10px 12px", textAlign: "right", cursor: "pointer"}} onClick={() => loadSoldDetail(v)}>
+                              <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0"}}>
+                                {cur === "USD" ? "$" : "₡"}{fmt0(price)}
+                              </div>
+                              <div style={{fontSize: 10, color: "#5a5e72"}}>
+                                ≈ {cur === "USD" ? `₡${fmt0(inCRC)}` : `$${fmt0(inUSD)}`}
+                              </div>
+                            </td>
+                            <td style={{padding: "10px 12px", textAlign: "center"}}>
+                              <button onClick={() => loadSoldDetail(v)} style={{...S.btnGhost, fontSize: 11, padding: "4px 10px"}}>
+                                Ver
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {showAddCarModal && (
           <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={() => !addingCar && setShowAddCarModal(false)}>
@@ -6013,6 +6265,357 @@ export default function App() {
     } finally {
       setLoadingCosts(false);
     }
+  };
+
+  // Cargar detalle completo de un carro vendido: venta + depósitos + costos
+  // Retorna: { sale, deposits, costs: { purchase, manuals, invoices } }
+  const loadSoldDetail = async (vehicle) => {
+    if (!vehicle?.plate) return null;
+    setSoldDetail({ vehicle, loading: true });
+    const np = vehicle.plate.toUpperCase().replace(/\s+/g, '-');
+    try {
+      // 1. Venta aprobada vinculada (por sold_sale_id o por placa+status)
+      let saleQuery = supabase.from('sales').select('*');
+      if (vehicle.sold_sale_id) {
+        saleQuery = saleQuery.eq('id', vehicle.sold_sale_id);
+      } else {
+        saleQuery = saleQuery.eq('vehicle_plate', np).eq('status', 'aprobada').order('approved_at', { ascending: false }).limit(1);
+      }
+      const { data: saleRows } = await saleQuery;
+      const sale = Array.isArray(saleRows) ? saleRows[0] : saleRows;
+
+      // 2. Depósitos y agentes de esa venta (si existe)
+      let deposits = [], saleAgentsData = [];
+      if (sale?.id) {
+        const [dep, sag] = await Promise.all([
+          supabase.from('sale_deposits').select('*').eq('sale_id', sale.id).order('deposit_date'),
+          supabase.from('sale_agents').select('*').eq('sale_id', sale.id),
+        ]);
+        deposits = dep.data || [];
+        saleAgentsData = sag.data || [];
+      }
+
+      // 3. Costos (costo de compra, manuales, facturas con placa)
+      const [pc, mc, invs] = await Promise.all([
+        supabase.from('showroom_vehicle_costs').select('*').eq('plate', np).maybeSingle(),
+        supabase.from('vehicle_manual_costs').select('*').eq('plate', np).order('cost_date'),
+        supabase.from('invoices').select('id, emission_date, supplier_name, total, currency, exchange_rate, plate').eq('plate', np).order('emission_date'),
+      ]);
+
+      setSoldDetail({
+        vehicle,
+        sale: sale || null,
+        deposits,
+        saleAgents: saleAgentsData,
+        costs: {
+          purchase: pc.data || null,
+          manuals: mc.data || [],
+          invoices: invs.data || [],
+        },
+        loading: false,
+      });
+    } catch (err) {
+      console.error('Error cargando vendido:', err);
+      setSoldDetail({ vehicle, error: err.message, loading: false });
+    }
+  };
+
+  // Vista de detalle de un vehículo vendido — muestra resumen del Plan de Ventas,
+  // costos cargados y comisión del vendedor, todo con doble moneda.
+  // Cada costo mantiene su moneda principal con su TC histórico.
+  // Para los propios: utilidad = precio venta - (costo compra + facturas + manuales)
+  // Para consignaciones: no se muestran costos, solo comisión neta al negocio
+  const SoldDetailView = ({ detail, tcRates, fmt0, CostMoney }) => {
+    const { vehicle: v, sale, deposits, saleAgents, costs } = detail;
+    if (!v) return null;
+
+    const bccrVenta = tcRates?.bccr?.venta || 0;
+    const bccrCompra = tcRates?.bccr?.compra || 0;
+    const bacVenta = tcRates?.bac?.venta || bccrVenta;
+    const bacCompra = tcRates?.bac?.compra || bccrCompra;
+
+    // Ayuda: convertir un monto a ambas monedas con TC dado (o BCCR default)
+    const toBoth = (amt, cur, tcItem) => {
+      const a = parseFloat(amt) || 0;
+      const origIsUSD = cur === "USD";
+      let tc = parseFloat(tcItem) || 0;
+      if (!tc || tc <= 0) tc = origIsUSD ? bccrVenta : bccrCompra;
+      return {
+        crc: origIsUSD ? (tc > 0 ? a * tc : 0) : a,
+        usd: origIsUSD ? a : (tc > 0 ? a / tc : 0),
+      };
+    };
+
+    // === DATOS DE LA VENTA ===
+    const saleType = v.sold_sale_type || sale?.sale_type || "propio";
+    const isPropio = saleType === "propio";
+    const isConsigGrupo = saleType === "consignacion_grupo";
+    const isConsigExt = saleType === "consignacion_externa";
+
+    const saleAmt = parseFloat(v.sold_price_original) || parseFloat(sale?.sale_price) || 0;
+    const saleCur = v.sold_price_currency || sale?.sale_currency || "USD";
+    const saleTC = parseFloat(v.sold_exchange_rate) || parseFloat(sale?.sale_exchange_rate) || 0;
+    // Precio venta usa TC BAC del día para conversión gerencial
+    const saleUSD = saleCur === "USD" ? saleAmt : (bacCompra > 0 ? saleAmt / bacCompra : 0);
+    const saleCRC = saleCur === "USD" ? (bacVenta > 0 ? saleAmt * bacVenta : 0) : saleAmt;
+
+    // === COSTOS (solo aplican a propios) ===
+    let totalCostCRC = 0, totalCostUSD = 0;
+    const costLines = [];
+    if (isPropio) {
+      if (costs?.purchase) {
+        const p = costs.purchase;
+        const { crc, usd } = toBoth(p.purchase_cost_amount, p.purchase_cost_currency, p.purchase_cost_tc);
+        totalCostCRC += crc; totalCostUSD += usd;
+        costLines.push({ concept: "🛒 Costo de compra", date: p.purchase_cost_date, amount: p.purchase_cost_amount, currency: p.purchase_cost_currency, tc: p.purchase_cost_tc });
+      }
+      (costs?.invoices || []).forEach(inv => {
+        const { crc, usd } = toBoth(inv.total, inv.currency, inv.exchange_rate);
+        totalCostCRC += crc; totalCostUSD += usd;
+        costLines.push({ concept: `📄 ${inv.supplier_name}`, date: inv.emission_date?.slice(0, 10), amount: inv.total, currency: inv.currency || "CRC", tc: inv.exchange_rate });
+      });
+      (costs?.manuals || []).forEach(m => {
+        const { crc, usd } = toBoth(m.amount, m.currency, m.tc);
+        totalCostCRC += crc; totalCostUSD += usd;
+        costLines.push({ concept: `✍️ ${m.concept}`, date: m.cost_date, amount: m.amount, currency: m.currency, tc: m.tc, description: m.description });
+      });
+    }
+
+    // === UTILIDAD ===
+    let utilidadCRC = 0, utilidadUSD = 0, margenCRC = 0, margenUSD = 0;
+    let ingresoCRC = 0, ingresoUSD = 0; // ingreso BRUTO al negocio
+    let comisionVendedorCRC = 0, comisionVendedorUSD = 0; // 1% al vendedor
+
+    if (isPropio) {
+      utilidadCRC = saleCRC - totalCostCRC;
+      utilidadUSD = saleUSD - totalCostUSD;
+      margenCRC = saleCRC > 0 ? (utilidadCRC / saleCRC * 100) : 0;
+      margenUSD = saleUSD > 0 ? (utilidadUSD / saleUSD * 100) : 0;
+    } else if (isConsigGrupo) {
+      // 2% bruto, 1% al vendedor → 1% neto al negocio
+      ingresoCRC = saleCRC * 0.02;
+      ingresoUSD = saleUSD * 0.02;
+      comisionVendedorCRC = saleCRC * 0.01;
+      comisionVendedorUSD = saleUSD * 0.01;
+      utilidadCRC = ingresoCRC - comisionVendedorCRC;
+      utilidadUSD = ingresoUSD - comisionVendedorUSD;
+    } else if (isConsigExt) {
+      // 5% bruto, 1% al vendedor → 4% neto al negocio
+      ingresoCRC = saleCRC * 0.05;
+      ingresoUSD = saleUSD * 0.05;
+      comisionVendedorCRC = saleCRC * 0.01;
+      comisionVendedorUSD = saleUSD * 0.01;
+      utilidadCRC = ingresoCRC - comisionVendedorCRC;
+      utilidadUSD = ingresoUSD - comisionVendedorUSD;
+    }
+
+    // Para propios, la comisión al vendedor se lee de sale.commission_amount si existe
+    if (isPropio && sale?.commission_amount) {
+      const commCur = sale.sale_currency || saleCur;
+      const { crc, usd } = toBoth(sale.commission_amount, commCur, saleTC);
+      comisionVendedorCRC = crc;
+      comisionVendedorUSD = usd;
+    }
+
+    const typeBadge = isPropio ? {color: "#6366f1", label: "Propio"} :
+                      isConsigGrupo ? {color: "#8b5cf6", label: "Cons. Grupo (2% bruto / 1% neto)"} :
+                      {color: "#f97316", label: "Cons. Externa (5% bruto / 4% neto)"};
+
+    return (
+      <div>
+        {/* Header */}
+        <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12}}>
+          <div>
+            <h2 style={{fontSize: 22, fontWeight: 800, margin: 0, color: "#e8eaf0"}}>
+              {v.brand} {v.model} {v.year}
+            </h2>
+            <div style={{fontSize: 14, color: "#4f8cff", fontWeight: 700, marginTop: 4}}>{v.plate}</div>
+            <div style={{fontSize: 12, color: "#8b8fa4", marginTop: 4}}>
+              Vendido: {v.sold_at ? new Date(v.sold_at).toLocaleString("es-CR") : "—"}
+              {" · "}Cliente: {v.sold_client_name || sale?.client_name || "—"}
+            </div>
+          </div>
+          <span style={{...S.badge(typeBadge.color), fontSize: 12}}>{typeBadge.label}</span>
+        </div>
+
+        {/* TARJETAS PRINCIPALES */}
+        <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 20}}>
+          {/* Precio de venta */}
+          <div style={{...S.card, padding: 14, border: "1px solid #10b98144"}}>
+            <div style={{fontSize: 10, color: "#10b981", textTransform: "uppercase", marginBottom: 6}}>
+              Precio venta (original: {saleCur})
+            </div>
+            {saleCur === "USD" ? (
+              <>
+                <div style={{fontSize: 20, fontWeight: 800, color: "#10b981"}}>${fmt0(saleAmt)}</div>
+                <div style={{fontSize: 12, color: "#5a5e72", marginTop: 2}}>≈ ₡{fmt0(saleCRC)}</div>
+              </>
+            ) : (
+              <>
+                <div style={{fontSize: 20, fontWeight: 800, color: "#10b981"}}>₡{fmt0(saleAmt)}</div>
+                <div style={{fontSize: 12, color: "#5a5e72", marginTop: 2}}>≈ ${fmt0(saleUSD)}</div>
+              </>
+            )}
+            {saleTC > 0 && (
+              <div style={{fontSize: 9, color: "#6b6f84", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #2a2d3d"}}>
+                TC en plan de venta: ₡{fmt0(saleTC)}
+              </div>
+            )}
+          </div>
+
+          {/* Para propios: Costo total */}
+          {isPropio && (
+            <div style={{...S.card, padding: 14}}>
+              <div style={{fontSize: 10, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>Costo total</div>
+              <div style={{fontSize: 18, fontWeight: 800, color: "#e8eaf0"}}>₡{fmt0(totalCostCRC)}</div>
+              <div style={{fontSize: 12, color: "#5a5e72", marginTop: 2}}>≈ ${fmt0(totalCostUSD)}</div>
+              <div style={{fontSize: 9, color: "#6b6f84", marginTop: 6}}>
+                {costLines.length} ítem{costLines.length !== 1 ? "s" : ""} con TC histórico
+              </div>
+            </div>
+          )}
+
+          {/* Para consignaciones: Ingreso bruto */}
+          {!isPropio && (
+            <div style={{...S.card, padding: 14}}>
+              <div style={{fontSize: 10, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>
+                Ingreso bruto ({isConsigGrupo ? "2%" : "5%"})
+              </div>
+              <div style={{fontSize: 18, fontWeight: 800, color: "#e8eaf0"}}>₡{fmt0(ingresoCRC)}</div>
+              <div style={{fontSize: 12, color: "#5a5e72", marginTop: 2}}>≈ ${fmt0(ingresoUSD)}</div>
+            </div>
+          )}
+
+          {/* Comisión vendedor */}
+          <div style={{...S.card, padding: 14, border: "1px solid #f59e0b44"}}>
+            <div style={{fontSize: 10, color: "#f59e0b", textTransform: "uppercase", marginBottom: 6}}>
+              Comisión vendedor (1%)
+            </div>
+            <div style={{fontSize: 18, fontWeight: 800, color: "#f59e0b"}}>₡{fmt0(comisionVendedorCRC)}</div>
+            <div style={{fontSize: 12, color: "#f59e0baa", marginTop: 2}}>≈ ${fmt0(comisionVendedorUSD)}</div>
+          </div>
+
+          {/* Utilidad neta */}
+          <div style={{...S.card, padding: 14, background: utilidadCRC >= 0 ? "#10b98118" : "#e11d4818", border: "1px solid " + (utilidadCRC >= 0 ? "#10b98144" : "#e11d4844")}}>
+            <div style={{fontSize: 10, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>
+              Utilidad neta al negocio
+            </div>
+            <div style={{fontSize: 20, fontWeight: 800, color: utilidadCRC >= 0 ? "#10b981" : "#e11d48"}}>
+              ₡{fmt0(utilidadCRC)}
+            </div>
+            <div style={{fontSize: 13, fontWeight: 600, color: utilidadUSD >= 0 ? "#10b981aa" : "#e11d48aa", marginTop: 2}}>
+              ≈ ${fmt0(utilidadUSD)}
+            </div>
+            {isPropio && (
+              <div style={{fontSize: 9, color: "#6b6f84", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #2a2d3d"}}>
+                Margen: {margenCRC.toFixed(1)}% CRC · {margenUSD.toFixed(1)}% USD
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* COSTOS DETALLADOS (solo propios) */}
+        {isPropio && costLines.length > 0 && (
+          <div style={{...S.card, padding: 16, marginBottom: 16}}>
+            <div style={{fontSize: 14, fontWeight: 700, color: "#e8eaf0", marginBottom: 10}}>
+              Desglose de costos ({costLines.length})
+            </div>
+            <div style={{background: "#1e2130", borderRadius: 8, overflow: "hidden"}}>
+              {costLines.map((c, i) => {
+                const tcItem = parseFloat(c.tc) || 0;
+                return (
+                  <div key={i} style={{padding: "10px 12px", borderBottom: i < costLines.length - 1 ? "1px solid #2a2d3d" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10}}>
+                    <div style={{flex: 1, minWidth: 0}}>
+                      <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0"}}>{c.concept}</div>
+                      <div style={{fontSize: 10, color: "#5a5e72"}}>
+                        {c.date || "—"} · {c.currency}{tcItem > 0 ? ` · TC ${fmt0(tcItem)}` : ""}
+                        {c.description ? ` · ${c.description}` : ""}
+                      </div>
+                    </div>
+                    <CostMoney amount={c.amount} currency={c.currency} tcItem={tcItem} mainSize={14} subSize={10} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {isPropio && costLines.length === 0 && (
+          <div style={{...S.card, padding: 16, marginBottom: 16, color: "#8b8fa4", fontSize: 12}}>
+            Este vehículo no tiene costos registrados. La utilidad calculada es equivalente al precio de venta.
+          </div>
+        )}
+
+        {/* PLAN DE VENTAS - RESUMEN */}
+        {sale ? (
+          <div style={{...S.card, padding: 16}}>
+            <div style={{fontSize: 14, fontWeight: 700, color: "#e8eaf0", marginBottom: 10}}>
+              Plan de Ventas #{sale.sale_number ? String(sale.sale_number).padStart(4, "0") : sale.id?.slice(0, 8)}
+            </div>
+            <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, fontSize: 12}}>
+              <div>
+                <div style={{color: "#8b8fa4", fontSize: 10, textTransform: "uppercase"}}>Cliente</div>
+                <div style={{color: "#e8eaf0", marginTop: 2}}>{sale.client_name || "—"}</div>
+                <div style={{color: "#8b8fa4", marginTop: 2}}>{sale.client_cedula || ""}</div>
+              </div>
+              <div>
+                <div style={{color: "#8b8fa4", fontSize: 10, textTransform: "uppercase"}}>Teléfono / Email</div>
+                <div style={{color: "#e8eaf0", marginTop: 2}}>{sale.client_phone1 || "—"}</div>
+                <div style={{color: "#8b8fa4", marginTop: 2}}>{sale.client_email || ""}</div>
+              </div>
+              <div>
+                <div style={{color: "#8b8fa4", fontSize: 10, textTransform: "uppercase"}}>Trade-in</div>
+                <div style={{color: "#e8eaf0", marginTop: 2}}>{sale.tradein_amount ? `${saleCur === "USD" ? "$" : "₡"}${fmt0(sale.tradein_amount)}` : "Sin trade-in"}</div>
+              </div>
+              <div>
+                <div style={{color: "#8b8fa4", fontSize: 10, textTransform: "uppercase"}}>Prima</div>
+                <div style={{color: "#e8eaf0", marginTop: 2}}>{sale.down_payment ? `${saleCur === "USD" ? "$" : "₡"}${fmt0(sale.down_payment)}` : "—"}</div>
+              </div>
+              <div>
+                <div style={{color: "#8b8fa4", fontSize: 10, textTransform: "uppercase"}}>Método de pago</div>
+                <div style={{color: "#e8eaf0", marginTop: 2}}>{sale.payment_method || "—"}</div>
+              </div>
+              <div>
+                <div style={{color: "#8b8fa4", fontSize: 10, textTransform: "uppercase"}}>Fecha aprobación</div>
+                <div style={{color: "#e8eaf0", marginTop: 2}}>{sale.approved_at ? new Date(sale.approved_at).toLocaleString("es-CR") : "—"}</div>
+              </div>
+            </div>
+
+            {deposits && deposits.length > 0 && (
+              <div style={{marginTop: 14, paddingTop: 14, borderTop: "1px solid #2a2d3d"}}>
+                <div style={{fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>Depósitos</div>
+                {deposits.map((d, i) => (
+                  <div key={i} style={{fontSize: 12, color: "#e8eaf0", padding: "4px 0", display: "flex", justifyContent: "space-between"}}>
+                    <span style={{color: "#8b8fa4"}}>{d.deposit_date} · {d.bank || "—"} · {d.reference || ""}</span>
+                    <span>{saleCur === "USD" ? "$" : "₡"}{fmt0(d.amount)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {sale.observations && (
+              <div style={{marginTop: 14, paddingTop: 14, borderTop: "1px solid #2a2d3d"}}>
+                <div style={{fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", marginBottom: 6}}>Observaciones</div>
+                <div style={{fontSize: 12, color: "#e8eaf0", whiteSpace: "pre-wrap"}}>{sale.observations}</div>
+              </div>
+            )}
+
+            {sale.pdf_url && (
+              <div style={{marginTop: 14}}>
+                <a href={sale.pdf_url} target="_blank" rel="noreferrer" style={{...S.btnGhost, textDecoration: "none", fontSize: 12, display: "inline-block"}}>
+                  📄 Abrir PDF del plan en Drive
+                </a>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{...S.card, padding: 16, color: "#8b8fa4", fontSize: 12}}>
+            No se encontró un Plan de Ventas vinculado a este vehículo.
+            {v.sold_at && " (posiblemente fue marcado vendido manualmente)"}
+          </div>
+        )}
+      </div>
+    );
   };
 
   // Guardar costo de compra (upsert por plate)
