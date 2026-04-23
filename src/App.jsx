@@ -625,7 +625,7 @@ const SignaturePad = ({ onSave, onCancel, existingSignature }) => {
 };
 
 export default function App() {
-  const { profile, signOut } = useAuth();
+  const { profile, signOut, isAdmin } = useAuth();
   const [tab, setTab] = useState("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(false); // controlado por botón hamburguesa en móvil
   const [isMobile, setIsMobile] = useState(typeof window !== "undefined" && window.innerWidth < 768);
@@ -658,6 +658,17 @@ export default function App() {
     price: '', currency: 'USD'
   });
   const [addingCar, setAddingCar] = useState(false);
+
+  // ============================================================
+  // COSTOS DEL SHOWROOM (solo admin ve esto)
+  // ============================================================
+  const [showCostPanel, setShowCostPanel] = useState(false);
+  const [vehicleCost, setVehicleCost] = useState(null);        // { purchase_cost_amount, purchase_cost_currency, purchase_cost_tc, purchase_cost_date }
+  const [manualCosts, setManualCosts] = useState([]);          // [{id, concept, amount, currency, tc, cost_date, description}]
+  const [invoiceCosts, setInvoiceCosts] = useState([]);        // [{id, emission_date, supplier_name, total, currency, exchange_rate}]
+  const [loadingCosts, setLoadingCosts] = useState(false);
+  const [editingCost, setEditingCost] = useState(null);        // para editar/crear costo manual
+  const [savingPurchaseCost, setSavingPurchaseCost] = useState(false);
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
@@ -806,6 +817,17 @@ export default function App() {
 
   // Load data on mount
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); }, []);
+
+  // Cargar costos cuando cambia el vehículo del showroom seleccionado
+  useEffect(() => {
+    if (showroomPicked?.plate) {
+      loadShowroomCosts(showroomPicked.plate);
+    } else {
+      setVehicleCost(null);
+      setManualCosts([]);
+      setInvoiceCosts([]);
+    }
+  }, [showroomPicked?.plate]);
 
   const loadBankAccounts = async () => {
     const { data } = await supabase.from('bank_accounts').select('*').order('id');
@@ -5756,6 +5778,167 @@ export default function App() {
     );
   };
 
+  // ============================================================
+  // HELPERS DUAL CURRENCY
+  // ============================================================
+  // Formatea un monto sin decimales (estilo CR)
+  const fmt0 = (n) => {
+    if (n == null || isNaN(n)) return "0";
+    return Math.round(Number(n)).toLocaleString("es-CR");
+  };
+
+  // Convierte un monto en una moneda a CRC y USD usando un TC dado
+  // Retorna: { crc: number, usd: number }
+  const convertirMontos = (amount, currency, tc) => {
+    const amt = parseFloat(amount) || 0;
+    const t = parseFloat(tc) || 0;
+    if (!t || t <= 0) return { crc: currency === "CRC" ? amt : 0, usd: currency === "USD" ? amt : 0 };
+    if (currency === "USD") return { crc: amt * t, usd: amt };
+    return { crc: amt, usd: amt / t };
+  };
+
+  // Render de monto dual currency: grande la moneda original, chiquito la conversión
+  // props: { amount, currency, tc, align }
+  const DualAmount = ({ amount, currency, tc, align = "left", bigSize = 18, smallSize = 11 }) => {
+    const { crc, usd } = convertirMontos(amount, currency, tc);
+    const origSymbol = currency === "USD" ? "$" : "₡";
+    const altSymbol = currency === "USD" ? "₡" : "$";
+    const altValue = currency === "USD" ? crc : usd;
+    return (
+      <div style={{ textAlign: align }}>
+        <div style={{ fontSize: bigSize, fontWeight: 700, color: "#e8eaf0", lineHeight: 1.1 }}>
+          {origSymbol}{fmt0(amount)}
+        </div>
+        <div style={{ fontSize: smallSize, color: "#8b8fa4", marginTop: 2 }}>
+          ≈ {altSymbol}{fmt0(altValue)} · TC {tc || "?"}
+        </div>
+      </div>
+    );
+  };
+
+  // Llama a la API de TC (histórico) por fecha YYYY-MM-DD
+  const fetchTC = async (fechaYMD) => {
+    try {
+      const res = await fetch('/api/alegra-lookup-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'tc', fecha: fechaYMD })
+      });
+      const data = await res.json();
+      if (data.ok && data.tc_venta) return { tc: data.tc_venta, warning: data.warning || null };
+      return { tc: null, warning: data.error || 'TC no disponible' };
+    } catch (e) {
+      return { tc: null, warning: e.message };
+    }
+  };
+
+  // ============================================================
+  // CARGA DE COSTOS DE UN VEHÍCULO DEL SHOWROOM (por plate)
+  // ============================================================
+  const loadShowroomCosts = async (plate) => {
+    if (!plate) return;
+    setLoadingCosts(true);
+    try {
+      const np = plate.toUpperCase().replace(/\s+/g, '-');
+
+      // 1. Costo de compra (tabla showroom_vehicle_costs)
+      const { data: costData } = await supabase
+        .from('showroom_vehicle_costs')
+        .select('*')
+        .eq('plate', np)
+        .maybeSingle();
+      setVehicleCost(costData || null);
+
+      // 2. Costos manuales (tabla vehicle_manual_costs)
+      const { data: manuals } = await supabase
+        .from('vehicle_manual_costs')
+        .select('*')
+        .eq('plate', np)
+        .order('cost_date', { ascending: false });
+      setManualCosts(manuals || []);
+
+      // 3. Facturas que tienen esa placa (tabla invoices)
+      const { data: invs } = await supabase
+        .from('invoices')
+        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate')
+        .eq('plate', np)
+        .order('emission_date', { ascending: false });
+      setInvoiceCosts(invs || []);
+    } catch (err) {
+      console.error('Error cargando costos:', err);
+    } finally {
+      setLoadingCosts(false);
+    }
+  };
+
+  // Guardar costo de compra (upsert por plate)
+  const savePurchaseCost = async (plate, amount, currency, fecha) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    setSavingPurchaseCost(true);
+    try {
+      const np = plate.toUpperCase().replace(/\s+/g, '-');
+      const fechaFinal = fecha || new Date().toISOString().slice(0, 10);
+
+      // Obtener TC de esa fecha
+      const tcResult = await fetchTC(fechaFinal);
+      if (!tcResult.tc) {
+        return { ok: false, error: `No se pudo obtener TC: ${tcResult.warning}` };
+      }
+
+      const row = {
+        plate: np,
+        purchase_cost_amount: parseFloat(amount) || 0,
+        purchase_cost_currency: currency,
+        purchase_cost_tc: tcResult.tc,
+        purchase_cost_date: fechaFinal,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from('showroom_vehicle_costs')
+        .upsert(row, { onConflict: 'plate' });
+
+      if (error) return { ok: false, error: error.message };
+      await loadShowroomCosts(np);
+      return { ok: true, tc: tcResult.tc };
+    } finally {
+      setSavingPurchaseCost(false);
+    }
+  };
+
+  // Agregar costo manual
+  const addManualCost = async (plate, data) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    const np = plate.toUpperCase().replace(/\s+/g, '-');
+    const fechaFinal = data.cost_date || new Date().toISOString().slice(0, 10);
+
+    // TC del día del costo
+    const tcResult = await fetchTC(fechaFinal);
+
+    const row = {
+      plate: np,
+      concept: data.concept,
+      description: data.description || null,
+      amount: parseFloat(data.amount) || 0,
+      currency: data.currency || 'CRC',
+      tc: tcResult.tc || null,
+      cost_date: fechaFinal,
+    };
+
+    const { error } = await supabase.from('vehicle_manual_costs').insert(row);
+    if (error) return { ok: false, error: error.message };
+    await loadShowroomCosts(np);
+    return { ok: true };
+  };
+
+  // Borrar costo manual
+  const deleteManualCost = async (id, plate) => {
+    if (!window.confirm("¿Borrar este costo manual?")) return;
+    const { error } = await supabase.from('vehicle_manual_costs').delete().eq('id', id);
+    if (error) { alert("Error: " + error.message); return; }
+    await loadShowroomCosts(plate);
+  };
+
   // ===== SHOWROOM - FICHA + COTIZADOR =====
   const renderShowroomDetail = (v) => {
     if (!v) return <div style={{padding:20}}>Cargando...</div>;
@@ -6079,7 +6262,231 @@ export default function App() {
 
     return (
       <div>
-        <button onClick={() => { setShowroomPicked(null); setCotState({}); }} style={{...S.btnGhost,marginBottom:16}}>← Volver al Showroom</button>
+        <button onClick={() => { setShowroomPicked(null); setCotState({}); setShowCostPanel(false); }} style={{...S.btnGhost,marginBottom:16}}>← Volver al Showroom</button>
+
+        {/* ==================== PANEL DE COSTOS (SOLO ADMIN) ==================== */}
+        {isAdmin && (() => {
+          // Calcular totales
+          const costCur = vehicleCost?.purchase_cost_currency || "USD";
+          const costTc = parseFloat(vehicleCost?.purchase_cost_tc) || 0;
+          const costAmt = parseFloat(vehicleCost?.purchase_cost_amount) || 0;
+          const { crc: costCRC, usd: costUSD } = convertirMontos(costAmt, costCur, costTc);
+
+          let autoTotalCRC = 0, autoTotalUSD = 0;
+          invoiceCosts.forEach(inv => {
+            const amt = parseFloat(inv.total) || 0;
+            const cur = inv.currency || "CRC";
+            const tc = parseFloat(inv.exchange_rate) || costTc || 500;
+            const { crc, usd } = convertirMontos(amt, cur, tc);
+            autoTotalCRC += crc;
+            autoTotalUSD += usd;
+          });
+
+          let manualTotalCRC = 0, manualTotalUSD = 0;
+          manualCosts.forEach(m => {
+            const { crc, usd } = convertirMontos(m.amount, m.currency, m.tc);
+            manualTotalCRC += crc;
+            manualTotalUSD += usd;
+          });
+
+          const totalCostCRC = costCRC + autoTotalCRC + manualTotalCRC;
+          const totalCostUSD = costUSD + autoTotalUSD + manualTotalUSD;
+
+          // Precio de venta (del showroom)
+          const ventaCur = v.currency || "USD";
+          const ventaAmt = parseFloat(v.price) || 0;
+          const ventaTC = costTc || 500;
+          const { crc: ventaCRC, usd: ventaUSD } = convertirMontos(ventaAmt, ventaCur, ventaTC);
+
+          const utilidadCRC = ventaCRC - totalCostCRC;
+          const utilidadUSD = ventaUSD - totalCostUSD;
+          const margenPct = ventaCRC > 0 ? (utilidadCRC / ventaCRC * 100) : 0;
+
+          return (
+            <div style={{...S.card, padding: 20, marginBottom: 16, border: "2px solid #4f8cff33"}}>
+              <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12}}>
+                <div style={{display: "flex", alignItems: "center", gap: 10}}>
+                  <span style={{fontSize: 16, fontWeight: 800, color: "#4f8cff"}}>💰 Panel de Costos (Admin)</span>
+                  {loadingCosts && <span style={{fontSize: 12, color: "#8b8fa4"}}>Cargando...</span>}
+                </div>
+                <button
+                  onClick={() => setShowCostPanel(!showCostPanel)}
+                  style={{...S.btnGhost, fontSize: 12, padding: "6px 12px"}}
+                >
+                  {showCostPanel ? "Ocultar detalles" : "Ver detalles"}
+                </button>
+              </div>
+
+              {/* Resumen siempre visible */}
+              <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: showCostPanel ? 16 : 0}}>
+                <div style={{padding: 12, background: "#1e2130", borderRadius: 8}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Precio Venta</div>
+                  <DualAmount amount={ventaAmt} currency={ventaCur} tc={ventaTC} bigSize={16} />
+                </div>
+                <div style={{padding: 12, background: "#1e2130", borderRadius: 8}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Costo Total</div>
+                  <div style={{fontSize: 16, fontWeight: 700, color: "#e8eaf0"}}>
+                    ₡{fmt0(totalCostCRC)}
+                  </div>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginTop: 2}}>
+                    ≈ ${fmt0(totalCostUSD)}
+                  </div>
+                </div>
+                <div style={{padding: 12, background: utilidadCRC >= 0 ? "#10b98118" : "#e11d4818", borderRadius: 8}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Utilidad</div>
+                  <div style={{fontSize: 16, fontWeight: 700, color: utilidadCRC >= 0 ? "#10b981" : "#e11d48"}}>
+                    ₡{fmt0(utilidadCRC)}
+                  </div>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginTop: 2}}>
+                    ≈ ${fmt0(utilidadUSD)}
+                  </div>
+                </div>
+                <div style={{padding: 12, background: margenPct >= 10 ? "#10b98118" : margenPct >= 0 ? "#f59e0b18" : "#e11d4818", borderRadius: 8}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4, textTransform: "uppercase"}}>Margen</div>
+                  <div style={{fontSize: 20, fontWeight: 800, color: margenPct >= 10 ? "#10b981" : margenPct >= 0 ? "#f59e0b" : "#e11d48"}}>
+                    {margenPct.toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+
+              {/* Detalles expandibles */}
+              {showCostPanel && (
+                <div style={{borderTop: "1px solid #2a2d3d", paddingTop: 16}}>
+                  {/* COSTO DE COMPRA */}
+                  <div style={{marginBottom: 20}}>
+                    <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+                      <span>🛒 Costo de compra</span>
+                      <button
+                        onClick={() => {
+                          const currentAmt = vehicleCost?.purchase_cost_amount || "";
+                          const currentCur = vehicleCost?.purchase_cost_currency || "USD";
+                          const currentDate = vehicleCost?.purchase_cost_date || new Date().toISOString().slice(0, 10);
+                          const amt = prompt(`Monto del costo de compra en ${currentCur}:`, currentAmt);
+                          if (amt == null) return;
+                          const cur = prompt("Moneda (USD o CRC):", currentCur);
+                          if (cur == null || !["USD", "CRC"].includes(cur.toUpperCase())) { alert("Moneda inválida"); return; }
+                          const fecha = prompt("Fecha de compra (YYYY-MM-DD):", currentDate);
+                          if (fecha == null) return;
+                          savePurchaseCost(v.plate, amt, cur.toUpperCase(), fecha).then(r => {
+                            if (r.ok) alert(`✓ Costo guardado. TC usado: ${r.tc}`);
+                            else alert(`Error: ${r.error}`);
+                          });
+                        }}
+                        style={{...S.btn, fontSize: 12, padding: "4px 10px", background: "#4f8cff"}}
+                        disabled={savingPurchaseCost}
+                      >
+                        {vehicleCost ? "Editar" : "Agregar"}
+                      </button>
+                    </div>
+                    {vehicleCost ? (
+                      <div style={{padding: 12, background: "#1e2130", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+                        <div>
+                          <DualAmount
+                            amount={vehicleCost.purchase_cost_amount}
+                            currency={vehicleCost.purchase_cost_currency}
+                            tc={vehicleCost.purchase_cost_tc}
+                            bigSize={18}
+                          />
+                          <div style={{fontSize: 10, color: "#8b8fa4", marginTop: 4}}>
+                            Fecha: {vehicleCost.purchase_cost_date}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{padding: 12, background: "#1e2130", borderRadius: 8, color: "#8b8fa4", fontSize: 12}}>
+                        Sin costo de compra registrado. Hacé click en "Agregar" para ingresarlo.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* COSTOS AUTOMÁTICOS (FACTURAS) */}
+                  <div style={{marginBottom: 20}}>
+                    <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0", marginBottom: 8}}>
+                      📄 Costos automáticos (facturas con placa {v.plate}) — {invoiceCosts.length}
+                    </div>
+                    {invoiceCosts.length === 0 ? (
+                      <div style={{padding: 12, background: "#1e2130", borderRadius: 8, color: "#8b8fa4", fontSize: 12}}>
+                        No hay facturas con esta placa. Las facturas se asignan automáticamente cuando su XML contiene la placa.
+                      </div>
+                    ) : (
+                      <div style={{background: "#1e2130", borderRadius: 8, overflow: "hidden"}}>
+                        {invoiceCosts.map((inv, i) => {
+                          const tc = parseFloat(inv.exchange_rate) || costTc || 500;
+                          return (
+                            <div key={inv.id} style={{padding: "10px 12px", borderBottom: i < invoiceCosts.length - 1 ? "1px solid #2a2d3d" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10}}>
+                              <div style={{flex: 1, minWidth: 0}}>
+                                <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{inv.supplier_name}</div>
+                                <div style={{fontSize: 10, color: "#8b8fa4"}}>{inv.emission_date?.slice(0, 10)}</div>
+                              </div>
+                              <DualAmount amount={inv.total} currency={inv.currency || "CRC"} tc={tc} align="right" bigSize={14} />
+                            </div>
+                          );
+                        })}
+                        <div style={{padding: "10px 12px", background: "#2a2d3d", fontSize: 12, fontWeight: 700, display: "flex", justifyContent: "space-between"}}>
+                          <span>Subtotal facturas:</span>
+                          <span>₡{fmt0(autoTotalCRC)} · ${fmt0(autoTotalUSD)}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* COSTOS MANUALES */}
+                  <div>
+                    <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
+                      <span>✍️ Costos manuales — {manualCosts.length}</span>
+                      <button
+                        onClick={() => {
+                          const concept = prompt("Concepto (ej: Mecánica, Detailing, Traspaso):");
+                          if (!concept) return;
+                          const amount = prompt("Monto:");
+                          if (!amount) return;
+                          const currency = prompt("Moneda (USD o CRC):", "CRC");
+                          if (!currency || !["USD", "CRC"].includes(currency.toUpperCase())) { alert("Moneda inválida"); return; }
+                          const cost_date = prompt("Fecha (YYYY-MM-DD):", new Date().toISOString().slice(0, 10));
+                          if (!cost_date) return;
+                          const description = prompt("Descripción (opcional):") || "";
+                          addManualCost(v.plate, { concept, amount, currency: currency.toUpperCase(), cost_date, description }).then(r => {
+                            if (r.ok) alert("✓ Costo manual agregado");
+                            else alert(`Error: ${r.error}`);
+                          });
+                        }}
+                        style={{...S.btn, fontSize: 12, padding: "4px 10px", background: "#10b981"}}
+                      >
+                        + Agregar
+                      </button>
+                    </div>
+                    {manualCosts.length === 0 ? (
+                      <div style={{padding: 12, background: "#1e2130", borderRadius: 8, color: "#8b8fa4", fontSize: 12}}>
+                        Sin costos manuales. Usá "+ Agregar" para registrar pagos en efectivo, traspaso, etc.
+                      </div>
+                    ) : (
+                      <div style={{background: "#1e2130", borderRadius: 8, overflow: "hidden"}}>
+                        {manualCosts.map((m, i) => (
+                          <div key={m.id} style={{padding: "10px 12px", borderBottom: i < manualCosts.length - 1 ? "1px solid #2a2d3d" : "none", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10}}>
+                            <div style={{flex: 1, minWidth: 0}}>
+                              <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0"}}>{m.concept}</div>
+                              <div style={{fontSize: 10, color: "#8b8fa4"}}>{m.cost_date}{m.description ? ` · ${m.description}` : ""}</div>
+                            </div>
+                            <DualAmount amount={m.amount} currency={m.currency} tc={m.tc} align="right" bigSize={14} />
+                            <button
+                              onClick={() => deleteManualCost(m.id, v.plate)}
+                              style={{background: "transparent", border: "none", color: "#e11d48", cursor: "pointer", fontSize: 16, padding: 4}}
+                              title="Borrar"
+                            >×</button>
+                          </div>
+                        ))}
+                        <div style={{padding: "10px 12px", background: "#2a2d3d", fontSize: 12, fontWeight: 700, display: "flex", justifyContent: "space-between"}}>
+                          <span>Subtotal manuales:</span>
+                          <span>₡{fmt0(manualTotalCRC)} · ${fmt0(manualTotalUSD)}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         <div style={{...S.card,padding:24,marginBottom:16}}>
           <h1 style={{fontSize:26,fontWeight:800,marginBottom:6}}>{v.brand} {v.model} {v.year}</h1>
