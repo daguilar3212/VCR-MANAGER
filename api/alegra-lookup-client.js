@@ -126,13 +126,14 @@ async function consultarHacienda(cedulaLimpia, supabase) {
 // Formato que pide el API: DD/MM/YYYY
 // ============================================================
 async function consultarTC(fechaYMD, supabase) {
-  // 1. Buscar en cache
+  // 1. Buscar en cache (fuente BCCR específicamente)
   if (supabase) {
     try {
       const { data: cached } = await supabase
         .from('tc_historico')
         .select('*')
         .eq('fecha', fechaYMD)
+        .eq('fuente', 'bccr')
         .maybeSingle();
 
       if (cached && cached.tc_venta) {
@@ -141,7 +142,7 @@ async function consultarTC(fechaYMD, supabase) {
           fecha: fechaYMD,
           tc_compra: parseFloat(cached.tc_compra) || null,
           tc_venta: parseFloat(cached.tc_venta),
-          fuente: cached.fuente || 'cache',
+          fuente: cached.fuente || 'bccr',
           from_cache: true,
         };
       }
@@ -181,16 +182,16 @@ async function consultarTC(fechaYMD, supabase) {
     return await ultimoTcConocido(supabase, fechaYMD);
   }
 
-  // 3. Guardar en caché
+  // 3. Guardar en caché (PK compuesta fecha,fuente)
   if (supabase) {
     try {
       await supabase.from('tc_historico').upsert({
         fecha: fechaYMD,
+        fuente: 'bccr',
         tc_compra: compra || null,
         tc_venta: venta,
-        fuente: 'bccr',
         fetched_at: new Date().toISOString(),
-      }, { onConflict: 'fecha' });
+      }, { onConflict: 'fecha,fuente' });
     } catch (_) {}
   }
 
@@ -204,7 +205,7 @@ async function consultarTC(fechaYMD, supabase) {
   };
 }
 
-// Fallback: si BCCR falla, devolver el último TC conocido en caché
+// Fallback: si BCCR falla, devolver el último TC BCCR conocido en caché
 async function ultimoTcConocido(supabase, fechaBuscada) {
   if (!supabase) {
     return { found: false, error: 'BCCR no disponible y no hay caché' };
@@ -213,6 +214,7 @@ async function ultimoTcConocido(supabase, fechaBuscada) {
     const { data } = await supabase
       .from('tc_historico')
       .select('*')
+      .eq('fuente', 'bccr')
       .lte('fecha', fechaBuscada)
       .order('fecha', { ascending: false })
       .limit(1)
@@ -224,7 +226,7 @@ async function ultimoTcConocido(supabase, fechaBuscada) {
         fecha: data.fecha,
         tc_compra: parseFloat(data.tc_compra) || null,
         tc_venta: parseFloat(data.tc_venta),
-        fuente: data.fuente || 'cache',
+        fuente: data.fuente || 'bccr',
         from_cache: true,
         warning: `BCCR no disponible. Usando último TC conocido del ${data.fecha}`,
       };
