@@ -256,7 +256,7 @@ async function calcularCamposDerivados(car, supabase) {
   }
 
   return {
-    precio_usd_calc: Math.round(precioUSD * 100) / 100,
+    precio_usd_calc: Math.round(precioUSD),
     precio_crc_calc: Math.round(precioCRC),
     traspaso: Math.round(traspaso),
     prima_minima: primaMin,
@@ -1213,6 +1213,7 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
 
   // Formatos disponibles
   const FMT_USD = { type: 'CURRENCY', pattern: '"$"#,##0.00' };
+  const FMT_USD_INT = { type: 'CURRENCY', pattern: '"$"#,##0' };
   const FMT_CRC = { type: 'CURRENCY', pattern: '"₡"#,##0' };
   const FMT_CRC_DEC = { type: 'CURRENCY', pattern: '"₡"#,##0.00' };
   const FMT_NUM = { type: 'NUMBER', pattern: '0' };
@@ -1222,7 +1223,7 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
 
   // Columnas de formato fijo para todas las filas (una request por columna)
   const fixedColFormats = [
-    { field: 'precio_usd_calc', fmt: FMT_USD },
+    { field: 'precio_usd_calc', fmt: FMT_USD_INT },
     { field: 'precio_crc_calc', fmt: FMT_CRC },
     { field: 'traspaso', fmt: FMT_CRC },
     { field: 'plazo', fmt: FMT_NUM },
