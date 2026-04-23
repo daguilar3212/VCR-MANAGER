@@ -42,6 +42,9 @@ const RAPIMAX_POL = {
   2021:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,spread:0.02,plazo_fijo:24,plazo_variable:60,plazo_max:84,comision:0.05},
   2020:{prima:0.25,tasa_usd:0.12,tasa_crc:0.14,spread:0.02,plazo_fijo:24,plazo_variable:60,plazo_max:84,comision:0.05},
   2019:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
+  2018:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
+  2017:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
+  2016:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
 };
 
 const RM_SEG_ACTIVO_USD = 71;
@@ -130,7 +133,7 @@ function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPick
 function cotizarRAPIMAX({ valorAuto, traspaso, moneda, anio, plazo, primaPct, incluirGPS = true, incluirDesempleo = true }) {
   const mon = moneda.toLowerCase();
   const pol = RAPIMAX_POL[anio];
-  if (!pol) return { error: 'RAPIMAX solo financia 2019-2027' };
+  if (!pol) return { error: 'RAPIMAX solo financia 2016-2027' };
   const precioTotal = valorAuto + traspaso;
   const primaMonto = precioTotal * primaPct;
   if (primaPct < pol.prima) return { error: `Prima mínima: ${(pol.prima*100).toFixed(0)}%` };
@@ -190,8 +193,9 @@ function cotizarCP({ valorAuto, traspaso, monedaAuto, tipoCambio }) {
 
 function bancosDispAnio(anio) {
   const b = [];
-  if (anio >= 2019 && anio <= 2027) { b.push('BAC'); b.push('RAPIMAX'); }
-  if (anio <= 2018) b.push('CP');
+  if (anio >= 2019 && anio <= 2027) b.push('BAC');
+  if (anio >= 2016 && anio <= 2027) b.push('RAPIMAX');
+  if (anio <= 2015) b.push('CP');
   return b;
 }
 
