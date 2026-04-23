@@ -475,49 +475,12 @@ export default function AgentPanel() {
   const [searchingClient, setSearchingClient] = useState(false);
   const [showSignatureModal, setShowSignatureModal] = useState(false);
 
-  // TC del BAC (para mostrar precio equivalente en ficha del carro)
-  const [tcBac, setTcBac] = useState(null);
-
   // ============================================================
   // CARGAR DATOS
   // ============================================================
   useEffect(() => {
     loadAll();
-    fetchTcBac();
   }, []);
-
-  async function fetchTcBac() {
-    try {
-      const res = await fetch('/api/alegra-lookup-client', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'tc_bac' })
-      });
-      const data = await res.json();
-      if (data.ok && data.tc_compra_bac && data.tc_venta_bac) {
-        setTcBac({
-          compra: parseFloat(data.tc_compra_bac),
-          venta: parseFloat(data.tc_venta_bac),
-          fecha: data.fecha,
-        });
-      }
-    } catch (e) {
-      // Si falla, simplemente no se muestra equivalente
-    }
-  }
-
-  // Precio equivalente con regla de spread BAC
-  function precioEquivalenteBac(amount, currency) {
-    if (!tcBac || !amount) return null;
-    const amt = parseFloat(amount) || 0;
-    if (amt <= 0) return null;
-    if (currency === "CRC") {
-      return { value: amt / tcBac.compra, currency: "USD", tc: tcBac.compra, tcTipo: "compra" };
-    } else if (currency === "USD") {
-      return { value: amt * tcBac.venta, currency: "CRC", tc: tcBac.venta, tcTipo: "venta" };
-    }
-    return null;
-  }
 
   // ============================================================
   // REALTIME: suscripciones a cambios en Supabase
@@ -731,102 +694,28 @@ export default function AgentPanel() {
     setShowAddCarModal(true);
   }
 
-  // ============================================================
-  // MARCAR VENDIDO (modal con formulario) - desde AgentPanel
-  // ============================================================
-  const [soldModalOpen, setSoldModalOpen] = useState(false);
-  const [soldCar, setSoldCar] = useState(null);
-  const [soldForm, setSoldForm] = useState({
-    sold_price: '', sold_currency: 'USD',
-    sold_at: new Date().toISOString().slice(0, 10),
-    tipo_operacion: 'propia',
-    client_name: '', client_id: '',
-    commission_amount: '', commission_currency: 'CRC',
-    notes: '',
-  });
-  const [savingSold, setSavingSold] = useState(false);
-
-  function marcarVendido(v) {
-    setSoldCar(v);
-    setSoldForm({
-      sold_price: v.price || '',
-      sold_currency: v.currency || 'USD',
-      sold_at: new Date().toISOString().slice(0, 10),
-      tipo_operacion: 'propia',
-      client_name: '', client_id: '',
-      commission_amount: '', commission_currency: v.currency || 'CRC',
-      notes: '',
-    });
-    setSoldModalOpen(true);
-  }
-
-  async function confirmarVenta() {
-    if (!soldCar) return;
-    if (!soldForm.sold_price || parseFloat(soldForm.sold_price) <= 0) {
-      alert('Ingresá el precio final de venta'); return;
-    }
-    if (!soldForm.sold_at) { alert('Fecha obligatoria'); return; }
-
-    setSavingSold(true);
+  async function marcarVendido(v) {
+    const confirm1 = window.confirm(`¿Marcar ${v.brand} ${v.model} (${v.plate}) como VENDIDO?\n\nVa a desaparecer del Showroom y se marcará como VENDIDO en el Sheets.`);
+    if (!confirm1) return;
     try {
-      const v = soldCar;
-      const soldPrice = parseFloat(soldForm.sold_price) || 0;
-      const commissionAmt = parseFloat(soldForm.commission_amount) || 0;
-      const tcBacCompra = tcBac?.compra || 0;
-      const tcBacVenta = tcBac?.venta || 0;
-
-      // Nota: desde AgentPanel no calculamos snapshot de costos (agente no ve costos)
-      // El admin puede editar esos campos después si quiere.
-
-      let utilityCRC = 0, utilityUSD = 0;
-      if (soldForm.tipo_operacion !== 'propia' && commissionAmt) {
-        const commInCRC = soldForm.commission_currency === 'USD' ? commissionAmt * (tcBacVenta || 500) : commissionAmt;
-        utilityCRC = commInCRC;
-        utilityUSD = tcBacVenta ? commInCRC / tcBacVenta : 0;
-      }
-
-      const record = {
-        plate: v.plate,
-        brand: v.brand, model: v.model, year: v.year,
-        color: v.color, km: v.km, fuel: v.fuel, transmission: v.transmission,
-        engine_cc: v.engine_cc, cylinders: v.cylinders, origin: v.origin,
-        drivetrain: v.drivetrain, passengers: v.passengers, style: v.style,
-        listed_price: parseFloat(v.price) || null,
-        listed_currency: v.currency || 'USD',
-        sold_price: soldPrice,
-        sold_currency: soldForm.sold_currency,
-        sold_tc_bac_compra: tcBacCompra || null,
-        sold_tc_bac_venta: tcBacVenta || null,
-        sold_at: soldForm.sold_at,
-        tipo_operacion: soldForm.tipo_operacion,
-        client_name: soldForm.client_name || null,
-        client_id: soldForm.client_id || null,
-        agent_id: profile?.id || null,
-        agent_name: profile?.full_name || 'Agente',
-        purchase_cost_crc: null,
-        invoice_costs_crc: null,
-        manual_costs_crc: null,
-        total_cost_crc: soldForm.tipo_operacion === 'propia' ? null : 0,
-        commission_amount: commissionAmt || null,
-        commission_currency: commissionAmt ? soldForm.commission_currency : null,
-        utility_crc: utilityCRC || null,
-        utility_usd: utilityUSD || null,
-        notes: soldForm.notes || null,
-        created_by: profile?.id || null,
-      };
-
-      const { error: histErr } = await supabase.from('sold_showroom_vehicles').insert(record);
-      if (histErr) {
-        console.error('Error insert histórico:', histErr);
-        // Continuamos igual aunque falle histórico (vendedor no debería bloquearse)
-      }
-
       const carUpdated = {
-        estado: 'VENDIDO', plate: v.plate, brand: v.brand, model: v.model, year: v.year,
-        transmission: v.transmission, color: v.color, km: v.km, fuel: v.fuel,
-        engine_cc: v.engine_cc, cylinders: v.cylinders, origin: v.origin,
-        drivetrain: v.drivetrain, passengers: v.passengers, style: v.style,
-        price: v.price, currency: v.currency
+        estado: 'VENDIDO',
+        plate: v.plate,
+        brand: v.brand,
+        model: v.model,
+        year: v.year,
+        transmission: v.transmission,
+        color: v.color,
+        km: v.km,
+        fuel: v.fuel,
+        engine_cc: v.engine_cc,
+        cylinders: v.cylinders,
+        origin: v.origin,
+        drivetrain: v.drivetrain,
+        passengers: v.passengers,
+        style: v.style,
+        price: v.price,
+        currency: v.currency
       };
       const res = await fetch('/api/sync-showroom', {
         method: 'POST',
@@ -836,17 +725,13 @@ export default function AgentPanel() {
       const j = await res.json();
       if (j.ok) {
         await supabase.from('showroom_vehicles').delete().eq('plate', v.plate);
+        alert(`✅ ${v.plate} marcado como VENDIDO`);
         await loadShowroomVehicles();
-        setSoldModalOpen(false);
-        setSoldCar(null);
-        alert(`✅ ${v.plate} vendido`);
       } else {
-        alert(`⚠️ Error al marcar en Sheets: ${j.error}`);
+        alert(`❌ Error: ${j.error || 'No se pudo marcar'}`);
       }
     } catch (e) {
-      alert(`Error: ${e.message}`);
-    } finally {
-      setSavingSold(false);
+      alert(`❌ Error de red: ${e.message}`);
     }
   }
 
@@ -1401,8 +1286,6 @@ export default function AgentPanel() {
           onOpenEditModal={openEditCarModal}
           onDeleteCar={deleteCarShowroom}
           onMarcarVendido={marcarVendido}
-          tcBac={tcBac}
-          precioEquivalenteBac={precioEquivalenteBac}
           onSellVehicle={(srv) => {
             // Adaptar showroom_vehicles al formato que espera openNewSaleForm
             const isCRC = srv.currency === "CRC";
@@ -1447,89 +1330,6 @@ export default function AgentPanel() {
           onDelete={() => deleteSale(pickedSale.id)}
         />}
       </div>
-
-      {/* ======= MODAL CONFIRMAR VENTA ======= */}
-      {soldModalOpen && soldCar && (
-        <div style={{position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000, padding: "1rem"}} onClick={() => !savingSold && setSoldModalOpen(false)}>
-          <div style={{background: "#181a23", borderRadius: 12, padding: "1.5rem", maxWidth: 560, width: "100%", maxHeight: "90vh", overflowY: "auto", border: "1px solid #2a2d3d"}} onClick={e => e.stopPropagation()}>
-            <div style={{display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1rem"}}>
-              <div>
-                <h3 style={{fontSize: "1.1rem", fontWeight: 700, margin: 0, color: "#e8eaf0"}}>Confirmar venta</h3>
-                <p style={{fontSize: "0.75rem", color: "#8b8fa4", marginTop: 4}}>{soldCar.brand} {soldCar.model} {soldCar.year} · {soldCar.plate}</p>
-              </div>
-              <button onClick={() => !savingSold && setSoldModalOpen(false)} style={{background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: "1.2rem"}}>✕</button>
-            </div>
-
-            <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.625rem", marginBottom: "0.75rem"}}>
-              <div>
-                <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>TIPO DE OPERACIÓN *</label>
-                <select value={soldForm.tipo_operacion} onChange={e => setSoldForm({...soldForm, tipo_operacion: e.target.value})} style={{...S.select, width: "100%"}}>
-                  <option value="propia">🚗 Venta propia</option>
-                  <option value="consignacion_grupo">🤝 Consignación grupo (1%)</option>
-                  <option value="consignacion_externa">🌐 Consignación externa (5%)</option>
-                </select>
-              </div>
-              <div>
-                <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>FECHA VENTA *</label>
-                <input type="date" value={soldForm.sold_at} onChange={e => setSoldForm({...soldForm, sold_at: e.target.value})} style={{...S.input, width: "100%"}} />
-              </div>
-            </div>
-
-            <div style={{display: "grid", gridTemplateColumns: "2fr 1fr", gap: "0.625rem", marginBottom: "0.75rem"}}>
-              <div>
-                <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>PRECIO FINAL VENDIDO *</label>
-                <input type="number" value={soldForm.sold_price} onChange={e => setSoldForm({...soldForm, sold_price: e.target.value})} placeholder="Precio al que se vendió" style={{...S.input, width: "100%"}} />
-              </div>
-              <div>
-                <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>MONEDA</label>
-                <select value={soldForm.sold_currency} onChange={e => setSoldForm({...soldForm, sold_currency: e.target.value})} style={{...S.select, width: "100%"}}>
-                  <option value="USD">USD</option>
-                  <option value="CRC">CRC</option>
-                </select>
-              </div>
-            </div>
-
-            <div style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.625rem", marginBottom: "0.75rem"}}>
-              <div>
-                <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>CLIENTE</label>
-                <input type="text" value={soldForm.client_name} onChange={e => setSoldForm({...soldForm, client_name: e.target.value})} placeholder="Nombre completo" style={{...S.input, width: "100%"}} />
-              </div>
-              <div>
-                <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>CÉDULA</label>
-                <input type="text" value={soldForm.client_id} onChange={e => setSoldForm({...soldForm, client_id: e.target.value})} placeholder="Cédula" style={{...S.input, width: "100%"}} />
-              </div>
-            </div>
-
-            {(soldForm.tipo_operacion === 'consignacion_grupo' || soldForm.tipo_operacion === 'consignacion_externa') && (
-              <div style={{display: "grid", gridTemplateColumns: "2fr 1fr", gap: "0.625rem", marginBottom: "0.75rem", padding: "0.625rem", background: "#4f8cff11", borderRadius: 8}}>
-                <div>
-                  <label style={{fontSize: "0.7rem", color: "#4f8cff", marginBottom: 4, display: "block"}}>COMISIÓN COBRADA *</label>
-                  <input type="number" value={soldForm.commission_amount} onChange={e => setSoldForm({...soldForm, commission_amount: e.target.value})} placeholder={soldForm.tipo_operacion === 'consignacion_grupo' ? '1% del precio' : '5% del precio'} style={{...S.input, width: "100%"}} />
-                </div>
-                <div>
-                  <label style={{fontSize: "0.7rem", color: "#4f8cff", marginBottom: 4, display: "block"}}>MONEDA</label>
-                  <select value={soldForm.commission_currency} onChange={e => setSoldForm({...soldForm, commission_currency: e.target.value})} style={{...S.select, width: "100%"}}>
-                    <option value="CRC">CRC</option>
-                    <option value="USD">USD</option>
-                  </select>
-                </div>
-              </div>
-            )}
-
-            <div style={{marginBottom: "0.875rem"}}>
-              <label style={{fontSize: "0.7rem", color: "#8b8fa4", marginBottom: 4, display: "block"}}>NOTAS (opcional)</label>
-              <textarea value={soldForm.notes} onChange={e => setSoldForm({...soldForm, notes: e.target.value})} placeholder="Cualquier detalle relevante..." rows={2} style={{...S.input, width: "100%", resize: "vertical"}} />
-            </div>
-
-            <div style={{display: "flex", gap: "0.5rem", justifyContent: "flex-end"}}>
-              <button onClick={() => setSoldModalOpen(false)} disabled={savingSold} style={{...S.btnGhost}}>Cancelar</button>
-              <button onClick={confirmarVenta} disabled={savingSold} style={{...S.btn, background: savingSold ? "#4f8cff77" : "#10b981"}}>
-                {savingSold ? '⏳ Guardando...' : '✅ Confirmar venta'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1632,7 +1432,7 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
 // ============================================================
 // SUBCOMPONENTE: SHOWROOM (Inventario comercial con cotizador)
 // ============================================================
-function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, editingPlate, setEditingPlate, onEditCar, onOpenEditModal, onDeleteCar, onMarcarVendido, onSellVehicle, tcBac, precioEquivalenteBac }) {
+function ShowroomView({ vehicles, q, setQ, sort, setSort, pickedId, setPickedId, cotState, setCotState, fotoElegida, setFotoElegida, showAddCarModal, setShowAddCarModal, newCar, setNewCar, addingCar, onAddCar, editingPlate, setEditingPlate, onEditCar, onOpenEditModal, onDeleteCar, onMarcarVendido, onSellVehicle }) {
   const fmt0 = (n, c) => {
     if (n == null || isNaN(n)) return "-";
     return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
@@ -2262,23 +2062,8 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
           </div>
         )}
 
-        <div style={{ padding: "1rem 1.25rem", background: "#10b98118", border: "1px solid #10b981", borderRadius: 10, marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
-          <div style={{flex: 1}}>
-            <div style={{fontSize: "1.5rem", fontWeight: 800, color: "#10b981"}}>💰 Precio: {fmt0(precioOrig.val, precioOrig.cur)}</div>
-            {(() => {
-              if (!precioEquivalenteBac) return null;
-              const eq = precioEquivalenteBac(precioOrig.val, precioOrig.cur);
-              if (!eq) return null;
-              const symbol = eq.currency === "USD" ? "$" : "₡";
-              const valFormatted = Math.round(eq.value).toLocaleString("es-CR");
-              return (
-                <div style={{fontSize: "0.85rem", color: "#8b8fa4", marginTop: 4}}>
-                  Equivalente: <span style={{color: "#e8eaf0", fontWeight: 600}}>{symbol}{valFormatted}</span>
-                  <span style={{fontSize: "0.7rem", marginLeft: 6, opacity: 0.7}}>(TC BAC {eq.tcTipo}: {eq.tc})</span>
-                </div>
-              );
-            })()}
-          </div>
+        <div style={{ padding: "1rem 1.25rem", background: "#10b98118", border: "1px solid #10b981", borderRadius: 10, fontSize: "1.5rem", fontWeight: 800, color: "#10b981", marginBottom: "1rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.75rem" }}>
+          <div>💰 Precio: {fmt0(precioOrig.val, precioOrig.cur)}</div>
           {v.web_url && <a href={v.web_url} target="_blank" rel="noreferrer" style={{ ...S.btnGhost, fontSize: "0.85rem", textDecoration: "none" }}>🌐 Ver en web</a>}
         </div>
 
