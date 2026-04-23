@@ -426,16 +426,17 @@ function computeBreakdown(form) {
   const down = parseFloat(form.down_payment) || 0;
   const depsTotal = (form.deposits || []).reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
 
-  // Prima efectiva = MAX(down_payment, sum(deposits))
-  // Los depósitos son el desglose detallado de la prima. Si el usuario mete ambos,
-  // se toma el mayor para no contar doble.
-  const primaEfectiva = Math.max(down, depsTotal);
+  // Prima efectiva = MAX(trade-in, prima digitada, suma de depositos).
+  // El trade-in ES la prima; si el cliente entrega un carro que cubre el monto
+  // de la prima que pide el banco, no se descuenta doble. Lo mismo con depositos
+  // (son el detalle de la prima). Tomamos el mayor para evitar doble conteo.
+  const primaEfectiva = Math.max(tradein, down, depsTotal);
 
   // Traspaso: solo suma si está incluido pero NO en precio ni en financiamiento (es aparte)
   const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
   const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
 
-  const balance = salePrice + transferExtra - tradein - primaEfectiva;
+  const balance = salePrice + transferExtra - primaEfectiva;
 
   return { salePrice, transferExtra, transferApart, tradein, down, depsTotal, primaEfectiva, balance };
 }
@@ -1044,10 +1045,17 @@ export default function AgentPanel() {
     } else {
       // Pendiente (envio a aprobacion): validar depositos y saldo
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
-      // Excepción: si el trade-in (+ prima) cubre el saldo, no exigir depósito
+      // Excepción 1: si la prima efectiva ya cubre todo (balance=0), no exigir depósito
       const saldoCubiertoSinDepositos = balance <= 0.01;
-      if (validDeposits.length === 0 && !saldoCubiertoSinDepositos) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in ya cubre el precio total, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
+      // Excepción 2: si el plan es financiado y el trade-in cubre la prima del banco,
+      // el trade-in ES la prima — no hacen falta depósitos adicionales.
+      const isFinanciado = saleForm.payment_method === "Financiamiento" || saleForm.payment_method === "Mixto";
+      const tradeinNum = parseFloat(saleForm.tradein_amount) || 0;
+      const primaExigida = parseFloat(saleForm.down_payment) || 0;
+      const tradeinCubrePrima = isFinanciado && primaExigida > 0 && tradeinNum >= primaExigida - 0.01;
+      const puedeOmitirDepositos = saldoCubiertoSinDepositos || tradeinCubrePrima;
+      if (validDeposits.length === 0 && !puedeOmitirDepositos) {
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total o la prima del banco, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
         return;
       }
       for (const d of validDeposits) {
@@ -2845,7 +2853,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                 {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
               </select>
             </div>
-            <div><label style={S.label}>Valor acordado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => upd("tradein_value", e.target.value)} /></div>
+            <div><label style={S.label}>Valor acordado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.tradein_value} onChange={e => { upd("tradein_value", e.target.value); upd("tradein_amount", e.target.value); }} /></div>
           </div>
         )}
       </div>
@@ -2925,10 +2933,18 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
               )}
             </div>
           </div>
-          <div>
-            <label style={S.label}>Trade-in ({form.sale_currency || "USD"})</label>
-            <input style={S.input} type="number" value={form.tradein_amount} onChange={e => upd("tradein_amount", e.target.value)} />
-          </div>
+          {form.has_tradein && (
+            <div>
+              <label style={S.label}>Trade-in ({form.sale_currency || "USD"}) <span style={{ color: "#f59e0b", fontSize: "0.7rem" }}>· sync ↑ trade-in</span></label>
+              <input
+                style={{ ...S.input, opacity: 0.6, cursor: "not-allowed" }}
+                type="number"
+                value={form.tradein_amount || 0}
+                readOnly
+                title="Este valor se sincroniza con 'Valor acordado' de la sección Trade-in de arriba."
+              />
+            </div>
+          )}
           <div>
             <label style={S.label}>Prima / Down payment ({form.sale_currency || "USD"})</label>
             <input style={S.input} type="number" value={form.down_payment} onChange={e => upd("down_payment", e.target.value)} />
@@ -3316,7 +3332,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
 function BreakdownCard({ form }) {
   const currency = form.sale_currency || "USD";
   const isCash = (form.payment_method || "contado") === "contado";
-  const { salePrice, transferExtra, transferApart, tradein, down, depsTotal, balance } = computeBreakdown(form);
+  const { salePrice, transferExtra, transferApart, tradein, down, depsTotal, primaEfectiva, balance } = computeBreakdown(form);
 
   const tolerance = 0.01;
   const isZero = Math.abs(balance) <= tolerance;
@@ -3374,26 +3390,30 @@ function BreakdownCard({ form }) {
         </div>
       )}
 
-      {tradein > 0 && (
-        <div style={lineBorder}>
-          <span>− Trade-in</span>
-          <strong style={{ color: "#10b981" }}>− {fmt(tradein, currency)}</strong>
-        </div>
-      )}
-
-      {down > 0 && (
-        <div style={lineBorder}>
-          <span>− Prima / Down payment</span>
-          <strong style={{ color: "#10b981" }}>− {fmt(down, currency)}</strong>
-        </div>
-      )}
-
-      {depsTotal > 0 && (
-        <div style={lineBorder}>
-          <span>− Depósitos ({(form.deposits || []).filter(d => parseFloat(d.amount) > 0).length})</span>
-          <strong style={{ color: "#10b981" }}>− {fmt(depsTotal, currency)}</strong>
-        </div>
-      )}
+      {/* Prima efectiva: solo se descuenta UNA vez.
+          Mostramos el mayor entre trade-in, prima y depósitos, con detalle
+          informativo si hay más de uno (pero sin sumarlos doble). */}
+      {primaEfectiva > 0 && (() => {
+        const componentes = [];
+        if (tradein > 0) componentes.push({ label: "Trade-in", monto: tradein });
+        if (down > 0) componentes.push({ label: "Prima / Down payment", monto: down });
+        if (depsTotal > 0) componentes.push({ label: `Depósitos (${(form.deposits || []).filter(d => parseFloat(d.amount) > 0).length})`, monto: depsTotal });
+        const mayor = componentes.find(c => Math.abs(c.monto - primaEfectiva) < 0.01);
+        return (
+          <>
+            <div style={lineBorder}>
+              <span>− {mayor ? mayor.label : "Prima (trade-in/depósitos)"}</span>
+              <strong style={{ color: "#10b981" }}>− {fmt(primaEfectiva, currency)}</strong>
+            </div>
+            {componentes.length > 1 && (
+              <div style={{ fontSize: "0.75rem", color: "#71717a", paddingLeft: "0.75rem", marginTop: "-0.25rem", marginBottom: "0.5rem" }}>
+                {componentes.filter(c => c !== mayor).map(c => `${c.label}: ${fmt(c.monto, currency)}`).join(" · ")}
+                {" "}<span style={{ color: "#f59e0b" }}>(no se suman doble — la prima se cubre con el mayor)</span>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* TOTAL */}
       <div style={{
