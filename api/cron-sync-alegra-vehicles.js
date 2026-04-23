@@ -644,12 +644,46 @@ function bkBuildResumen(counts, bccr, bac) {
   ];
 }
 
+// Crea un Google Sheet nuevo usando Drive API (que sí está en el scope del token)
+// Retorna el ID del sheet creado
+async function bkCreateSheet(accessToken, name) {
+  const resp = await fetch('https://www.googleapis.com/drive/v3/files', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: name,
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+    }),
+  });
+  if (!resp.ok) throw new Error(`createSheet: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  if (!data.id) throw new Error('createSheet: no ID returned');
+  return data.id;
+}
+
 async function runBackup(supabase) {
-  if (!process.env.BACKUP_SHEET_ID) {
-    return { ok: false, error: 'BACKUP_SHEET_ID no configurado' };
-  }
-  const sheetId = process.env.BACKUP_SHEET_ID;
   const accessToken = await bkGetAccessToken();
+  let sheetId = process.env.BACKUP_SHEET_ID;
+  let createdNew = false;
+
+  // Si no hay ID, o el ID configurado da 404 (no accesible), crear uno nuevo
+  if (sheetId) {
+    try {
+      await bkGetSheetMeta(accessToken, sheetId);
+    } catch (err) {
+      if (err.message.includes('404') || err.message.includes('NOT_FOUND')) {
+        console.log('Sheet ID configurado no accesible, creando uno nuevo...');
+        sheetId = null;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  if (!sheetId) {
+    sheetId = await bkCreateSheet(accessToken, 'VCR Manager - Backup');
+    createdNew = true;
+  }
 
   const { data: tcToday } = await supabase
     .from('tc_historico').select('*').order('fecha', { ascending: false }).limit(10);
@@ -717,7 +751,16 @@ async function runBackup(supabase) {
       results[tab] = `error: ${err.message}`;
     }
   }
-  return { ok: true, timestamp: new Date().toISOString(), counts, results };
+  return {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    sheet_id: sheetId,
+    sheet_url: `https://docs.google.com/spreadsheets/d/${sheetId}/edit`,
+    created_new: createdNew,
+    action_needed: createdNew ? `IMPORTANTE: Guardá este sheet_id en la env var BACKUP_SHEET_ID en Vercel para que el próximo backup reuse el mismo sheet.` : null,
+    counts,
+    results,
+  };
 }
 
 export default async function handler(req, res) {
