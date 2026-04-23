@@ -781,23 +781,75 @@ function pymTabToBankKey(tab) {
   return { bank, currency };
 }
 
-// Busca la cuenta bancaria en bank_accounts por keywords en name
-// Ej: 'BAC' + 'CRC' -> matchea "Banco BAC Colones" o "BAC Colón"
+// Busca la cuenta bancaria en bank_accounts por scoring de keywords.
+// IMPORTANTE: usa scoring determinístico. El banco más específico gana.
+// BCR: "banco de costa rica" (5 puntos), "bcr" (4 puntos)
+// BN:  "banco nacional" (5 puntos), "nacional" (3 puntos), "bn" (3 puntos)
+// BAC: "bac" (5 puntos)
 async function pymFindBankAccount(supabase, bank, currency) {
   const { data } = await supabase.from('bank_accounts').select('*');
-  if (!data) return null;
-  const bankKeywords = { 'BAC': ['BAC'], 'BCR': ['BCR', 'Costa Rica'], 'BN': ['BN', 'Nacional'] };
-  const currKeywords = currency === 'CRC' ? ['Colon', 'CRC'] : ['Dolar', 'USD', 'Dólar'];
-  const candidates = data.filter(b => {
-    const n = (b.name || '').toLowerCase();
-    const bankMatch = bankKeywords[bank].some(kw => n.includes(kw.toLowerCase()));
-    const currMatch = currKeywords.some(kw => n.toLowerCase().includes(kw.toLowerCase())) ||
-                      (b.currency === currency);
-    return bankMatch && currMatch;
-  });
-  // Si hay ambigüedad, preferir los que tengan alegra_account_id
-  candidates.sort((a, b) => (b.alegra_account_id ? 1 : 0) - (a.alegra_account_id ? 1 : 0));
-  return candidates[0] || null;
+  if (!data || data.length === 0) return null;
+
+  const currKeywords = currency === 'CRC'
+    ? ['colon', 'colón', 'colones', 'crc', '₡']
+    : ['dolar', 'dólar', 'dolares', 'dólares', 'usd', '$'];
+
+  function scoreBank(name, targetBank) {
+    const n = name.toLowerCase();
+    // Exclusiones duras: si es el banco equivocado, descarta
+    if (targetBank === 'BCR') {
+      // BCR no puede contener "nacional" ni "bac"
+      if (n.includes('nacional') || n.includes('bac')) return -1;
+      if (n.includes('banco de costa rica')) return 10;
+      if (n.includes('bcr')) return 8;
+      return -1;
+    }
+    if (targetBank === 'BN') {
+      // BN no puede contener "bac" ni "bcr" ni "costa rica" a menos que sea el nombre oficial
+      if (n.includes('bac') || n.includes('bcr')) return -1;
+      if (n.includes('banco de costa rica')) return -1; // eso es BCR, no BN
+      if (n.includes('banco nacional')) return 10;
+      if (n.includes('nacional de costa rica')) return 10;
+      if (n.includes('nacional')) return 8;
+      if (/\bbn\b/.test(n)) return 6;
+      return -1;
+    }
+    if (targetBank === 'BAC') {
+      if (n.includes('nacional') || n.includes('bcr')) return -1;
+      if (n.includes('bac')) return 10;
+      return -1;
+    }
+    return -1;
+  }
+
+  function scoreCurrency(name, targetCur, bankAccountCurrency) {
+    const n = name.toLowerCase();
+    let s = 0;
+    // Match explícito por columna currency
+    if (bankAccountCurrency === targetCur) s += 5;
+    // Keywords en el nombre
+    for (const kw of currKeywords) {
+      if (n.includes(kw)) s += 3;
+      break;
+    }
+    // Anti-match: si es CRC y el nombre contiene "dolar", penaliza
+    if (targetCur === 'CRC' && (n.includes('dolar') || n.includes('dólar'))) s -= 10;
+    if (targetCur === 'USD' && (n.includes('colon') || n.includes('colón'))) s -= 10;
+    return s;
+  }
+
+  // Calcular score total para cada cuenta
+  const scored = data.map(b => {
+    const bankScore = scoreBank(b.name || '', bank);
+    const currScore = scoreCurrency(b.name || '', currency, b.currency);
+    const alegraBonus = b.alegra_account_id ? 1 : 0;
+    const total = bankScore < 0 ? -Infinity : (bankScore + currScore + alegraBonus);
+    return { account: b, total, bankScore, currScore };
+  }).filter(s => s.total > -Infinity);
+
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.total - a.total);
+  return scored[0].account;
 }
 
 // Extraer hasta 4 dígitos del memo. Memo puede venir con guiones, espacios, etc.
