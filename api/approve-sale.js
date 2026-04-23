@@ -45,6 +45,19 @@ const idTypeLabel = (t) => {
   return map[t] || 'Cédula Física';
 };
 
+// Sanitiza texto para WinAnsi (Helvetica):
+// - Reemplaza saltos de línea y tabs por espacios
+// - Colapsa espacios múltiples
+// - Remueve caracteres no imprimibles
+const sanitizeText = (s) => {
+  if (s == null) return '';
+  return String(s)
+    .replace(/[\r\n\t]+/g, ' ')     // saltos de línea y tabs → espacio
+    .replace(/[\x00-\x1f\x7f]/g, '') // otros control chars → vacío
+    .replace(/\s+/g, ' ')            // colapsar espacios múltiples
+    .trim();
+};
+
 // Obtener access token fresco usando el refresh token
 async function getDriveAccessToken() {
   const resp = await fetch('https://oauth2.googleapis.com/token', {
@@ -168,7 +181,22 @@ async function generatePDF(sale, deposits, agents, mode = 'approve') {
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
+  // Helper: wrappea page.drawText para que siempre sanitice texto
+  // (WinAnsi no acepta \n, \r, \t, ni otros control chars)
+  const wrapPageDrawText = (p) => {
+    const _orig = p.drawText.bind(p);
+    p.drawText = (text, options) => {
+      const safe = text == null ? '' : String(text)
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/[\x00-\x1f\x7f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return _orig(safe, options);
+    };
+  };
+
   let page = pdfDoc.addPage([595, 842]); // A4 portrait
+  wrapPageDrawText(page);
   const pageWidth = page.getWidth();
   const pageHeight = page.getHeight();
   let y = pageHeight - 40;
@@ -261,7 +289,9 @@ async function generatePDF(sale, deposits, agents, mode = 'approve') {
 
   const drawField = (label, value, x, width) => {
     page.drawText(label, { x, y, size: 8, font, color: COLOR_MUTED });
-    page.drawText(value || '-', {
+    // Sanitizar para evitar errores de WinAnsi con saltos de línea
+    const safeValue = value ? sanitizeText(value) : '-';
+    page.drawText(safeValue || '-', {
       x, y: y - 11, size: 10, font: fontBold, color: COLOR_TEXT,
       maxWidth: width,
     });
@@ -278,6 +308,7 @@ async function generatePDF(sale, deposits, agents, mode = 'approve') {
   const checkPageBreak = (needed = 80) => {
     if (y < needed) {
       page = pdfDoc.addPage([595, 842]);
+      wrapPageDrawText(page);
       y = pageHeight - 40;
     }
   };
@@ -302,7 +333,7 @@ async function generatePDF(sale, deposits, agents, mode = 'approve') {
   ]);
   if (sale.client_address) {
     page.drawText('DIRECCIÓN', { x: 40, y, size: 8, font, color: COLOR_MUTED });
-    page.drawText(sale.client_address, {
+    page.drawText(sanitizeText(sale.client_address), {
       x: 40, y: y - 11, size: 10, font: fontBold, color: COLOR_TEXT, maxWidth: pageWidth - 80,
     });
     y -= 30;
@@ -411,8 +442,8 @@ async function generatePDF(sale, deposits, agents, mode = 'approve') {
     y -= 14;
     page.drawLine({ start: { x: 40, y: y + 4 }, end: { x: pageWidth - 40, y: y + 4 }, thickness: 0.3, color: COLOR_SEP });
     deposits.forEach((d) => {
-      page.drawText((d.bank || '-').slice(0, 25), { x: colX[0], y, size: 9, font, color: COLOR_TEXT });
-      page.drawText((d.reference || '-').slice(0, 20), { x: colX[1], y, size: 9, font, color: COLOR_TEXT });
+      page.drawText(sanitizeText(d.bank || '-').slice(0, 25), { x: colX[0], y, size: 9, font, color: COLOR_TEXT });
+      page.drawText(sanitizeText(d.reference || '-').slice(0, 20), { x: colX[1], y, size: 9, font, color: COLOR_TEXT });
       page.drawText(d.deposit_date ? new Date(d.deposit_date + 'T12:00:00').toLocaleDateString('es-CR') : '-',
         { x: colX[2], y, size: 9, font, color: COLOR_TEXT });
       page.drawText(fmt(d.amount, sale.sale_currency), { x: colX[3], y, size: 9, font: fontBold, color: COLOR_TEXT });
@@ -425,7 +456,9 @@ async function generatePDF(sale, deposits, agents, mode = 'approve') {
   if (sale.observations) {
     checkPageBreak(80);
     drawSectionTitle('Observaciones');
-    const words = sale.observations.split(' ');
+    // Sanitizar: Helvetica/WinAnsi no acepta \n ni control chars
+    const cleanObs = sanitizeText(sale.observations);
+    const words = cleanObs.split(' ');
     let line = '';
     const maxWidth = pageWidth - 80;
     for (const w of words) {
