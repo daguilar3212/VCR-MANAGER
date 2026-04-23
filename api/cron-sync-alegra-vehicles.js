@@ -12,6 +12,133 @@ import { createClient } from '@supabase/supabase-js';
 
 const ALEGRA_BASE = 'https://api.alegra.com/api/v1';
 
+// ============================================================
+// TC: helpers para obtener y guardar tipos de cambio
+// Fuentes:
+//   'bccr' -> tipodecambio.paginasweb.cr (TC oficial BCCR, público)
+//   'bac'  -> web service BCCR indicadores 1314/1315 (requiere BCCR_EMAIL y BCCR_TOKEN)
+// Tabla destino: tc_historico (fecha, fuente, tc_compra, tc_venta, fetched_at)
+// PK compuesta: (fecha, fuente)
+// ============================================================
+function todayCR() {
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Costa_Rica',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  return fmt.format(new Date());
+}
+
+function ymdToDMY(ymd) {
+  const [y, m, d] = ymd.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+async function fetchTcBccr(fechaYMD) {
+  try {
+    const resp = await fetch(`https://tipodecambio.paginasweb.cr/api/${ymdToDMY(fechaYMD)}`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    const data = await resp.json();
+    const compra = parseFloat(data.compra);
+    const venta = parseFloat(data.venta);
+    if (!venta || venta <= 0) return { ok: false, error: 'venta inválida' };
+    return { ok: true, tc_compra: compra || null, tc_venta: venta };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function fetchBccrIndicator(code, fechaYMD) {
+  const email = process.env.BCCR_EMAIL || '';
+  const token = process.env.BCCR_TOKEN || '';
+  if (!email || !token) return { ok: false, error: 'sin credenciales BCCR' };
+  try {
+    const fechaDMY = ymdToDMY(fechaYMD);
+    const url = `https://gee.bccr.fi.cr/Indicadores/Suscripciones/WS/wsindicadoreseconomicos.asmx/ObtenerIndicadoresEconomicos?Indicador=${code}&FechaInicio=${encodeURIComponent(fechaDMY)}&FechaFinal=${encodeURIComponent(fechaDMY)}&Nombre=VCRManager&SubNiveles=N&CorreoElectronico=${encodeURIComponent(email)}&Token=${encodeURIComponent(token)}`;
+    const resp = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(8000) });
+    if (!resp.ok) return { ok: false, error: `HTTP ${resp.status}` };
+    const xml = await resp.text();
+    const match = xml.match(/<NUM_VALOR>([0-9.,]+)<\/NUM_VALOR>/i);
+    if (!match) return { ok: false, error: 'sin NUM_VALOR' };
+    const val = parseFloat(match[1].replace(',', '.'));
+    if (!val || val <= 0) return { ok: false, error: 'valor inválido' };
+    return { ok: true, valor: val };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function fetchTcBac(fechaYMD) {
+  const compraRes = await fetchBccrIndicator(1314, fechaYMD);
+  const ventaRes = await fetchBccrIndicator(1315, fechaYMD);
+  if (compraRes.ok && ventaRes.ok) {
+    return { ok: true, tc_compra: compraRes.valor, tc_venta: ventaRes.valor };
+  }
+  return { ok: false, error: compraRes.error || ventaRes.error };
+}
+
+async function guardarTc(supabase, fecha, fuente, tc_compra, tc_venta) {
+  const { error } = await supabase
+    .from('tc_historico')
+    .upsert({
+      fecha, fuente,
+      tc_compra: tc_compra || null,
+      tc_venta,
+      fetched_at: new Date().toISOString(),
+    }, { onConflict: 'fecha,fuente' });
+  if (error) throw new Error(`upsert ${fuente}: ${error.message}`);
+}
+
+async function limpiarTcAntiguos(supabase) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 365);
+  const cutoffYMD = cutoff.toISOString().split('T')[0];
+  const { error, count } = await supabase
+    .from('tc_historico')
+    .delete({ count: 'exact' })
+    .lt('fecha', cutoffYMD);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, deleted: count || 0 };
+}
+
+async function sincronizarTC(supabase) {
+  const fecha = todayCR();
+  const result = { fecha, bccr: null, bac: null, cleanup: null };
+
+  // BCCR
+  const bccr = await fetchTcBccr(fecha);
+  if (bccr.ok) {
+    try {
+      await guardarTc(supabase, fecha, 'bccr', bccr.tc_compra, bccr.tc_venta);
+      result.bccr = { ok: true, tc_compra: bccr.tc_compra, tc_venta: bccr.tc_venta };
+    } catch (err) {
+      result.bccr = { ok: false, error: err.message };
+    }
+  } else {
+    result.bccr = { ok: false, error: bccr.error };
+  }
+
+  // BAC
+  const bac = await fetchTcBac(fecha);
+  if (bac.ok) {
+    try {
+      await guardarTc(supabase, fecha, 'bac', bac.tc_compra, bac.tc_venta);
+      result.bac = { ok: true, tc_compra: bac.tc_compra, tc_venta: bac.tc_venta };
+    } catch (err) {
+      result.bac = { ok: false, error: err.message };
+    }
+  } else {
+    result.bac = { ok: false, error: bac.error };
+  }
+
+  // Limpieza >365 días
+  result.cleanup = await limpiarTcAntiguos(supabase);
+  return result;
+}
+
 async function alegraFetch(endpoint, method = 'GET', body = null) {
   const email = process.env.ALEGRA_EMAIL;
   const token = process.env.ALEGRA_TOKEN;
@@ -247,10 +374,20 @@ export default async function handler(req, res) {
       }
     }
 
+    // Sincronización de tipos de cambio (BCCR + BAC)
+    // No bloqueante: si falla, el cron de vehículos igual responde ok
+    let tcResult = null;
+    try {
+      tcResult = await sincronizarTC(supabase);
+    } catch (tcErr) {
+      tcResult = { ok: false, error: tcErr.message };
+    }
+
     return res.status(200).json({
       ok: true,
       timestamp: new Date().toISOString(),
       stats,
+      tc: tcResult,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stats });
