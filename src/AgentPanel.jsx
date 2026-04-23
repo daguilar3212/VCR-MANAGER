@@ -1168,10 +1168,15 @@ export default function AgentPanel() {
 
     const agentRows = [];
     const saleTC = parseFloat(saleForm.sale_exchange_rate) || 0;
+    const saleCurrency = saleForm.sale_currency || "USD";
     const hasAgent2 = saleForm.agent2_id && saleForm.agent2_id !== profile.agent_id;
     const splitPct = hasAgent2 ? 0.5 : 1;
     const splitAmt = salePrice * 0.01 * splitPct;
-    const splitCrc = Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100;
+    // FIX: Si la venta ya está en CRC, la comisión YA ESTÁ en CRC (no multiplicar por TC).
+    // Solo convertir a CRC cuando la venta está en USD.
+    const splitCrc = saleCurrency === "USD"
+      ? Math.round((splitAmt * saleTC + Number.EPSILON) * 100) / 100
+      : Math.round((splitAmt + Number.EPSILON) * 100) / 100;
 
     const myAgent = agentsList.find(a => a.id === profile.agent_id);
     agentRows.push({
