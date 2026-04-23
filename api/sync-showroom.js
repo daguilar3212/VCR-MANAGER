@@ -236,10 +236,12 @@ async function calcularCamposDerivados(car, supabase) {
   let financiable = '';
 
   if (banco === 'CP') {
-    primaMin = 'N/A';
-    cuotaMensual = '';
-    plazo = '';
-    entidad = 'Crédito Personal';
+    // Cooperativa: prima 0, cuota en CRC = (precioCRC + traspaso) / 1M × 21k, plazo 108
+    const cuotaCRC = Math.round(((precioCRC + traspaso) / 1000000) * 21000);
+    primaMin = 0;
+    cuotaMensual = cuotaCRC;
+    plazo = 108;
+    entidad = 'Cooperativa';
     financiable = 'Solo asalariado (préstamo personal)';
   } else if (params) {
     const primaUSD = precioUSD * params.primaMin;
@@ -247,7 +249,9 @@ async function calcularCamposDerivados(car, supabase) {
     primaMin = Math.round(primaUSD * 100) / 100; // USD
     cuotaMensual = Math.round(cuotaUSD * 100) / 100;
     plazo = params.plazoMax;
-    entidad = banco;
+    // Si aplica BAC (2019-2027), también aplica Rapimax → "BAC/Rapimax"
+    // Si solo aplica Rapimax (2016-2018) → "Rapimax"
+    entidad = banco === 'BAC' ? 'BAC/Rapimax' : 'Rapimax';
     financiable = 'Asalariado / Independiente';
   }
 
@@ -1104,6 +1108,7 @@ async function handleRecalcAll(req, res, supabase) {
 
     // 3. Procesar cada fila y calcular derivados
     const dataUpdates = []; // [{ range, values }] para batch update
+    const formatQueue = []; // [{ rowNum, entidad }] para aplicar formato después
     for (let i = 0; i < allRows.length; i++) {
       const r = allRows[i];
       const plate = (r[colMap.plate] || '').trim();
@@ -1142,13 +1147,15 @@ async function handleRecalcAll(req, res, supabase) {
             values: [[String(val)]],
           });
         }
+        // Recordar qué banco es para aplicar formato correcto (CRC vs USD)
+        formatQueue.push({ rowNum, entidad: derivados.entidad });
         stats.recalculated++;
       } catch (err) {
         stats.errors.push({ plate, reason: err.message });
       }
     }
 
-    // 4. Escribir en batches para no saturar la API (50 por batch)
+    // 4. Escribir valores en batches (100 por batch)
     if (dataUpdates.length > 0) {
       const BATCH_SIZE = 100;
       for (let i = 0; i < dataUpdates.length; i += BATCH_SIZE) {
@@ -1171,6 +1178,13 @@ async function handleRecalcAll(req, res, supabase) {
       }
     }
 
+    // 5. Aplicar formato visual (monedas, números) por celda
+    try {
+      await aplicarFormatoCeldas(accessToken, colMap, formatQueue);
+    } catch (fmtErr) {
+      stats.errors.push({ format: true, reason: fmtErr.message });
+    }
+
     return res.status(200).json({
       ok: true,
       stats,
@@ -1179,5 +1193,118 @@ async function handleRecalcAll(req, res, supabase) {
 
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
+// Aplica formato de moneda/número a las celdas derivadas usando batchUpdate con repeatCell
+async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
+  if (!formatQueue.length) return;
+
+  // Obtener sheetId numérico de la pestaña Inventario
+  const infoRes = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`,
+    { headers: { 'Authorization': `Bearer ${accessToken}` } }
+  );
+  const info = await infoRes.json();
+  if (!infoRes.ok) throw new Error('No se pudo leer info del Sheets');
+  const inventarioSheet = info.sheets?.find(s => s.properties?.title === 'Inventario');
+  if (!inventarioSheet) throw new Error('No se encontró pestaña Inventario');
+  const sheetIdNum = inventarioSheet.properties.sheetId;
+
+  // Formatos disponibles
+  const FMT_USD = { type: 'CURRENCY', pattern: '"$"#,##0.00' };
+  const FMT_CRC = { type: 'CURRENCY', pattern: '"₡"#,##0' };
+  const FMT_CRC_DEC = { type: 'CURRENCY', pattern: '"₡"#,##0.00' };
+  const FMT_NUM = { type: 'NUMBER', pattern: '0' };
+
+  // Construir requests por columna (fijos) + por celda (Prima/Cuota según entidad)
+  const requests = [];
+
+  // Columnas de formato fijo para todas las filas (una request por columna)
+  const fixedColFormats = [
+    { field: 'precio_usd_calc', fmt: FMT_USD },
+    { field: 'precio_crc_calc', fmt: FMT_CRC },
+    { field: 'traspaso', fmt: FMT_CRC },
+    { field: 'plazo', fmt: FMT_NUM },
+  ];
+
+  // Rango: de la primera fila con data (min rowNum) hasta la última
+  const rows = formatQueue.map(f => f.rowNum);
+  const startRow = Math.min(...rows) - 1; // 0-indexed
+  const endRow = Math.max(...rows);       // exclusivo
+
+  for (const { field, fmt } of fixedColFormats) {
+    const colIdx = colMap[field];
+    if (colIdx === -1) continue;
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId: sheetIdNum,
+          startRowIndex: startRow,
+          endRowIndex: endRow,
+          startColumnIndex: colIdx,
+          endColumnIndex: colIdx + 1,
+        },
+        cell: { userEnteredFormat: { numberFormat: fmt } },
+        fields: 'userEnteredFormat.numberFormat',
+      },
+    });
+  }
+
+  // Prima y Cuota: formato depende de la entidad (CP→CRC, resto→USD)
+  // Hacer una request por cada celda (mas simple y robusto)
+  const primaIdx = colMap.prima_minima;
+  const cuotaIdx = colMap.cuota_mensual;
+  for (const { rowNum, entidad } of formatQueue) {
+    const isCP = entidad === 'Cooperativa';
+    const fmtPrimaCuota = isCP ? FMT_CRC : FMT_USD;
+    if (primaIdx !== -1) {
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId: sheetIdNum,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: primaIdx,
+            endColumnIndex: primaIdx + 1,
+          },
+          cell: { userEnteredFormat: { numberFormat: fmtPrimaCuota } },
+          fields: 'userEnteredFormat.numberFormat',
+        },
+      });
+    }
+    if (cuotaIdx !== -1) {
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId: sheetIdNum,
+            startRowIndex: rowNum - 1,
+            endRowIndex: rowNum,
+            startColumnIndex: cuotaIdx,
+            endColumnIndex: cuotaIdx + 1,
+          },
+          cell: { userEnteredFormat: { numberFormat: fmtPrimaCuota } },
+          fields: 'userEnteredFormat.numberFormat',
+        },
+      });
+    }
+  }
+
+  // Enviar en batches de 100 requests para no saturar
+  const BATCH = 100;
+  for (let i = 0; i < requests.length; i += BATCH) {
+    const chunk = requests.slice(i, i + BATCH);
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests: chunk }),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error('Error aplicando formato: ' + JSON.stringify(err).slice(0, 200));
+    }
   }
 }
