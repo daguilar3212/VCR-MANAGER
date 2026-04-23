@@ -11,6 +11,7 @@
 import { createClient } from '@supabase/supabase-js';
 
 const ALEGRA_BASE = 'https://api.alegra.com/api/v1';
+const SHEETS_API = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 // ============================================================
 // TC: helpers para obtener y guardar tipos de cambio
@@ -274,6 +275,451 @@ function parseVehicleFromDescription(description, itemName) {
   return vehicle;
 }
 
+// ============================================================
+// BACKUP A GOOGLE SHEETS
+// Reusa GOOGLE_DRIVE_REFRESH_TOKEN. Require env BACKUP_SHEET_ID.
+// Corre a las 6am y 11pm CR (configurado en vercel.json).
+// Sobrescribe todas las pestañas cada corrida.
+// ============================================================
+
+async function bkGetAccessToken() {
+  const resp = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: process.env.GMAIL_CLIENT_ID,
+      client_secret: process.env.GMAIL_CLIENT_SECRET,
+      refresh_token: process.env.GOOGLE_DRIVE_REFRESH_TOKEN,
+      grant_type: 'refresh_token',
+    }),
+  });
+  const data = await resp.json();
+  if (!data.access_token) throw new Error('OAuth error: ' + JSON.stringify(data));
+  return data.access_token;
+}
+
+async function bkGetSheetMeta(accessToken, sheetId) {
+  const resp = await fetch(`${SHEETS_API}/${sheetId}?fields=sheets(properties(sheetId,title))`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok) throw new Error(`getSheetMeta: ${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
+
+async function bkEnsureTabs(accessToken, sheetId, tabNames) {
+  const meta = await bkGetSheetMeta(accessToken, sheetId);
+  const existing = {};
+  (meta.sheets || []).forEach(s => { existing[s.properties.title] = s.properties.sheetId; });
+  const toCreate = tabNames.filter(t => !(t in existing));
+  if (toCreate.length === 0) return existing;
+  const requests = toCreate.map(title => ({ addSheet: { properties: { title } } }));
+  const resp = await fetch(`${SHEETS_API}/${sheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests }),
+  });
+  if (!resp.ok) throw new Error(`ensureTabs: ${resp.status} ${await resp.text()}`);
+  const result = await resp.json();
+  (result.replies || []).forEach((r, i) => {
+    const newSheetId = r.addSheet?.properties?.sheetId;
+    if (newSheetId != null) existing[toCreate[i]] = newSheetId;
+  });
+  return existing;
+}
+
+async function bkClearTab(accessToken, sheetId, tabName) {
+  const range = `'${tabName}'`;
+  const resp = await fetch(`${SHEETS_API}/${sheetId}/values/${encodeURIComponent(range)}:clear`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: '{}',
+  });
+  if (!resp.ok) throw new Error(`clearTab ${tabName}: ${resp.status} ${await resp.text()}`);
+}
+
+async function bkWriteRows(accessToken, sheetId, tabName, rows) {
+  if (!rows || rows.length === 0) return;
+  const range = `'${tabName}'!A1`;
+  const resp = await fetch(
+    `${SHEETS_API}/${sheetId}/values/${encodeURIComponent(range)}?valueInputOption=USER_ENTERED`,
+    {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: rows }),
+    }
+  );
+  if (!resp.ok) throw new Error(`writeRows ${tabName}: ${resp.status} ${await resp.text()}`);
+}
+
+async function bkFormatHeader(accessToken, sheetId, tabGid) {
+  const requests = [
+    {
+      repeatCell: {
+        range: { sheetId: tabGid, startRowIndex: 0, endRowIndex: 1 },
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: 0.8, green: 0, blue: 0.2 },
+            textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
+            horizontalAlignment: 'LEFT',
+          },
+        },
+        fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)',
+      },
+    },
+    {
+      updateSheetProperties: {
+        properties: { sheetId: tabGid, gridProperties: { frozenRowCount: 1 } },
+        fields: 'gridProperties.frozenRowCount',
+      },
+    },
+  ];
+  const resp = await fetch(`${SHEETS_API}/${sheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ requests }),
+  });
+  if (!resp.ok) throw new Error(`formatHeader: ${resp.status} ${await resp.text()}`);
+}
+
+// Helpers de conversión/formato
+function bkToBoth(amount, currency, tcItem, defaultTc) {
+  const a = parseFloat(amount) || 0;
+  const tc = parseFloat(tcItem) || parseFloat(defaultTc) || 0;
+  if (currency === 'USD') return { crc: tc > 0 ? a * tc : 0, usd: a, tc };
+  return { crc: a, usd: tc > 0 ? a / tc : 0, tc };
+}
+function bkFmtNum(n) {
+  if (n == null || isNaN(n)) return 0;
+  return Math.round(Number(n) * 100) / 100;
+}
+function bkFmtDate(d) {
+  if (!d) return '';
+  try { return new Date(d).toISOString().slice(0, 10); } catch { return ''; }
+}
+function bkFmtDateTime(d) {
+  if (!d) return '';
+  try { return new Date(d).toISOString().replace('T', ' ').slice(0, 19); } catch { return ''; }
+}
+
+// Builders de filas por pestaña
+async function bkBuildTCs(supabase) {
+  const { data } = await supabase.from('tc_historico').select('*').order('fecha', { ascending: false });
+  const rows = [['Fecha', 'Fuente', 'TC Compra', 'TC Venta', 'Fetched At']];
+  (data || []).forEach(r => {
+    rows.push([r.fecha, r.fuente, bkFmtNum(r.tc_compra), bkFmtNum(r.tc_venta), bkFmtDateTime(r.fetched_at)]);
+  });
+  return rows;
+}
+
+async function bkBuildFacturas(supabase, bccrVenta) {
+  const { data } = await supabase.from('invoices').select('*').order('emission_date', { ascending: false });
+  const rows = [[
+    'Consecutivo', 'Fecha Emisión', 'Proveedor', 'Cédula Prov.', 'Descripción',
+    'Placa', 'Moneda', 'Total Original', 'TC', 'Total CRC', 'Total USD',
+    'Estado Pago', 'Tipo (Costo/Gasto)', 'Categoría', 'CABYS', 'Método Pago',
+    'Vencimiento', 'Actividad Econ.',
+  ]];
+  (data || []).forEach(inv => {
+    const { crc, usd, tc } = bkToBoth(inv.total, inv.currency || 'CRC', inv.exchange_rate, bccrVenta);
+    rows.push([
+      inv.consecutive || '', bkFmtDate(inv.emission_date),
+      inv.supplier_name || '', inv.supplier_id || '',
+      (inv.description || '').slice(0, 200),
+      inv.plate || '', inv.currency || 'CRC',
+      bkFmtNum(inv.total), bkFmtNum(tc), bkFmtNum(crc), bkFmtNum(usd),
+      inv.pay_status || '', inv.cost_type || '',
+      inv.cabys_label || '', inv.cabys_code || '',
+      inv.payment_method || '', bkFmtDate(inv.due_date), inv.activity_code || '',
+    ]);
+  });
+  return rows;
+}
+
+async function bkBuildShowroom(supabase, bacVenta, bacCompra) {
+  const { data } = await supabase.from('showroom_vehicles').select('*').order('estado').order('brand');
+  const rows = [[
+    'Estado', 'Placa', 'Marca', 'Modelo', 'Año', 'Color', 'Km',
+    'Combustible', 'Transmisión', 'Motor (CC)', 'Estilo',
+    'Moneda Precio', 'Precio Original', 'Precio CRC (BAC)', 'Precio USD (BAC)',
+    'Vendido', 'Fecha Venta', 'Cliente',
+  ]];
+  (data || []).forEach(v => {
+    const price = parseFloat(v.price) || 0;
+    const cur = v.currency || 'USD';
+    let priceCRC = 0, priceUSD = 0;
+    if (cur === 'USD') {
+      priceCRC = bacVenta > 0 ? price * bacVenta : 0;
+      priceUSD = price;
+    } else {
+      priceCRC = price;
+      priceUSD = bacCompra > 0 ? price / bacCompra : 0;
+    }
+    rows.push([
+      v.estado || 'DISPONIBLE', v.plate || '',
+      v.brand || '', v.model || '', v.year || '',
+      v.color || '', v.km || 0,
+      v.fuel || '', v.transmission || '', v.engine_cc || '', v.style || '',
+      cur, bkFmtNum(price), bkFmtNum(priceCRC), bkFmtNum(priceUSD),
+      v.estado === 'VENDIDO' ? 'Sí' : 'No',
+      bkFmtDateTime(v.sold_at), v.sold_client_name || '',
+    ]);
+  });
+  return rows;
+}
+
+async function bkBuildVendidos(supabase, bccrVenta) {
+  const { data } = await supabase.from('showroom_vehicles').select('*').eq('estado', 'VENDIDO').order('sold_at', { ascending: false });
+  const rows = [[
+    'Fecha Venta', 'Placa', 'Marca', 'Modelo', 'Año', 'Cliente',
+    'Tipo Venta', 'Moneda', 'Precio Original', 'TC Venta',
+    'Precio CRC', 'Precio USD', 'Comisión Vendedor',
+    'Moneda Comisión', 'Ganancia Neta Negocio',
+  ]];
+  (data || []).forEach(v => {
+    const price = parseFloat(v.sold_price_original) || 0;
+    const cur = v.sold_price_currency || 'USD';
+    const tc = parseFloat(v.sold_exchange_rate) || bccrVenta;
+    const priceCRC = cur === 'USD' ? price * tc : price;
+    const priceUSD = cur === 'USD' ? price : (tc > 0 ? price / tc : 0);
+    const saleType = v.sold_sale_type || 'propio';
+    let gananciaNeta = 0;
+    if (saleType === 'consignacion_grupo') gananciaNeta = priceCRC * 0.01;
+    else if (saleType === 'consignacion_externa') gananciaNeta = priceCRC * 0.04;
+    rows.push([
+      bkFmtDate(v.sold_at), v.plate || '', v.brand || '', v.model || '', v.year || '',
+      v.sold_client_name || '', saleType, cur,
+      bkFmtNum(price), bkFmtNum(tc), bkFmtNum(priceCRC), bkFmtNum(priceUSD),
+      bkFmtNum(v.sold_commission_amount), v.sold_commission_currency || cur,
+      bkFmtNum(gananciaNeta),
+    ]);
+  });
+  return rows;
+}
+
+async function bkBuildVentas(supabase) {
+  const { data } = await supabase.from('sales').select('*').order('created_at', { ascending: false });
+  const rows = [[
+    'Nº Plan', 'Fecha Creación', 'Fecha Aprobación', 'Estado',
+    'Cliente', 'Cédula', 'Teléfono', 'Email',
+    'Placa', 'Vehículo', 'Tipo Venta', 'Moneda', 'Precio Venta', 'TC',
+    'Trade-in', 'Prima', 'Señal', 'Saldo',
+    'Método Pago', 'Comisión %', 'Comisión Monto', 'Observaciones',
+  ]];
+  (data || []).forEach(s => {
+    rows.push([
+      s.sale_number || '', bkFmtDateTime(s.created_at), bkFmtDateTime(s.approved_at), s.status || '',
+      s.client_name || '', s.client_cedula || '', s.client_phone1 || '', s.client_email || '',
+      s.vehicle_plate || '',
+      `${s.vehicle_brand || ''} ${s.vehicle_model || ''} ${s.vehicle_year || ''}`.trim(),
+      s.sale_type || '', s.sale_currency || 'USD',
+      bkFmtNum(s.sale_price), bkFmtNum(s.sale_exchange_rate),
+      bkFmtNum(s.tradein_amount), bkFmtNum(s.down_payment),
+      bkFmtNum(s.deposit_signal), bkFmtNum(s.total_balance),
+      s.payment_method || '', bkFmtNum(s.commission_pct), bkFmtNum(s.commission_amount),
+      (s.observations || '').slice(0, 300),
+    ]);
+  });
+  return rows;
+}
+
+async function bkBuildCostos(supabase, bccrVenta, bccrCompra) {
+  const { data: purchases } = await supabase.from('showroom_vehicle_costs').select('*');
+  const { data: manuals } = await supabase.from('vehicle_manual_costs').select('*').order('cost_date');
+  const rows = [[
+    'Placa', 'Tipo Costo', 'Concepto', 'Fecha',
+    'Moneda Original', 'Monto Original', 'TC Histórico',
+    'Monto CRC', 'Monto USD', 'Descripción',
+  ]];
+  (purchases || []).forEach(p => {
+    const { crc, usd, tc } = bkToBoth(p.purchase_cost_amount, p.purchase_cost_currency || 'USD', p.purchase_cost_tc, bccrVenta);
+    rows.push([
+      p.plate || '', 'Compra', 'Costo de compra',
+      bkFmtDate(p.purchase_cost_date),
+      p.purchase_cost_currency || 'USD', bkFmtNum(p.purchase_cost_amount),
+      bkFmtNum(tc), bkFmtNum(crc), bkFmtNum(usd), '',
+    ]);
+  });
+  (manuals || []).forEach(m => {
+    const defaultTc = m.currency === 'USD' ? bccrVenta : bccrCompra;
+    const { crc, usd, tc } = bkToBoth(m.amount, m.currency || 'CRC', m.tc, defaultTc);
+    rows.push([
+      m.plate || '', 'Manual', m.concept || '',
+      bkFmtDate(m.cost_date),
+      m.currency || 'CRC', bkFmtNum(m.amount),
+      bkFmtNum(tc), bkFmtNum(crc), bkFmtNum(usd),
+      m.description || '',
+    ]);
+  });
+  return rows;
+}
+
+async function bkBuildClientes(supabase) {
+  const { data } = await supabase
+    .from('sales')
+    .select('client_name, client_cedula, client_phone1, client_email, client_address, client_id_type, created_at')
+    .not('client_name', 'is', null)
+    .order('created_at', { ascending: false });
+  const seen = {};
+  const rows = [['Nombre', 'Tipo ID', 'Cédula/ID', 'Teléfono', 'Email', 'Dirección', 'Primera venta']];
+  (data || []).forEach(s => {
+    const key = (s.client_cedula || s.client_name || '').trim();
+    if (!key || seen[key]) return;
+    seen[key] = true;
+    rows.push([
+      s.client_name || '', s.client_id_type || '', s.client_cedula || '',
+      s.client_phone1 || '', s.client_email || '', s.client_address || '',
+      bkFmtDate(s.created_at),
+    ]);
+  });
+  return rows;
+}
+
+async function bkBuildPlanillas(supabase) {
+  try {
+    const { data, error } = await supabase.from('payrolls').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    const rows = [[
+      'ID', 'Nombre', 'Período Inicio', 'Período Fin', 'Tipo',
+      'Total Bruto CRC', 'Total CCSS', 'Total Neto CRC', 'Estado', 'Creada',
+    ]];
+    (data || []).forEach(p => {
+      rows.push([
+        p.id || '', p.name || '',
+        bkFmtDate(p.period_start), bkFmtDate(p.period_end), p.period_type || '',
+        bkFmtNum(p.total_gross), bkFmtNum(p.total_ccss), bkFmtNum(p.total_net),
+        p.status || '', bkFmtDateTime(p.created_at),
+      ]);
+    });
+    return rows;
+  } catch (e) {
+    return [['ID', 'Nombre', 'Período Inicio', 'Período Fin', 'Tipo', 'Total Bruto', 'Total CCSS', 'Total Neto', 'Estado', 'Creada']];
+  }
+}
+
+async function bkBuildLiquid(supabase) {
+  try {
+    const { data, error } = await supabase.from('liquidations').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    const rows = [[
+      'ID', 'Fecha', 'Agente', 'Venta #', 'Placa',
+      'Moneda', 'Monto Original', 'Monto CRC', 'Estado', 'Notas',
+    ]];
+    (data || []).forEach(l => {
+      rows.push([
+        l.id || '', bkFmtDate(l.liquidation_date || l.created_at),
+        l.agent_name || '', l.sale_number || '', l.vehicle_plate || '',
+        l.currency || '', bkFmtNum(l.amount), bkFmtNum(l.amount_crc),
+        l.status || '', l.notes || '',
+      ]);
+    });
+    return rows;
+  } catch (e) {
+    return [['ID', 'Fecha', 'Agente', 'Venta #', 'Placa', 'Moneda', 'Monto', 'Monto CRC', 'Estado', 'Notas']];
+  }
+}
+
+function bkBuildResumen(counts, bccr, bac) {
+  const fechaStr = new Date().toLocaleString('es-CR', { timeZone: 'America/Costa_Rica' });
+  return [
+    ['VCR Manager - Backup Google Sheets'],
+    [''],
+    ['Última actualización', fechaStr],
+    [''],
+    ['Tipos de Cambio del día'],
+    ['BCCR Compra', bccr?.tc_compra || '—'],
+    ['BCCR Venta', bccr?.tc_venta || '—'],
+    ['BAC Compra', bac?.tc_compra || '—'],
+    ['BAC Venta', bac?.tc_venta || '—'],
+    [''],
+    ['Resumen de tablas'],
+    ['Facturas', counts.facturas],
+    ['Showroom (total)', counts.showroom],
+    ['Vendidos', counts.vendidos],
+    ['Planes de venta', counts.ventas],
+    ['Costos registrados', counts.costos],
+    ['Clientes únicos', counts.clientes],
+    ['Planillas', counts.planillas],
+    ['Liquidaciones', counts.liquidaciones],
+    ['TCs históricos', counts.tcs],
+  ];
+}
+
+async function runBackup(supabase) {
+  if (!process.env.BACKUP_SHEET_ID) {
+    return { ok: false, error: 'BACKUP_SHEET_ID no configurado' };
+  }
+  const sheetId = process.env.BACKUP_SHEET_ID;
+  const accessToken = await bkGetAccessToken();
+
+  const { data: tcToday } = await supabase
+    .from('tc_historico').select('*').order('fecha', { ascending: false }).limit(10);
+  const bccr = (tcToday || []).find(r => r.fuente === 'bccr');
+  const bac = (tcToday || []).find(r => r.fuente === 'bac');
+  const bccrVenta = parseFloat(bccr?.tc_venta) || 0;
+  const bccrCompra = parseFloat(bccr?.tc_compra) || 0;
+  const bacVenta = parseFloat(bac?.tc_venta) || bccrVenta;
+  const bacCompra = parseFloat(bac?.tc_compra) || bccrCompra;
+
+  const tabOrder = [
+    '_Resumen', 'Tipos_de_Cambio', 'Facturas', 'Showroom', 'Vendidos',
+    'Ventas_Planes', 'Costos_Vehiculos', 'Clientes', 'Planillas', 'Liquidaciones',
+  ];
+
+  const tabGids = await bkEnsureTabs(accessToken, sheetId, tabOrder);
+
+  const [tcsRows, facturasRows, showroomRows, vendidosRows, ventasRows, costosRows, clientesRows, planillasRows, liquidRows] = await Promise.all([
+    bkBuildTCs(supabase),
+    bkBuildFacturas(supabase, bccrVenta),
+    bkBuildShowroom(supabase, bacVenta, bacCompra),
+    bkBuildVendidos(supabase, bccrVenta),
+    bkBuildVentas(supabase),
+    bkBuildCostos(supabase, bccrVenta, bccrCompra),
+    bkBuildClientes(supabase),
+    bkBuildPlanillas(supabase),
+    bkBuildLiquid(supabase),
+  ]);
+
+  const counts = {
+    tcs: tcsRows.length - 1,
+    facturas: facturasRows.length - 1,
+    showroom: showroomRows.length - 1,
+    vendidos: vendidosRows.length - 1,
+    ventas: ventasRows.length - 1,
+    costos: costosRows.length - 1,
+    clientes: clientesRows.length - 1,
+    planillas: planillasRows.length - 1,
+    liquidaciones: liquidRows.length - 1,
+  };
+
+  const pages = {
+    '_Resumen': bkBuildResumen(counts, bccr, bac),
+    'Tipos_de_Cambio': tcsRows,
+    'Facturas': facturasRows,
+    'Showroom': showroomRows,
+    'Vendidos': vendidosRows,
+    'Ventas_Planes': ventasRows,
+    'Costos_Vehiculos': costosRows,
+    'Clientes': clientesRows,
+    'Planillas': planillasRows,
+    'Liquidaciones': liquidRows,
+  };
+
+  const results = {};
+  for (const tab of tabOrder) {
+    try {
+      await bkClearTab(accessToken, sheetId, tab);
+      await bkWriteRows(accessToken, sheetId, tab, pages[tab]);
+      if (tab !== '_Resumen' && pages[tab].length > 0) {
+        try { await bkFormatHeader(accessToken, sheetId, tabGids[tab]); } catch (_) {}
+      }
+      results[tab] = pages[tab].length - 1;
+    } catch (err) {
+      results[tab] = `error: ${err.message}`;
+    }
+  }
+  return { ok: true, timestamp: new Date().toISOString(), counts, results };
+}
+
 export default async function handler(req, res) {
   // Verificar autenticacion del cron (si esta disponible)
   const cronSecret = process.env.CRON_SECRET;
@@ -407,11 +853,25 @@ export default async function handler(req, res) {
       tcResult = { ok: false, error: tcErr.message };
     }
 
+    // Backup a Google Sheets (no bloqueante)
+    // Se puede saltar con ?skip_backup=1
+    let backupResult = null;
+    if (req.query.skip_backup !== '1') {
+      try {
+        backupResult = await runBackup(supabase);
+      } catch (bkErr) {
+        backupResult = { ok: false, error: bkErr.message };
+      }
+    } else {
+      backupResult = { skipped: true };
+    }
+
     return res.status(200).json({
       ok: true,
       timestamp: new Date().toISOString(),
       stats,
       tc: tcResult,
+      backup: backupResult,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stats });
