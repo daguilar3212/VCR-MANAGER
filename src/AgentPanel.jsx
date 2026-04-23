@@ -205,6 +205,25 @@ function plazoMaxBAC(anio) { return anio >= 2023 ? 96 : (anio >= 2019 ? 84 : nul
 function plazoMaxRM(anio) { return RAPIMAX_POL[anio]?.plazo_max || null; }
 
 // ==================================================================
+// CALCULADORA DE TRASPASO VEHICULAR (CR)
+// 2.5% impuesto (DGT) + timbres BCR (0.77% + ₡3,026.80) + honorarios
+// Fórmula validada contra la calculadora oficial del BCR (abril 2026)
+// ==================================================================
+const TRASPASO_IMPUESTO_PCT = 0.025;
+const TRASPASO_TIMBRES_PCT = 0.0077;
+const TRASPASO_TIMBRES_FIJO = 3026.80;
+const TRASPASO_HONORARIOS_DEFAULT = 120000;
+
+function calcularTraspaso({ baseImponibleCRC, honorariosCRC = TRASPASO_HONORARIOS_DEFAULT }) {
+  const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
+  const impuesto = base * TRASPASO_IMPUESTO_PCT;
+  const timbres = base > 0 ? (base * TRASPASO_TIMBRES_PCT + TRASPASO_TIMBRES_FIJO) : 0;
+  const honorarios = parseFloat(honorariosCRC) || 0;
+  const total = impuesto + timbres + honorarios;
+  return { base, impuesto, timbres, honorarios, total };
+}
+
+// ==================================================================
 
 // ============================================================
 // REGLA DE PLACA: MAYUSCULA sin guion, excepto CL que si lleva guion
@@ -1015,8 +1034,10 @@ export default function AgentPanel() {
     } else {
       // Pendiente (envio a aprobacion): validar depositos y saldo
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
-      if (validDeposits.length === 0) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
+      // Excepción: si el trade-in (+ prima) cubre el saldo, no exigir depósito
+      const saldoCubiertoSinDepositos = balance <= 0.01;
+      if (validDeposits.length === 0 && !saldoCubiertoSinDepositos) {
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in ya cubre el precio total, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
         return;
       }
       for (const d of validDeposits) {
@@ -1817,7 +1838,12 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
     valorAutoC = precioOrig.val / cotTC;
   }
   const valorAuto = cotState.valorAuto != null ? cotState.valorAuto : valorAutoC;
-  const traspasoAuto = valorAuto * 0.035;
+  // Traspaso: cálculo real CR (2.5% imp + 1.5% timbres + ₡120k honor + 13% IVA)
+  const valorAutoCRC = cotMoneda === 'CRC' ? valorAuto : valorAuto * cotTC;
+  const honorariosConfig = cotState.honorarios != null ? cotState.honorarios : TRASPASO_HONORARIOS_DEFAULT;
+  const traspasoDetalle = calcularTraspaso({ baseImponibleCRC: valorAutoCRC, honorariosCRC: honorariosConfig });
+  const traspasoTotalCRC = traspasoDetalle.total;
+  const traspasoAuto = cotMoneda === 'CRC' ? traspasoTotalCRC : traspasoTotalCRC / cotTC;
   const traspaso = cotState.traspaso != null ? cotState.traspaso : traspasoAuto;
 
   let primaMin = 0;
@@ -2217,8 +2243,40 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
 
               {cotBanco !== 'CP' && (
                 <div>
-                  <div style={S.detailLabel}>TRASPASO (3.5% auto)</div>
+                  <div style={S.detailLabel}>TRASPASO (calculado)</div>
                   <input type="number" value={Math.round(traspaso)} onChange={e => updCot({ traspaso: parseFloat(e.target.value) || 0 })} style={{ ...S.input, width: "100%" }} />
+                  {/* Desglose del cálculo */}
+                  <div style={{ marginTop: 6, padding: "8px 10px", background: "#0a0b0f", borderRadius: 6, border: "1px solid #2a2d3d", fontSize: 10 }}>
+                    <div style={{ color: "#8b8fa4", fontSize: 9, textTransform: "uppercase", marginBottom: 4, letterSpacing: .3 }}>
+                      Desglose (base: ₡{Math.round(valorAutoCRC).toLocaleString('es-CR')})
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#e8eaf0", marginBottom: 2 }}>
+                      <span>Impuesto 2.5%</span>
+                      <span>₡{Math.round(traspasoDetalle.impuesto).toLocaleString('es-CR')}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", color: "#e8eaf0", marginBottom: 2 }}>
+                      <span>Timbres BCR <span style={{ fontSize: 8, color: "#5a5e72" }}>(0.77% + ₡3,027)</span></span>
+                      <span>₡{Math.round(traspasoDetalle.timbres).toLocaleString('es-CR')}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", color: "#e8eaf0", marginBottom: 4 }}>
+                      <span>Honorarios <span style={{ fontSize: 8, color: "#5a5e72" }}>(IVA incl.)</span></span>
+                      <input
+                        type="number"
+                        value={honorariosConfig}
+                        onChange={e => updCot({ honorarios: parseFloat(e.target.value) || 0 })}
+                        style={{ width: 90, background: "#1a1d2b", border: "1px solid #2a2d3d", color: "#e8eaf0", padding: "2px 6px", fontSize: 10, borderRadius: 3, textAlign: "right" }}
+                      />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", borderTop: "1px solid #2a2d3d", paddingTop: 4, color: "#4f8cff", fontWeight: 700 }}>
+                      <span>TOTAL</span>
+                      <span>₡{Math.round(traspasoDetalle.total).toLocaleString('es-CR')}</span>
+                    </div>
+                    {cotMoneda !== 'CRC' && (
+                      <div style={{ fontSize: 9, color: "#5a5e72", marginTop: 2, textAlign: "right" }}>
+                        ≈ ${(traspasoDetalle.total / cotTC).toFixed(2)} USD
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
