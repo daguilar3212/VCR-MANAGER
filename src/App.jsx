@@ -2076,6 +2076,8 @@ export default function App() {
       const ag = agents.find(a => a.id === saleForm.agent2_id);
       agentRows.push({ sale_id: data.id, agent_id: saleForm.agent2_id, agent_name: ag?.name || "", commission_pct: splitPct, commission_amount: splitAmt, commission_crc: splitCrc });
     }
+    // DEFENSIVO: borrar primero para evitar duplicados en race conditions.
+    await supabase.from('sale_agents').delete().eq('sale_id', data.id);
     if (agentRows.length > 0) await supabase.from('sale_agents').insert(agentRows);
 
     // Si se guardo como reserva, generar PDF automaticamente
@@ -8591,22 +8593,30 @@ export default function App() {
                       <div style={{ fontSize: 11, color: "#8b8fa4", fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
                         Vendedor{pickedSale.sale_agents && pickedSale.sale_agents.length > 1 ? "es" : ""}
                       </div>
-                      {pickedSale.sale_agents && pickedSale.sale_agents.length > 0 ? (
-                        <div style={{ fontSize: 14, fontWeight: 700, color: "#e8eaf0" }}>
-                          {pickedSale.sale_agents.map((a, i) => (
-                            <span key={i}>
-                              {i > 0 && <span style={{ color: "#8b8fa4" }}> + </span>}
-                              {a.agent_name}
-                              {pickedSale.sale_agents.length > 1 && <span style={{ fontSize: 11, color: "#8b8fa4", marginLeft: 4 }}>({(a.commission_pct * 100).toFixed(0)}%)</span>}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
+                      {pickedSale.sale_agents && pickedSale.sale_agents.length > 0 ? (() => {
+                        // DEFENSIVO: dedupe por agent_id antes de renderizar
+                        const uniqueAgents = Array.from(new Map(pickedSale.sale_agents.map(a => [a.agent_id, a])).values());
+                        return (
+                          <div style={{ fontSize: 14, fontWeight: 700, color: "#e8eaf0" }}>
+                            {uniqueAgents.map((a, i) => (
+                              <span key={i}>
+                                {i > 0 && <span style={{ color: "#8b8fa4" }}> + </span>}
+                                {a.agent_name}
+                                {uniqueAgents.length > 1 && <span style={{ fontSize: 11, color: "#8b8fa4", marginLeft: 4 }}>({(a.commission_pct * 100).toFixed(0)}%)</span>}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })() : (
                         <div style={{ fontSize: 13, color: "#e11d48" }}>Sin vendedor asignado</div>
                       )}
                       {pickedSale.sale_agents && pickedSale.sale_agents.length > 0 && (
                         <div style={{ fontSize: 11, color: "#10b981", marginTop: 2 }}>
-                          Comisión total: {fmt2(pickedSale.sale_agents.reduce((s, a) => s + (a.commission_crc || 0), 0))}
+                          Comisión total: {fmt2(
+                            // DEFENSIVO: dedupe por agent_id (si hay rows huérfanos duplicados de bugs antiguos)
+                            Array.from(new Map(pickedSale.sale_agents.map(a => [a.agent_id, a])).values())
+                              .reduce((s, a) => s + (a.commission_crc || 0), 0)
+                          )}
                         </div>
                       )}
                     </div>
