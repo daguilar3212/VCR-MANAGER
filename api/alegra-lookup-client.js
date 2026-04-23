@@ -300,6 +300,139 @@ async function consultarAlegra(cleanCedula) {
   };
 }
 
+// ============================================================
+// TC DEL BAC (scrape del BCCR)
+// ============================================================
+// Scrapeamos la página pública del BCCR que lista TC de todos los bancos.
+// Extraemos la fila de "Banco BAC San José S.A."
+// Caché: 1 vez al día en tc_historico (columnas tc_compra_bac, tc_venta_bac).
+// ============================================================
+async function consultarTcBac(supabase) {
+  const hoyYMD = new Date().toISOString().slice(0, 10);
+
+  // 1. Buscar caché de hoy
+  if (supabase) {
+    try {
+      const { data: cached } = await supabase
+        .from('tc_historico')
+        .select('*')
+        .eq('fecha', hoyYMD)
+        .maybeSingle();
+
+      if (cached && cached.tc_compra_bac && cached.tc_venta_bac) {
+        return {
+          found: true,
+          fecha: hoyYMD,
+          tc_compra_bac: parseFloat(cached.tc_compra_bac),
+          tc_venta_bac: parseFloat(cached.tc_venta_bac),
+          from_cache: true,
+        };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Scrapear la página del BCCR
+  let html;
+  try {
+    const resp = await fetch(
+      'https://gee.bccr.fi.cr/IndicadoresEconomicos/Cuadros/frmConsultaTCVentanilla.aspx',
+      {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; VCRManager/1.0)',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+        signal: AbortSignal.timeout(10000),
+      }
+    );
+    if (!resp.ok) {
+      return await ultimoTcBacConocido(supabase);
+    }
+    html = await resp.text();
+  } catch (err) {
+    return await ultimoTcBacConocido(supabase);
+  }
+
+  // 3. Parsear: buscar la fila del BAC San José y extraer compra/venta
+  // Formato del HTML: <td>Banco BAC San José S.A.</td><td>448,00</td><td>462,00</td>...
+  const bacRegex = /Banco BAC San José[^<]*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*<\/td>\s*<td[^>]*>\s*([\d.,]+)\s*<\/td>/i;
+  const match = html.match(bacRegex);
+
+  if (!match) {
+    // Fallback más flexible: buscar "BAC San José" y los primeros dos números después
+    const flexRegex = /BAC San José[\s\S]{0,500}?(\d{3}[,.]\d{2})[\s\S]{0,200}?(\d{3}[,.]\d{2})/i;
+    const flexMatch = html.match(flexRegex);
+    if (!flexMatch) {
+      return await ultimoTcBacConocido(supabase);
+    }
+    const compra = parseFloat(flexMatch[1].replace(',', '.'));
+    const venta = parseFloat(flexMatch[2].replace(',', '.'));
+    if (!compra || !venta || compra > 1000 || venta > 1000 || compra < 100 || venta < 100) {
+      return await ultimoTcBacConocido(supabase);
+    }
+    return await guardarTcBac(supabase, hoyYMD, compra, venta);
+  }
+
+  const compra = parseFloat(match[1].replace(',', '.'));
+  const venta = parseFloat(match[2].replace(',', '.'));
+
+  if (!compra || !venta || compra > 1000 || venta > 1000) {
+    return await ultimoTcBacConocido(supabase);
+  }
+
+  return await guardarTcBac(supabase, hoyYMD, compra, venta);
+}
+
+async function guardarTcBac(supabase, fecha, compra, venta) {
+  if (supabase) {
+    try {
+      await supabase.from('tc_historico').upsert({
+        fecha,
+        tc_compra_bac: compra,
+        tc_venta_bac: venta,
+        bac_fetched_at: new Date().toISOString(),
+      }, { onConflict: 'fecha' });
+    } catch (_) {}
+  }
+  return {
+    found: true,
+    fecha,
+    tc_compra_bac: compra,
+    tc_venta_bac: venta,
+    from_cache: false,
+  };
+}
+
+async function ultimoTcBacConocido(supabase) {
+  if (!supabase) {
+    return { found: false, error: 'No se pudo obtener TC BAC y no hay caché' };
+  }
+  try {
+    const { data } = await supabase
+      .from('tc_historico')
+      .select('*')
+      .not('tc_compra_bac', 'is', null)
+      .order('fecha', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data && data.tc_compra_bac && data.tc_venta_bac) {
+      return {
+        found: true,
+        fecha: data.fecha,
+        tc_compra_bac: parseFloat(data.tc_compra_bac),
+        tc_venta_bac: parseFloat(data.tc_venta_bac),
+        from_cache: true,
+        warning: `BCCR no disponible. Usando TC BAC del ${data.fecha}`,
+      };
+    }
+    return { found: false, error: 'BCCR no disponible y no hay TC BAC en caché' };
+  } catch (err) {
+    return { found: false, error: err.message };
+  }
+}
+
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ ok: false, error: 'Method not allowed' });
@@ -331,6 +464,15 @@ export default async function handler(req, res) {
     }
     const tc = await consultarTC(fechaYMD, supabase);
     return res.status(tc.found ? 200 : 404).json({ ok: tc.found, ...tc });
+  }
+
+  // ============================================================
+  // ACCIÓN: TC del BAC (hoy, con caché diaria)
+  // Body: { action: 'tc_bac' }
+  // ============================================================
+  if (body.action === 'tc_bac') {
+    const tcBac = await consultarTcBac(supabase);
+    return res.status(tcBac.found ? 200 : 404).json({ ok: tcBac.found, ...tcBac });
   }
 
   // ============================================================
