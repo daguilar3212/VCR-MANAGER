@@ -206,6 +206,46 @@ function plazoMaxBAC(anio) { return anio >= 2023 ? 96 : (anio >= 2019 ? 84 : nul
 function plazoMaxRM(anio) { return RAPIMAX_POL[anio]?.plazo_max || null; }
 
 // ==================================================================
+// CALCULADORA DE TRASPASO VEHICULAR (CR)
+// ==================================================================
+// Base imponible: el mayor entre valor fiscal y precio de venta.
+// Componentes:
+//   1. Impuesto de traspaso (DGT): 2.5% sobre base
+//   2. Timbres del Registro Nacional: fórmula oficial BCR
+//        timbres = (base × 0.0077) + 3,026.80
+//      Validada contra la calculadora del BCR (abril 2026). Incluye:
+//      Registro Nacional, Archivo Nacional, Colegio de Abogados,
+//      Timbre Fiscal, Agrario, Educación y Cultura, Parques Nacionales,
+//      Fauna Silvestre, Cruz Roja.
+//   3. Honorarios del notario: monto fijo configurable, IVA YA INCLUIDO
+//      (se pacta directamente con el abogado, default ₡120,000 total)
+//
+// Verificación con casos reales del BCR:
+//   Base ₡2,000,000 → Impuesto ₡50,000 + Timbres ₡18,426.80 = ₡68,426.80 ✓
+//   Base ₡5,000,000 → Impuesto ₡125,000 + Timbres ₡41,526.80 = ₡166,526.80 ✓
+// ==================================================================
+const TRASPASO_IMPUESTO_PCT = 0.025;      // 2.5% DGT Hacienda
+const TRASPASO_TIMBRES_PCT = 0.0077;      // 0.77% timbres BCR
+const TRASPASO_TIMBRES_FIJO = 3026.80;    // componente fijo timbres BCR
+const TRASPASO_HONORARIOS_DEFAULT = 120000;  // ₡ fijo, IVA incluido
+
+function calcularTraspaso({ baseImponibleCRC, honorariosCRC = TRASPASO_HONORARIOS_DEFAULT }) {
+  const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
+  const impuesto = base * TRASPASO_IMPUESTO_PCT;
+  const timbres = base > 0 ? (base * TRASPASO_TIMBRES_PCT + TRASPASO_TIMBRES_FIJO) : 0;
+  const honorarios = parseFloat(honorariosCRC) || 0;
+  const total = impuesto + timbres + honorarios;
+  return {
+    base,
+    impuesto,
+    timbres,
+    honorarios,
+    total,
+    pct_total: base > 0 ? (total / base) * 100 : 0,
+  };
+}
+
+// ==================================================================
 
 const exportXLS = (rows, name) => {
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -1882,8 +1922,12 @@ export default function App() {
     } else {
       // targetStatus === "pendiente": validación completa de depósitos y saldo
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
-      if (validDeposits.length === 0) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
+      // Cálculo previo para saber si trade-in (+ prima) ya cubre el saldo
+      const bd = computeBreakdown(saleForm);
+      const saldoCubiertoSinDepositos = bd.balance <= 0.01;
+      // Solo exigir depósito si NO hay trade-in/prima que cubra el saldo
+      if (validDeposits.length === 0 && !saldoCubiertoSinDepositos) {
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in ya cubre el precio total, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
         return;
       }
       for (const d of validDeposits) {
@@ -1894,7 +1938,6 @@ export default function App() {
       }
 
       // VALIDACIÓN DE SALDO (solo para pendiente)
-      const bd = computeBreakdown(saleForm);
       const isCash = (saleForm.payment_method || "contado") === "contado";
       const tolerance = 0.01;
 
@@ -6892,8 +6935,14 @@ export default function App() {
     }
     // Permitir override manual
     const valorAuto = cotState.valorAuto != null ? cotState.valorAuto : valorAutoC;
-    // Traspaso: default 3.5% del valor, editable
-    const traspasoAuto = valorAuto * 0.035;
+    // Traspaso: cálculo real CR (2.5% imp + 1.5% timbres + ₡120k honor + 13% IVA sobre honor)
+    // La base imponible debe estar en CRC (es el precio de venta en colones)
+    const valorAutoCRC = cotMoneda === 'CRC' ? valorAuto : valorAuto * cotTC;
+    const honorariosConfig = cotState.honorarios != null ? cotState.honorarios : TRASPASO_HONORARIOS_DEFAULT;
+    const traspasoDetalle = calcularTraspaso({ baseImponibleCRC: valorAutoCRC, honorariosCRC: honorariosConfig });
+    // Convertir total a la moneda de la cotización
+    const traspasoTotalCRC = traspasoDetalle.total;
+    const traspasoAuto = cotMoneda === 'CRC' ? traspasoTotalCRC : traspasoTotalCRC / cotTC;
     const traspaso = cotState.traspaso != null ? cotState.traspaso : traspasoAuto;
 
     // Prima default al minimo del banco
@@ -7609,8 +7658,38 @@ export default function App() {
 
                 {cotBanco !== 'CP' && (
                   <div>
-                    <div style={S.detailLabel}>TRASPASO (3.5% auto)</div>
+                    <div style={S.detailLabel}>TRASPASO (calculado)</div>
                     <input type="number" value={Math.round(traspaso)} onChange={e => updCot({traspaso: parseFloat(e.target.value) || 0})} style={{...S.input,width:"100%"}} />
+                    {/* Desglose del cálculo */}
+                    <div style={{marginTop:6,padding:"8px 10px",background:"#0a0b0f",borderRadius:6,border:"1px solid #2a2d3d",fontSize:10}}>
+                      <div style={{color:"#8b8fa4",fontSize:9,textTransform:"uppercase",marginBottom:4,letterSpacing:.3}}>Desglose (base: ₡{Math.round(valorAutoCRC).toLocaleString('es-CR')})</div>
+                      <div style={{display:"flex",justifyContent:"space-between",color:"#e8eaf0",marginBottom:2}}>
+                        <span>Impuesto 2.5%</span>
+                        <span>₡{Math.round(traspasoDetalle.impuesto).toLocaleString('es-CR')}</span>
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",color:"#e8eaf0",marginBottom:2}}>
+                        <span>Timbres BCR <span style={{fontSize:8,color:"#5a5e72"}}>(0.77% + ₡3,027)</span></span>
+                        <span>₡{Math.round(traspasoDetalle.timbres).toLocaleString('es-CR')}</span>
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",color:"#e8eaf0",marginBottom:4}}>
+                        <span>Honorarios <span style={{fontSize:8,color:"#5a5e72"}}>(IVA incl.)</span></span>
+                        <input
+                          type="number"
+                          value={honorariosConfig}
+                          onChange={e => updCot({honorarios: parseFloat(e.target.value) || 0})}
+                          style={{width:90,background:"#1a1d2b",border:"1px solid #2a2d3d",color:"#e8eaf0",padding:"2px 6px",fontSize:10,borderRadius:3,textAlign:"right"}}
+                        />
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",borderTop:"1px solid #2a2d3d",paddingTop:4,color:"#4f8cff",fontWeight:700}}>
+                        <span>TOTAL</span>
+                        <span>₡{Math.round(traspasoDetalle.total).toLocaleString('es-CR')}</span>
+                      </div>
+                      {cotMoneda !== 'CRC' && (
+                        <div style={{fontSize:9,color:"#5a5e72",marginTop:2,textAlign:"right"}}>
+                          ≈ ${(traspasoDetalle.total / cotTC).toFixed(2)} USD
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
