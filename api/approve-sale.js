@@ -541,6 +541,31 @@ export default async function handler(req, res) {
     const { data: deposits } = await supabase.from('sale_deposits').select('*').eq('sale_id', sale_id).order('deposit_date');
     const { data: saleAgents } = await supabase.from('sale_agents').select('*').eq('sale_id', sale_id);
 
+    // 2.5. Si se aprobó, marcar el vehículo del showroom como VENDIDO y guardar snapshot
+    //      Así queda la ficha del carro lista para la vista de Vendidos.
+    //      Si el vehículo no está en showroom_vehicles (caso raro), no falla.
+    if (mode === 'approve' && sale.vehicle_plate) {
+      try {
+        const plateNorm = String(sale.vehicle_plate).toUpperCase().replace(/\s+/g, '-');
+        const snapshot = {
+          estado: 'VENDIDO',
+          sold_at: new Date().toISOString(),
+          sold_sale_id: sale_id,
+          sold_sale_type: sale.sale_type || 'propio',
+          sold_price_original: sale.sale_price || null,
+          sold_price_currency: sale.sale_currency || 'USD',
+          sold_exchange_rate: sale.sale_exchange_rate || null,
+          sold_client_name: sale.client_name || null,
+          sold_commission_amount: sale.commission_amount || null,
+          sold_commission_currency: sale.sale_currency || 'USD',
+        };
+        await supabase.from('showroom_vehicles').update(snapshot).eq('plate', plateNorm);
+      } catch (e) {
+        // No bloqueante: el approve sigue aunque falle el update del showroom
+        console.error('Error actualizando showroom_vehicles:', e.message);
+      }
+    }
+
     // 3. Generar PDF (pasar el modo para el titulo)
     let pdfBytes;
     try {
