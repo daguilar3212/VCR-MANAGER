@@ -1839,23 +1839,30 @@ export default function App() {
   };
 
   // Cálculo completo del desglose de una venta
-  // Fórmula: precio + traspaso (solo si aparte) - trade-in - prima_efectiva - señal = saldo
-  // IMPORTANTE: "prima_efectiva" = MAX(down_payment, sum(deposits))
-  // Los depósitos son el desglose detallado de la prima. Si el usuario mete ambos,
-  // se toma el mayor para no contar doble. Esto tolera casos donde:
-  //   - Solo se mete monto total en "Prima" (sin detallar depósitos)
-  //   - Solo se meten depósitos individuales (sin repetir total en "Prima")
-  //   - Se mete el total en "Prima" y además el desglose en depósitos (coinciden)
+  // Fórmula nueva:
+  //   balance = precio + traspaso_aparte - primaEfectiva - señal
+  // donde:
+  //   primaEfectiva = MAX(trade-in, prima_digitada, suma_depositos)
+  //
+  // Racional: el trade-in ES la prima. Si el cliente trae un carro de $5000 como
+  // trade-in y la prima del banco es $5000, el trade-in CUBRE la prima — no son
+  // dos descuentos distintos. Igual con depósitos: los depósitos son el detalle
+  // de la prima, no un descuento adicional. Tomamos el MAYOR de los tres para
+  // evitar doble conteo.
+  //
+  // La señal sí se resta aparte (son depósitos adicionales de compromiso).
   const computeBreakdown = (form) => {
     const salePrice = parseFloat(form.sale_price) || 0;
     const tradein = parseFloat(form.tradein_amount) || 0;
     const down = parseFloat(form.down_payment) || 0;
     const signal = parseFloat(form.deposit_signal) || 0;
     const depsTotal = (form.deposits || []).reduce((s, d) => s + (parseFloat(d.amount) || 0), 0);
-    const primaEfectiva = Math.max(down, depsTotal);
+    // La prima efectiva es el mayor entre: trade-in, prima digitada, y suma de depositos.
+    // Eso evita contar doble el mismo dinero.
+    const primaEfectiva = Math.max(tradein, down, depsTotal);
     const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
     const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
-    const balance = salePrice + transferExtra - tradein - primaEfectiva - signal;
+    const balance = salePrice + transferExtra - primaEfectiva - signal;
     return { salePrice, transferExtra, transferApart, tradein, down, signal, depsTotal, primaEfectiva, balance };
   };
 
@@ -1931,12 +1938,19 @@ export default function App() {
     } else {
       // targetStatus === "pendiente": validación completa de depósitos y saldo
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
-      // Cálculo previo para saber si trade-in (+ prima) ya cubre el saldo
+      // Cálculo previo para saber si trade-in o prima ya cubren
       const bd = computeBreakdown(saleForm);
       const saldoCubiertoSinDepositos = bd.balance <= 0.01;
-      // Solo exigir depósito si NO hay trade-in/prima que cubra el saldo
-      if (validDeposits.length === 0 && !saldoCubiertoSinDepositos) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in ya cubre el precio total, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
+      // Para ventas financiadas, "cubierto" significa que el trade-in cubre la prima
+      // que exige el banco (down_payment). En ese caso no se necesitan depósitos
+      // adicionales — el trade-in ES la prima.
+      const isFinanciado = saleForm.payment_method === "Financiamiento" || saleForm.payment_method === "Mixto";
+      const tradein = parseFloat(saleForm.tradein_amount) || 0;
+      const primaExigida = parseFloat(saleForm.down_payment) || 0;
+      const tradeinCubrePrima = isFinanciado && primaExigida > 0 && tradein >= primaExigida - 0.01;
+      const puedeOmitirDepositos = saldoCubiertoSinDepositos || tradeinCubrePrima;
+      if (validDeposits.length === 0 && !puedeOmitirDepositos) {
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in ya cubre el precio total o la prima del banco, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva' en su lugar.");
         return;
       }
       for (const d of validDeposits) {
@@ -1954,7 +1968,7 @@ export default function App() {
         alert(
           `El saldo debe ser 0 para ventas de contado.\n\n` +
           `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
-          `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+          `Revisá el desglose: precio - (trade-in/prima/depósitos el mayor) - señal debe dar 0.`
         );
         return;
       }
@@ -2363,7 +2377,7 @@ export default function App() {
         alert(
           `El saldo debe ser 0 para ventas de contado.\n\n` +
           `Saldo actual: ${bd.balance.toFixed(2)}\n\n` +
-          `Revisá el desglose: precio + traspaso - trade-in - prima - depósitos debe dar 0.`
+          `Revisá el desglose: precio - (trade-in/prima/depósitos el mayor) - señal debe dar 0.`
         );
         return;
       }
@@ -5138,7 +5152,14 @@ export default function App() {
                     {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.label}</option>)}
                   </select>
                 </div>
-                {fld(`Valor del trade-in (${F.sale_currency === "CRC" ? "₡" : "$"})`, "tradein_value", { inputType: "number" })}
+                {fld(`Valor del trade-in (${F.sale_currency === "CRC" ? "₡" : "$"})`, "tradein_value", {
+                  inputType: "number",
+                  onChange: (val) => {
+                    // Espejar automáticamente al campo "Vehículo recibido" en la sección Pago
+                    // para que no haya que digitarlo dos veces.
+                    uf("tradein_amount", val);
+                  },
+                })}
               </div>
             )}
           </div>
@@ -5194,7 +5215,18 @@ export default function App() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 14px" }}>
                     {fld(`Precio de venta (${curSym}) *`, "sale_price", { inputType: "number" })}
                     {fld(F.sale_currency === "CRC" ? "Tipo de cambio ref. ($)" : "Tipo de cambio ref. (₡)", "sale_exchange_rate", { inputType: "number", ph: "Ej: 520" })}
-                    {fld(`Vehículo recibido (${curSym})`, "tradein_amount", { inputType: "number" })}
+                    {F.has_tradein && (
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Vehículo recibido ({curSym}) <span style={{ color: "#f59e0b" }}>· sync ↑ trade-in</span></div>
+                        <input
+                          type="number"
+                          value={F.tradein_amount || 0}
+                          readOnly
+                          style={{ ...S.inp, width: "100%", opacity: 0.6, cursor: "not-allowed" }}
+                          title="Este valor se sincroniza con 'Valor del trade-in' de arriba. Editá allá."
+                        />
+                      </div>
+                    )}
                     {fld(`Prima (${curSym})`, "down_payment", { inputType: "number" })}
                     {fld(`Señal de trato (${curSym})`, "deposit_signal", { inputType: "number" })}
                   </div>
@@ -5391,28 +5423,34 @@ export default function App() {
                     <strong style={{ color: "#f59e0b" }}>+ {fmt(bd.transferExtra, currSym)}</strong>
                   </div>
                 )}
-                {bd.tradein > 0 && (
-                  <div style={line}>
-                    <span>− Trade-in</span>
-                    <strong style={{ color: "#10b981" }}>− {fmt(bd.tradein, currSym)}</strong>
-                  </div>
-                )}
-                {bd.down > 0 && (
-                  <div style={line}>
-                    <span>− Prima</span>
-                    <strong style={{ color: "#10b981" }}>− {fmt(bd.down, currSym)}</strong>
-                  </div>
-                )}
+                {/* Desglose de la prima efectiva: solo se descuenta UNA vez.
+                    Mostramos el mayor entre trade-in, prima y depositos, con un
+                    breakdown informativo si hay más de uno. */}
+                {bd.primaEfectiva > 0 && (() => {
+                  // Identificar qué compone la prima efectiva
+                  const componentes = [];
+                  if (bd.tradein > 0) componentes.push({ label: "Trade-in", monto: bd.tradein });
+                  if (bd.down > 0) componentes.push({ label: "Prima digitada", monto: bd.down });
+                  if (bd.depsTotal > 0) componentes.push({ label: `Depósitos (${(F.deposits || []).filter(d => parseFloat(d.amount) > 0).length})`, monto: bd.depsTotal });
+                  const mayor = componentes.find(c => Math.abs(c.monto - bd.primaEfectiva) < 0.01);
+                  return (
+                    <>
+                      <div style={line}>
+                        <span>− {mayor ? mayor.label : "Prima (trade-in/depósitos)"}</span>
+                        <strong style={{ color: "#10b981" }}>− {fmt(bd.primaEfectiva, currSym)}</strong>
+                      </div>
+                      {componentes.length > 1 && (
+                        <div style={{ fontSize: 10, color: "#8b8fa4", paddingLeft: 14, marginTop: -6, marginBottom: 4 }}>
+                          {componentes.filter(c => c !== mayor).map(c => `${c.label}: ${fmt(c.monto, currSym)}`).join(" · ")} <span style={{ color: "#f59e0b" }}>(no se restan doble — la prima se cubre con el mayor)</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {bd.signal > 0 && (
                   <div style={line}>
-                    <span>− Señal</span>
+                    <span>− Señal de trato</span>
                     <strong style={{ color: "#10b981" }}>− {fmt(bd.signal, currSym)}</strong>
-                  </div>
-                )}
-                {bd.depsTotal > 0 && (
-                  <div style={line}>
-                    <span>− Depósitos ({(F.deposits || []).filter(d => parseFloat(d.amount) > 0).length})</span>
-                    <strong style={{ color: "#10b981" }}>− {fmt(bd.depsTotal, currSym)}</strong>
                   </div>
                 )}
                 <div style={{
