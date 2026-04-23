@@ -1047,15 +1047,15 @@ export default function AgentPanel() {
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
       // Excepción 1: si la prima efectiva ya cubre todo (balance=0), no exigir depósito
       const saldoCubiertoSinDepositos = balance <= 0.01;
-      // Excepción 2: si el plan es financiado y el trade-in cubre la prima del banco,
-      // el trade-in ES la prima — no hacen falta depósitos adicionales.
+      // Excepción 2: si el plan es financiado y hay una prima efectiva (trade-in,
+      // prima digitada o la suma), NO se exigen depósitos — el trade-in o la prima
+      // ya cubren el aporte inicial del cliente. El banco financia el resto.
       const isFinanciado = saleForm.payment_method === "Financiamiento" || saleForm.payment_method === "Mixto";
-      const tradeinNum = parseFloat(saleForm.tradein_amount) || 0;
-      const primaExigida = parseFloat(saleForm.down_payment) || 0;
-      const tradeinCubrePrima = isFinanciado && primaExigida > 0 && tradeinNum >= primaExigida - 0.01;
-      const puedeOmitirDepositos = saldoCubiertoSinDepositos || tradeinCubrePrima;
+      const primaEfectivaTotal = breakdown.primaEfectiva || 0;
+      const financiadoConPrima = isFinanciado && primaEfectivaTotal > 0.01;
+      const puedeOmitirDepositos = saldoCubiertoSinDepositos || financiadoConPrima;
       if (validDeposits.length === 0 && !puedeOmitirDepositos) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total o la prima del banco, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total, o si es venta financiada con prima/trade-in, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
         return;
       }
       for (const d of validDeposits) {
