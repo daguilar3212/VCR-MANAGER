@@ -763,6 +763,456 @@ async function runBackup(supabase) {
   };
 }
 
+// ============================================================
+// PROCESADOR DE PAGOS DESDE GOOGLE SHEET (Quicken export)
+// ============================================================
+// Hojas esperadas en el Sheet PAYMENTS_SHEET_ID:
+//   BAC_CRC, BAC_USD, BCR_CRC, BCR_USD, BN_CRC, BN_USD
+// Columnas (orden Quicken):
+//   Date | Account | Num | Description | Memo | Category | Amount
+// ============================================================
+
+const PAYMENT_TABS = ['BAC_CRC', 'BAC_USD', 'BCR_CRC', 'BCR_USD', 'BN_CRC', 'BN_USD'];
+
+// Mapea la hoja al banco + moneda
+function pymTabToBankKey(tab) {
+  // Retorna {bank: 'BAC'|'BCR'|'BN', currency: 'CRC'|'USD'}
+  const [bank, currency] = tab.split('_');
+  return { bank, currency };
+}
+
+// Busca la cuenta bancaria en bank_accounts por keywords en name
+// Ej: 'BAC' + 'CRC' -> matchea "Banco BAC Colones" o "BAC Colón"
+async function pymFindBankAccount(supabase, bank, currency) {
+  const { data } = await supabase.from('bank_accounts').select('*');
+  if (!data) return null;
+  const bankKeywords = { 'BAC': ['BAC'], 'BCR': ['BCR', 'Costa Rica'], 'BN': ['BN', 'Nacional'] };
+  const currKeywords = currency === 'CRC' ? ['Colon', 'CRC'] : ['Dolar', 'USD', 'Dólar'];
+  const candidates = data.filter(b => {
+    const n = (b.name || '').toLowerCase();
+    const bankMatch = bankKeywords[bank].some(kw => n.includes(kw.toLowerCase()));
+    const currMatch = currKeywords.some(kw => n.toLowerCase().includes(kw.toLowerCase())) ||
+                      (b.currency === currency);
+    return bankMatch && currMatch;
+  });
+  // Si hay ambigüedad, preferir los que tengan alegra_account_id
+  candidates.sort((a, b) => (b.alegra_account_id ? 1 : 0) - (a.alegra_account_id ? 1 : 0));
+  return candidates[0] || null;
+}
+
+// Extraer hasta 4 dígitos del memo. Memo puede venir con guiones, espacios, etc.
+// Ej: "#1234", "Factura 1234", "1234", "Fac-5678" → '1234' / '5678'
+function pymExtractLast4(memo) {
+  if (!memo) return null;
+  // Buscar todos los grupos de dígitos de 4+ y usar los últimos 4 del último grupo
+  const matches = String(memo).match(/\d{4,}/g);
+  if (!matches || matches.length === 0) return null;
+  // Si hay múltiples grupos, tomamos el último (más probable que sea el consecutivo)
+  return matches[matches.length - 1].slice(-4);
+}
+
+// Leer una hoja entera del Sheet
+async function pymReadSheet(accessToken, sheetId, tabName) {
+  const range = `'${tabName}'!A:G`;
+  const resp = await fetch(
+    `${SHEETS_API}/${sheetId}/values/${encodeURIComponent(range)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  );
+  if (!resp.ok) {
+    // Si la hoja no existe, retornar vacío
+    if (resp.status === 400 || resp.status === 404) return [];
+    throw new Error(`readSheet ${tabName}: ${resp.status} ${await resp.text()}`);
+  }
+  const data = await resp.json();
+  return data.values || [];
+}
+
+// Llama a Alegra para crear un payment vinculado a una bill
+async function pymCreateAlegraPayment({ alegraAuth, bill_id, bank_alegra_id, payment_method, amount, currency, exchange_rate, date, reference }) {
+  const payload = {
+    type: 'out',
+    date: date,
+    amount: parseFloat(amount),
+    paymentMethod: payment_method || 'transfer',
+    bankAccount: { id: String(bank_alegra_id) },
+    observations: reference ? `TR ${reference}` : '',
+    anotation: reference ? `TR ${reference}` : '',
+    bills: [{ id: parseInt(bill_id), amount: parseFloat(amount) }],
+  };
+  if (currency && currency !== 'CRC') {
+    payload.currency = {
+      code: currency,
+      exchangeRate: parseFloat(exchange_rate) || 1,
+    };
+  }
+  const resp = await fetch('https://api.alegra.com/api/v1/payments', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${alegraAuth}`,
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const err = new Error(`Alegra payment: ${JSON.stringify(data).slice(0, 300)}`);
+    err.payload = payload;
+    throw err;
+  }
+  return { id: data.id, payload };
+}
+
+// Parsear fecha (Quicken suele exportar M/D/YYYY o YYYY-MM-DD)
+function pymParseDate(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  // Intento ISO directo
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+  // M/D/YYYY
+  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) {
+    const mm = m[1].padStart(2, '0');
+    const dd = m[2].padStart(2, '0');
+    return `${m[3]}-${mm}-${dd}`;
+  }
+  // D/M/YYYY (formato CR)
+  const m2 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m2) {
+    const yy = m2[3].length === 2 ? `20${m2[3]}` : m2[3];
+    const mm = m2[2].padStart(2, '0');
+    const dd = m2[1].padStart(2, '0');
+    return `${yy}-${mm}-${dd}`;
+  }
+  // Fallback: parsear Date
+  try {
+    const d = new Date(str);
+    if (!isNaN(d)) return d.toISOString().slice(0, 10);
+  } catch {}
+  return null;
+}
+
+// Parsear monto (puede tener coma, punto, $, ₡, paréntesis negativos)
+function pymParseAmount(s) {
+  if (s == null) return 0;
+  let str = String(s).trim();
+  if (!str) return 0;
+  // Paréntesis = negativo
+  const isNeg = str.startsWith('(') && str.endsWith(')');
+  if (isNeg) str = str.slice(1, -1);
+  // Quitar símbolos
+  str = str.replace(/[₡$\s]/g, '');
+  // Determinar separador decimal: si hay coma Y punto, el último es decimal
+  if (str.includes(',') && str.includes('.')) {
+    const lastDot = str.lastIndexOf('.');
+    const lastComma = str.lastIndexOf(',');
+    if (lastComma > lastDot) {
+      // Coma es decimal, punto es miles
+      str = str.replace(/\./g, '').replace(',', '.');
+    } else {
+      // Punto es decimal, coma es miles
+      str = str.replace(/,/g, '');
+    }
+  } else if (str.includes(',') && !str.includes('.')) {
+    // Solo coma - ambiguo, si hay 2 dígitos después asumimos decimal
+    const parts = str.split(',');
+    if (parts.length === 2 && parts[1].length === 2) {
+      str = str.replace(',', '.');
+    } else {
+      str = str.replace(/,/g, '');
+    }
+  }
+  const n = parseFloat(str);
+  if (isNaN(n)) return 0;
+  // Monto siempre positivo en nuestro storage
+  return Math.abs(n) * (isNeg ? 1 : 1);
+}
+
+// Process una fila individual
+async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAccount) {
+  // row: [Date, Account, Num, Description, Memo, Category, Amount]
+  const [dateRaw, accountRaw, numRaw, descRaw, memoRaw, catRaw, amountRaw] = row;
+
+  const rowDate = pymParseDate(dateRaw);
+  const checkNum = String(numRaw || '').trim();
+  const payee = String(descRaw || '').trim();
+  const memo = String(memoRaw || '').trim();
+  const amount = pymParseAmount(amountRaw);
+  const { bank, currency } = pymTabToBankKey(tab);
+
+  // Skip filas vacías o sin monto
+  if (!rowDate || amount <= 0) {
+    return { status: 'skip_empty', reason: 'fecha/monto inválido' };
+  }
+
+  // 1. Idempotencia: buscar en payment_imports
+  const { data: existing } = await supabase
+    .from('payment_imports')
+    .select('id, status, alegra_payment_id')
+    .eq('bank_sheet', tab)
+    .eq('row_date', rowDate)
+    .eq('check_num', checkNum)
+    .eq('amount', amount)
+    .maybeSingle();
+
+  if (existing && existing.status !== 'error' && existing.status !== 'unmatched' && existing.status !== 'ambiguous') {
+    // Ya procesado exitosamente, saltar
+    return { status: 'already_processed', import_id: existing.id };
+  }
+
+  // 2. Extraer últimos 4 del memo
+  const memoLast4 = pymExtractLast4(memo);
+
+  // Si no hay últimos 4, no se puede hacer match
+  if (!memoLast4) {
+    return await pymUpsertImport(supabase, {
+      bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+      payee, memo, amount, currency, memo_last4: null,
+      bank_account_id: bankAccount?.id || null,
+      status: 'unmatched', notes: 'Memo sin últimos 4 dígitos identificables',
+      raw_row: { row },
+      existing,
+    });
+  }
+
+  // 3. Buscar factura por last_four + monto + currency
+  // Tolerancia: ±0.02 CRC ±0.01 USD por redondeos
+  const tolerance = currency === 'USD' ? 0.01 : 1.0;
+  const { data: candidates } = await supabase
+    .from('invoices')
+    .select('id, consecutive, last_four, total, currency, supplier_name, alegra_bill_id, pay_status, exchange_rate')
+    .eq('last_four', memoLast4)
+    .eq('currency', currency)
+    .gte('total', amount - tolerance)
+    .lte('total', amount + tolerance);
+
+  const matches = candidates || [];
+
+  if (matches.length === 0) {
+    return await pymUpsertImport(supabase, {
+      bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+      payee, memo, amount, currency, memo_last4: memoLast4,
+      bank_account_id: bankAccount?.id || null,
+      status: 'unmatched',
+      notes: `No hay factura con last_four=${memoLast4} monto=${amount} moneda=${currency}`,
+      raw_row: { row },
+      existing,
+    });
+  }
+
+  if (matches.length > 1) {
+    return await pymUpsertImport(supabase, {
+      bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+      payee, memo, amount, currency, memo_last4: memoLast4,
+      bank_account_id: bankAccount?.id || null,
+      status: 'ambiguous',
+      notes: `Múltiples facturas coinciden (${matches.length}): ${matches.map(m => m.consecutive).join(', ')}`,
+      raw_row: { row, candidates: matches.map(m => ({ id: m.id, consecutive: m.consecutive, supplier: m.supplier_name })) },
+      existing,
+    });
+  }
+
+  // Match único
+  const inv = matches[0];
+
+  // 3.5. Si ya está pagada, solo registrar como duplicado
+  if (inv.pay_status === 'paid') {
+    return await pymUpsertImport(supabase, {
+      bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+      payee, memo, amount, currency, memo_last4: memoLast4,
+      matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+      bank_account_id: bankAccount?.id || null,
+      status: 'duplicate',
+      notes: 'La factura ya estaba marcada como pagada',
+      raw_row: { row },
+      existing,
+    });
+  }
+
+  // 4. Marcar factura como pagada en Supabase
+  const { error: updErr } = await supabase.from('invoices').update({
+    pay_status: 'paid',
+    paid_date: rowDate,
+    paid_bank_id: bankAccount?.id || null,
+    paid_reference: checkNum,
+  }).eq('id', inv.id);
+
+  if (updErr) {
+    return await pymUpsertImport(supabase, {
+      bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+      payee, memo, amount, currency, memo_last4: memoLast4,
+      matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+      bank_account_id: bankAccount?.id || null,
+      status: 'error',
+      notes: `Error marcando factura pagada: ${updErr.message}`,
+      raw_row: { row },
+      existing,
+    });
+  }
+
+  // 5. Si tiene alegra_bill_id y la cuenta tiene alegra_account_id, mandar pago a Alegra
+  let alegraPaymentId = null;
+  let alegraErr = null;
+  if (inv.alegra_bill_id && bankAccount?.alegra_account_id) {
+    try {
+      const result = await pymCreateAlegraPayment({
+        alegraAuth,
+        bill_id: inv.alegra_bill_id,
+        bank_alegra_id: bankAccount.alegra_account_id,
+        payment_method: bankAccount.alegra_payment_method || 'transfer',
+        amount: inv.total,
+        currency: inv.currency,
+        exchange_rate: inv.exchange_rate,
+        date: rowDate,
+        reference: checkNum,
+      });
+      alegraPaymentId = result.id;
+      // Guardar en invoices
+      await supabase.from('invoices').update({
+        alegra_payment_id: alegraPaymentId,
+        alegra_payment_synced_at: new Date().toISOString(),
+      }).eq('id', inv.id);
+    } catch (err) {
+      alegraErr = err.message;
+    }
+  }
+
+  const finalStatus = alegraPaymentId ? 'paid_alegra' : (alegraErr ? 'error' : 'paid_supabase_only');
+  const finalNotes = alegraErr
+    ? `Pagada en Supabase pero Alegra falló: ${alegraErr}`
+    : (!inv.alegra_bill_id ? 'Factura sin alegra_bill_id, solo Supabase' :
+       (!bankAccount?.alegra_account_id ? 'Cuenta sin alegra_account_id, solo Supabase' : 'OK'));
+
+  return await pymUpsertImport(supabase, {
+    bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+    payee, memo, amount, currency, memo_last4: memoLast4,
+    matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+    alegra_payment_id: alegraPaymentId,
+    alegra_bill_id: inv.alegra_bill_id,
+    bank_account_id: bankAccount?.id || null,
+    status: finalStatus,
+    notes: finalNotes,
+    raw_row: { row },
+    existing,
+  });
+}
+
+// Insertar o actualizar el payment_imports (upsert por clave única)
+async function pymUpsertImport(supabase, data) {
+  const { existing, ...row } = data;
+  row.processed_at = new Date().toISOString();
+
+  if (existing) {
+    const { error } = await supabase.from('payment_imports').update(row).eq('id', existing.id);
+    if (error) return { status: row.status, error: error.message, import_id: existing.id };
+    return { status: row.status, import_id: existing.id, updated: true };
+  }
+  const { data: inserted, error } = await supabase
+    .from('payment_imports')
+    .insert(row)
+    .select('id')
+    .single();
+  if (error) return { status: row.status, error: error.message };
+  return { status: row.status, import_id: inserted?.id };
+}
+
+async function runPaymentImport(supabase) {
+  const result = {
+    ok: true,
+    timestamp: new Date().toISOString(),
+    sheet_id: null,
+    sheet_url: null,
+    created_new: false,
+    action_needed: null,
+    by_sheet: {},
+    totals: { processed: 0, paid_alegra: 0, paid_supabase_only: 0, unmatched: 0, ambiguous: 0, duplicate: 0, error: 0, already_processed: 0, skip_empty: 0 },
+  };
+
+  const accessToken = await bkGetAccessToken();
+  let sheetId = process.env.PAYMENTS_SHEET_ID;
+
+  // Auto-crear si no existe o da 404
+  if (sheetId) {
+    try {
+      await bkGetSheetMeta(accessToken, sheetId);
+    } catch (err) {
+      if (err.message.includes('404') || err.message.includes('NOT_FOUND')) {
+        sheetId = null;
+      } else {
+        throw err;
+      }
+    }
+  }
+  if (!sheetId) {
+    sheetId = await bkCreateSheet(accessToken, 'VCR Manager - Pagos (Quicken)');
+    result.created_new = true;
+    result.action_needed = 'IMPORTANTE: Guardá este sheet_id en la env var PAYMENTS_SHEET_ID en Vercel.';
+
+    // Crear las 6 pestañas con headers
+    await bkEnsureTabs(accessToken, sheetId, PAYMENT_TABS);
+    const headerRow = [['Date', 'Account', 'Num', 'Description', 'Memo', 'Category', 'Amount']];
+    for (const tab of PAYMENT_TABS) {
+      try {
+        await bkWriteRows(accessToken, sheetId, tab, headerRow);
+      } catch (_) {}
+    }
+  }
+  result.sheet_id = sheetId;
+  result.sheet_url = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+
+  // Credenciales Alegra (reusar)
+  const alegraEmail = process.env.ALEGRA_EMAIL;
+  const alegraToken = process.env.ALEGRA_TOKEN;
+  const alegraAuth = Buffer.from(`${alegraEmail}:${alegraToken}`).toString('base64');
+
+  // Procesar cada hoja
+  for (const tab of PAYMENT_TABS) {
+    const tabResult = { rows: 0, processed: 0, skipped_header: 0, statuses: {} };
+    const { bank, currency } = pymTabToBankKey(tab);
+    const bankAccount = await pymFindBankAccount(supabase, bank, currency);
+
+    let values = [];
+    try {
+      values = await pymReadSheet(accessToken, sheetId, tab);
+    } catch (err) {
+      tabResult.error = err.message;
+      result.by_sheet[tab] = tabResult;
+      continue;
+    }
+
+    tabResult.rows = values.length;
+    tabResult.bank_account_found = !!bankAccount;
+    tabResult.bank_account_name = bankAccount?.name || null;
+
+    // Saltear header (fila 0) y filas vacías
+    for (let i = 0; i < values.length; i++) {
+      const row = values[i];
+      if (!row || row.length === 0) continue;
+      // Heurística header: primera fila con texto 'Date' o 'Fecha'
+      const first = String(row[0] || '').toLowerCase();
+      if (i === 0 && (first === 'date' || first === 'fecha')) {
+        tabResult.skipped_header++;
+        continue;
+      }
+      try {
+        const rowResult = await pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAccount);
+        tabResult.processed++;
+        const s = rowResult.status || 'unknown';
+        tabResult.statuses[s] = (tabResult.statuses[s] || 0) + 1;
+        result.totals[s] = (result.totals[s] || 0) + 1;
+        result.totals.processed++;
+      } catch (err) {
+        tabResult.statuses.error = (tabResult.statuses.error || 0) + 1;
+        result.totals.error++;
+      }
+    }
+
+    result.by_sheet[tab] = tabResult;
+  }
+
+  return result;
+}
+
 export default async function handler(req, res) {
   // Verificar autenticacion del cron (si esta disponible)
   const cronSecret = process.env.CRON_SECRET;
@@ -909,12 +1359,26 @@ export default async function handler(req, res) {
       backupResult = { skipped: true };
     }
 
+    // Procesar pagos del Sheet de Quicken (no bloqueante)
+    // Se puede saltar con ?skip_payments=1
+    let paymentsResult = null;
+    if (req.query.skip_payments !== '1') {
+      try {
+        paymentsResult = await runPaymentImport(supabase);
+      } catch (pyErr) {
+        paymentsResult = { ok: false, error: pyErr.message };
+      }
+    } else {
+      paymentsResult = { skipped: true };
+    }
+
     return res.status(200).json({
       ok: true,
       timestamp: new Date().toISOString(),
       stats,
       tc: tcResult,
       backup: backupResult,
+      payments: paymentsResult,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stats });
