@@ -298,6 +298,11 @@ export default async function handler(req, res) {
   if (body.action === 'recalc_all' || (req.query && req.query.action === 'recalc_all')) {
     return await handleRecalcAll(req, res, supabase);
   }
+  // Acción para normalizar placas existentes al formato estándar
+  // Regla: CL-xxxxxx para placas CL; 3 letras + 3 números pegados para el resto
+  if (body.action === 'normalize_plates' || (req.query && req.query.action === 'normalize_plates')) {
+    return await handleNormalizePlates(req, res, supabase);
+  }
 
   // Caso default: sync desde Sheets
 
@@ -1309,5 +1314,173 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
       const err = await res.json();
       throw new Error('Error aplicando formato: ' + JSON.stringify(err).slice(0, 200));
     }
+  }
+}
+
+// ============================================================
+// NORMALIZAR PLACAS EXISTENTES
+// Regla:
+//   - Placas CL: CL-<numeros>  (ej: CL-276558)
+//   - Resto: 3 letras + 3 números pegados (ej: BRD442)
+// Actualiza Supabase (showroom_vehicles) Y Google Sheets (Inventario).
+// ============================================================
+function normalizePlate(val) {
+  if (!val) return '';
+  const clean = String(val).toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!clean) return '';
+  const clMatch = clean.match(/^CL(\d+)$/);
+  if (clMatch) return `CL-${clMatch[1]}`;
+  const normalMatch = clean.match(/^([A-Z]{3})(\d{3})$/);
+  if (normalMatch) return `${normalMatch[1]}${normalMatch[2]}`;
+  return clean; // Si no matchea, devolver lo que haya limpio
+}
+
+async function handleNormalizePlates(req, res, supabase) {
+  try {
+    let accessToken;
+    try {
+      accessToken = await getGoogleAccessToken(supabase);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+
+    // 1. Leer placas de Supabase
+    const { data: supabaseRows, error: supaErr } = await supabase
+      .from('showroom_vehicles')
+      .select('id, plate');
+    if (supaErr) return res.status(500).json({ ok: false, error: supaErr.message });
+
+    const stats = {
+      supabase: { checked: 0, updated: 0, unchanged: 0, errors: [] },
+      sheets: { checked: 0, updated: 0, unchanged: 0, errors: [] },
+    };
+
+    // 2. Normalizar y actualizar en Supabase
+    for (const row of (supabaseRows || [])) {
+      stats.supabase.checked++;
+      const original = row.plate || '';
+      const normalized = normalizePlate(original);
+      if (!normalized || normalized === original) {
+        stats.supabase.unchanged++;
+        continue;
+      }
+      // Verificar si ya existe otra fila con la placa normalizada (colisión)
+      const { data: colision } = await supabase
+        .from('showroom_vehicles')
+        .select('id, plate')
+        .eq('plate', normalized)
+        .neq('id', row.id)
+        .maybeSingle();
+      if (colision) {
+        stats.supabase.errors.push({
+          id: row.id,
+          from: original,
+          to: normalized,
+          reason: `Ya existe otra fila con placa ${normalized} (id=${colision.id})`,
+        });
+        continue;
+      }
+      const { error: updErr } = await supabase
+        .from('showroom_vehicles')
+        .update({ plate: normalized })
+        .eq('id', row.id);
+      if (updErr) {
+        stats.supabase.errors.push({ id: row.id, from: original, to: normalized, reason: updErr.message });
+        continue;
+      }
+      stats.supabase.updated++;
+    }
+
+    // 3. Leer y actualizar placas en el Sheets
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Inventario!A1:AZ1`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const metaJson = await metaRes.json();
+    if (!metaRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer headers', detail: metaJson });
+    const headers = (metaJson.values?.[0] || []).map(h => (h || '').trim().toLowerCase());
+
+    const findHeader = (...names) => {
+      const lowerNames = names.map(n => n.toLowerCase());
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h === n); if (idx !== -1) return idx; }
+      for (const n of lowerNames) { const idx = headers.findIndex(h => h.includes(n)); if (idx !== -1) return idx; }
+      return -1;
+    };
+    const plateColIdx = findHeader('id / placa', 'id/placa', 'placa');
+    if (plateColIdx === -1) {
+      return res.status(400).json({ ok: false, error: 'No se encontró columna de placa en el Sheets', stats });
+    }
+
+    const colLetter = (idx) => {
+      let s = ''; let n = idx;
+      while (n >= 0) { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; }
+      return s;
+    };
+    const plateColL = colLetter(plateColIdx);
+
+    // Leer columna de placas (A2:A1000 aprox, usando la columna real)
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(`Inventario!${plateColL}2:${plateColL}1000`)}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const readJson = await readRes.json();
+    if (!readRes.ok) return res.status(502).json({ ok: false, error: 'No se pudieron leer placas', detail: readJson, stats });
+
+    const plates = readJson.values || [];
+    const sheetUpdates = [];
+    for (let i = 0; i < plates.length; i++) {
+      const original = (plates[i][0] || '').trim();
+      if (!original) continue;
+      stats.sheets.checked++;
+      const normalized = normalizePlate(original);
+      if (!normalized || normalized === original) {
+        stats.sheets.unchanged++;
+        continue;
+      }
+      const rowNum = i + 2;
+      sheetUpdates.push({
+        range: `Inventario!${plateColL}${rowNum}`,
+        values: [[normalized]],
+        _from: original,
+        _to: normalized,
+        _row: rowNum,
+      });
+    }
+
+    if (sheetUpdates.length > 0) {
+      // Google batchUpdate de values (no acepta campos _extra, hay que limpiarlos)
+      const cleanData = sheetUpdates.map(({ range, values }) => ({ range, values }));
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < cleanData.length; i += BATCH_SIZE) {
+        const batch = cleanData.slice(i, i + BATCH_SIZE);
+        const batchRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values:batchUpdate`,
+          {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              valueInputOption: 'USER_ENTERED',
+              data: batch,
+            }),
+          }
+        );
+        if (!batchRes.ok) {
+          const err = await batchRes.json();
+          stats.sheets.errors.push({ batch: i, reason: JSON.stringify(err).slice(0, 200) });
+        } else {
+          stats.sheets.updated += batch.length;
+        }
+      }
+    }
+
+    return res.status(200).json({
+      ok: true,
+      stats,
+      examples: sheetUpdates.slice(0, 20).map(u => ({ from: u._from, to: u._to, row: u._row })),
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
   }
 }
