@@ -1045,24 +1045,24 @@ export default function AgentPanel() {
     } else {
       // Pendiente (envio a aprobacion): validar depositos y saldo
       const validDeposits = (saleForm.deposits || []).filter(d => d.amount && parseFloat(d.amount) > 0);
-      // Excepción 1: si la prima efectiva ya cubre todo (balance=0), no exigir depósito
+      // Detectar financiado: el dropdown usa valores en minúscula ("financiamiento", "mixto")
+      // pero por compatibilidad también aceptamos mayúsculas.
+      const pmLower = (saleForm.payment_method || "").toLowerCase();
+      const isFinanciado = pmLower === "financiamiento" || pmLower === "mixto";
       const saldoCubiertoSinDepositos = balance <= 0.01;
-      // Excepción 2: si el plan es financiado y hay una prima efectiva (trade-in,
-      // prima digitada o la suma), NO se exigen depósitos — el trade-in o la prima
-      // ya cubren el aporte inicial del cliente. El banco financia el resto.
-      const isFinanciado = saleForm.payment_method === "Financiamiento" || saleForm.payment_method === "Mixto";
-      const primaEfectivaTotal = breakdown.primaEfectiva || 0;
-      const financiadoConPrima = isFinanciado && primaEfectivaTotal > 0.01;
-      const puedeOmitirDepositos = saldoCubiertoSinDepositos || financiadoConPrima;
+      // Regla: Depósitos son obligatorios SOLO para ventas de contado con saldo > 0.
+      // - Financiamiento/Mixto: el banco cubre, el trade-in o prima son el aporte. Sin depósitos OK.
+      // - Contado con saldo 0: el trade-in ya cubre todo. Sin depósitos OK.
+      const puedeOmitirDepositos = saldoCubiertoSinDepositos || isFinanciado;
       if (validDeposits.length === 0 && !puedeOmitirDepositos) {
-        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total, o si es venta financiada con prima/trade-in, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
+        alert("Para enviar a aprobación debés agregar al menos un depósito con monto.\n\n(Excepción: si el trade-in cubre el precio total, o si es venta financiada, no se requiere depósito.)\n\nSi aún no hay depósitos, usá 'Guardar como Reserva'.");
         return;
       }
       for (const d of validDeposits) {
         if (!d.bank || !d.reference) { alert("Cada depósito debe tener banco y número de referencia."); return; }
       }
 
-      const isCash = (saleForm.payment_method || "contado") === "contado";
+      const isCash = pmLower === "contado" || pmLower === "";
       const tolerance = 0.01;
       if (isCash && Math.abs(balance) > tolerance) {
         alert(`El saldo debe ser 0 para ventas de contado.\n\nSaldo actual: ${balance.toFixed(2)}`);
@@ -2962,14 +2962,37 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
           </div>
         </div>
 
-        {(form.payment_method === "financiamiento" || form.payment_method === "mixto") && (
-          <div style={{ ...S.grid3, marginTop: "1rem" }}>
-            <div><label style={S.label}>Plazo (meses)</label><input style={S.input} type="number" value={form.financing_term_months} onChange={e => upd("financing_term_months", e.target.value)} /></div>
-            <div><label style={S.label}>Interés %</label><input style={S.input} type="number" step="0.01" value={form.financing_interest_pct} onChange={e => upd("financing_interest_pct", e.target.value)} /></div>
-            <div><label style={S.label}>Monto financiado ({form.sale_currency || "USD"})</label><input style={S.input} type="number" value={form.financing_amount} onChange={e => upd("financing_amount", e.target.value)} /></div>
-            <div><label style={S.label}>Días para cancelar saldo</label><input style={S.input} type="number" value={form.credit_due_days} onChange={e => upd("credit_due_days", e.target.value)} /></div>
-          </div>
-        )}
+        {(form.payment_method === "financiamiento" || form.payment_method === "mixto") && (() => {
+          const bdForm = computeBreakdown(form);
+          const sugerido = Math.round(bdForm.balance * 100) / 100;
+          const actual = parseFloat(form.financing_amount) || 0;
+          const mostrarSugerido = !form.financing_amount || Math.abs(sugerido - actual) > 0.01;
+          return (
+            <div style={{ ...S.grid3, marginTop: "1rem" }}>
+              <div><label style={S.label}>Plazo (meses)</label><input style={S.input} type="number" value={form.financing_term_months} onChange={e => upd("financing_term_months", e.target.value)} /></div>
+              <div><label style={S.label}>Interés %</label><input style={S.input} type="number" step="0.01" value={form.financing_interest_pct} onChange={e => upd("financing_interest_pct", e.target.value)} /></div>
+              <div>
+                <label style={S.label}>
+                  Monto financiado ({form.sale_currency || "USD"}) <span style={{ color: "#f59e0b", fontSize: "0.75rem" }}>· auto: precio − prima</span>
+                </label>
+                <input
+                  style={S.input}
+                  type="number"
+                  value={form.financing_amount}
+                  placeholder={sugerido > 0 ? String(sugerido) : ""}
+                  onChange={e => upd("financing_amount", e.target.value)}
+                />
+                {mostrarSugerido && sugerido > 0 && (
+                  <div style={{ fontSize: "0.7rem", color: "#f59e0b", marginTop: "0.25rem", cursor: "pointer" }}
+                       onClick={() => upd("financing_amount", String(sugerido))}>
+                    💡 Sugerido: {sugerido.toLocaleString('es-CR', { minimumFractionDigits: 2 })} · click para usar
+                  </div>
+                )}
+              </div>
+              <div><label style={S.label}>Días para cancelar saldo</label><input style={S.input} type="number" value={form.credit_due_days} onChange={e => upd("credit_due_days", e.target.value)} /></div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* DEPOSITOS */}
