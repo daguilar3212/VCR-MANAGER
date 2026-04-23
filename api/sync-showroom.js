@@ -237,7 +237,7 @@ async function calcularCamposDerivados(car, supabase) {
 
   if (banco === 'CP') {
     // Cooperativa: prima 0, cuota en CRC = (precioCRC + traspaso) / 1M × 21k, plazo 108
-    const cuotaCRC = Math.round(((precioCRC + traspaso) / 1000000) * 21000);
+    const cuotaCRC = Math.ceil(((precioCRC + traspaso) / 1000000) * 21000);
     primaMin = 0;
     cuotaMensual = cuotaCRC;
     plazo = 108;
@@ -247,7 +247,7 @@ async function calcularCamposDerivados(car, supabase) {
     const primaUSD = precioUSD * params.primaMin;
     const cuotaUSD = calcularCuotaUSD(precioUSD, banco, anio);
     primaMin = Math.round(primaUSD); // USD entero
-    cuotaMensual = Math.round(cuotaUSD * 100) / 100;
+    cuotaMensual = Math.ceil(cuotaUSD);
     plazo = params.plazoMax;
     // Si aplica BAC (2019-2027), también aplica Rapimax → "BAC/Rapimax"
     // Si solo aplica Rapimax (2016-2018) → "Rapimax"
@@ -1254,14 +1254,13 @@ async function aplicarFormatoCeldas(accessToken, colMap, formatQueue) {
 
   // Prima y Cuota: formato depende de la entidad (CP→CRC, resto→USD)
   // Prima y Cuota: formato depende de la entidad (CP→CRC, resto→USD)
-  // Prima SIEMPRE sin decimales. Cuota con decimales en USD (precisión cuota),
-  // sin decimales en CRC (colones enteros).
+  // AMBAS siempre sin decimales. Cuota en CRC (CP) o USD (BAC/Rapimax).
   const primaIdx = colMap.prima_minima;
   const cuotaIdx = colMap.cuota_mensual;
   for (const { rowNum, entidad } of formatQueue) {
     const isCP = entidad === 'Cooperativa';
     const fmtPrima = isCP ? FMT_CRC : FMT_USD_INT;
-    const fmtCuota = isCP ? FMT_CRC : FMT_USD;
+    const fmtCuota = isCP ? FMT_CRC : FMT_USD_INT;
     if (primaIdx !== -1) {
       requests.push({
         repeatCell: {
