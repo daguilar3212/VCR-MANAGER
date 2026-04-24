@@ -2,36 +2,174 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from './supabase';
 import { useAuth } from './AuthProvider.jsx';
 
+
 // ==================================================================
-// COTIZADORES DE FINANCIAMIENTO (BAC, RAPIMAX, Credito Personal)
+// COTIZADORES DE FINANCIAMIENTO (BAC, RAPIMAX, Crédito Personal)
+// Replica EXACTA del Excel BAC enero 2026. Validado contra 10 casos reales.
 // ==================================================================
 
-const BAC_PLANES = {
-  seminuevo: {
-    anios: [2023,2024,2025,2026,2027],
-    prima_min: 0.20, comision: 0.035,
-    usd: { tasa_fija: 0.08, plazo_max: 96, tipo: 'fija_total' },
-    crc: { tasa_fija: 0.0925, plazo_max: 96, tipo: 'fija_total' },
-  },
-  usado: {
-    anios: [2019,2020,2021,2022],
-    prima_min: 0.25, comision: 0.0325,
-    usd: { tasa_fija_inicial: 0.0865, tasa_variable_piso: 0.092, plazo_max: 84, tipo: 'fija_2_anios' },
-    crc: { tasa_fija_inicial: 0.0995, tasa_variable_piso: 0.102, plazo_max: 84, tipo: 'fija_2_anios' },
-  },
+// Tasas de referencia del Excel. Actualizar manualmente cuando cambien.
+const BAC_SOFR = 5.34;   // CME Term SOFR 3M (%)
+const BAC_TBP  = 4.59;   // Tasa Básica Pasiva (%)
+
+// Multiplicador que el Excel aplica a seguros de vehículos SemiNuevos (2023+)
+const BAC_MULT_SEMINUEVO = 1.2488;
+
+// Control Car (dispositivo GPS que se suma al financiamiento, una sola vez)
+const BAC_CONTROL_CAR_USD = 436.56;
+const BAC_CONTROL_CAR_CRC = 256000;
+
+// Tablas de factores de seguro auto BAC Prendario. Extraídas directamente
+// del Excel (hoja "Seguros Prendario USD/CRC"). La fórmula del Excel es:
+//   seg_mensual = (A + valor_auto * F) * 1.13 * (1 - desc) / 12
+// Donde 1.13 = impuesto IVA 13% y desc = descuento (0.45 ó 0.50 según año).
+// Si es SemiNuevo (año 2023+), multiplicar el resultado por 1.2488.
+const BAC_SEG_FACT_USD = {
+  "2014|CL Comercial":      { A: 124.08, F: 0.03126467, desc: 0.45 },
+  "2014|CL Personal":       { A: 144.17, F: 0.03264400, desc: 0.45 },
+  "2014|CL Personal Lujo":  { A: 104.72, F: 0.02850000, desc: 0.45 },
+  "2014|Part. Comercial":   { A: 106.87, F: 0.02996667, desc: 0.45 },
+  "2014|Part. Personal":    { A: 104.72, F: 0.02850000, desc: 0.45 },
+  "2015|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2015|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2015|CL Personal Lujo":  { A: 199.40, F: 0.05799515, desc: 0.45 },
+  "2015|Part. Comercial":   { A: 203.69, F: 0.06124970, desc: 0.45 },
+  "2015|Part. Personal":    { A: 199.40, F: 0.05799515, desc: 0.45 },
+  "2016|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2016|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2016|CL Personal Lujo":  { A: 199.40, F: 0.05799515, desc: 0.45 },
+  "2016|Part. Comercial":   { A: 203.69, F: 0.06124970, desc: 0.45 },
+  "2016|Part. Personal":    { A: 199.40, F: 0.05799515, desc: 0.45 },
+  "2017|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2017|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2017|CL Personal Lujo":  { A: 199.40, F: 0.05429091, desc: 0.45 },
+  "2017|Part. Comercial":   { A: 203.69, F: 0.05706788, desc: 0.45 },
+  "2017|Part. Personal":    { A: 199.40, F: 0.05429091, desc: 0.45 },
+  "2018|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2018|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2018|CL Personal Lujo":  { A: 199.40, F: 0.05429091, desc: 0.45 },
+  "2018|Part. Comercial":   { A: 203.69, F: 0.05706788, desc: 0.45 },
+  "2018|Part. Personal":    { A: 199.40, F: 0.05429091, desc: 0.45 },
+  "2019|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2019|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2019|CL Personal Lujo":  { A: 199.40, F: 0.05429091, desc: 0.45 },
+  "2019|Part. Comercial":   { A: 203.69, F: 0.05706788, desc: 0.45 },
+  "2019|Part. Personal":    { A: 199.40, F: 0.05429091, desc: 0.45 },
+  "2020|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2020|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2020|CL Personal Lujo":  { A: 199.40, F: 0.04667030, desc: 0.45 },
+  "2020|Part. Comercial":   { A: 203.69, F: 0.04846667, desc: 0.45 },
+  "2020|Part. Personal":    { A: 199.40, F: 0.04667030, desc: 0.45 },
+  "2021|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2021|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2021|CL Personal Lujo":  { A: 199.40, F: 0.04667030, desc: 0.45 },
+  "2021|Part. Comercial":   { A: 203.69, F: 0.04846667, desc: 0.45 },
+  "2021|Part. Personal":    { A: 199.40, F: 0.04667030, desc: 0.45 },
+  "2022|CL Comercial":      { A: 236.69, F: 0.05955273, desc: 0.45 },
+  "2022|CL Personal":       { A: 274.71, F: 0.06217333, desc: 0.45 },
+  "2022|CL Personal Lujo":  { A: 199.40, F: 0.04667030, desc: 0.45 },
+  "2022|Part. Comercial":   { A: 203.69, F: 0.04846667, desc: 0.45 },
+  "2022|Part. Personal":    { A: 199.40, F: 0.04667030, desc: 0.45 },
+  "2023|CL Comercial":      { A: 236.70, F: 0.05955333, desc: 0.50 },
+  "2023|CL Personal":       { A: 274.50, F: 0.06217600, desc: 0.50 },
+  "2023|CL Personal Lujo":  { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2023|Part. Comercial":   { A: 203.70, F: 0.03009333, desc: 0.50 },
+  "2023|Part. Personal":    { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2024|CL Comercial":      { A: 236.70, F: 0.05955333, desc: 0.50 },
+  "2024|CL Personal":       { A: 274.50, F: 0.06217600, desc: 0.50 },
+  "2024|CL Personal Lujo":  { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2024|Part. Comercial":   { A: 203.70, F: 0.03009333, desc: 0.50 },
+  "2024|Part. Personal":    { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2025|CL Comercial":      { A: 236.70, F: 0.05955333, desc: 0.50 },
+  "2025|CL Personal":       { A: 274.50, F: 0.06217600, desc: 0.50 },
+  "2025|CL Personal Lujo":  { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2025|Part. Comercial":   { A: 203.70, F: 0.03009333, desc: 0.50 },
+  "2025|Part. Personal":    { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2026|CL Comercial":      { A: 236.70, F: 0.05955333, desc: 0.50 },
+  "2026|CL Personal":       { A: 274.50, F: 0.06217600, desc: 0.50 },
+  "2026|CL Personal Lujo":  { A: 199.40, F: 0.03039067, desc: 0.50 },
+  "2026|Part. Comercial":   { A: 203.70, F: 0.03009333, desc: 0.50 },
+  "2026|Part. Personal":    { A: 199.40, F: 0.03039067, desc: 0.50 },
 };
 
-const BAC_SEG_FACT = {
-  reciente: {
-    usd: { particular: {A:199.40,D:0.01871,F:0.00996,H:0.00173}, pickup: {A:274.50,D:0.04597,F:0.01252,H:0.00369} },
-    crc: { particular: {A:97400,D:0.01827,F:0.00972,H:0.00170}, pickup: {A:133838,D:0.04490,F:0.01224,H:0.00362} },
-  },
-  usado: {
-    usd: { particular: {A:199.40,D:0.03361,F:0.00996,H:0.00173}, pickup: {A:274.71,D:0.04596,F:0.01252,H:0.00369} },
-    crc: { particular: {A:97400,D:0.03276,F:0.00972,H:0.00170}, pickup: {A:133838,D:0.04490,F:0.01224,H:0.00362} },
-  },
+const BAC_SEG_FACT_CRC = {
+  "2015|CL Comercial":      { A: 115641.82, F: 0.0387654545, desc: 0.45 },
+  "2015|CL Personal":       { A: 133838.18, F: 0.0405093333, desc: 0.45 },
+  "2015|CL Personal Lujo":  { A: 97400.00,  F: 0.0377718788, desc: 0.45 },
+  "2015|Part. Comercial":   { A: 99450.91,  F: 0.0399214545, desc: 0.45 },
+  "2015|Part. Personal":    { A: 97400.00,  F: 0.0377718788, desc: 0.45 },
+  "2016|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2016|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2016|CL Personal Lujo":  { A: 97400.00,  F: 0.0566578182, desc: 0.45 },
+  "2016|Part. Comercial":   { A: 99450.91,  F: 0.0598821818, desc: 0.45 },
+  "2016|Part. Personal":    { A: 97400.00,  F: 0.0566578182, desc: 0.45 },
+  "2017|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2017|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2017|CL Personal Lujo":  { A: 97400.00,  F: 0.0530356364, desc: 0.45 },
+  "2017|Part. Comercial":   { A: 99450.91,  F: 0.0557923636, desc: 0.45 },
+  "2017|Part. Personal":    { A: 97400.00,  F: 0.0530356364, desc: 0.45 },
+  "2018|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2018|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2018|CL Personal Lujo":  { A: 97400.00,  F: 0.0530356364, desc: 0.45 },
+  "2018|Part. Comercial":   { A: 99450.91,  F: 0.0557923636, desc: 0.45 },
+  "2018|Part. Personal":    { A: 97400.00,  F: 0.0530356364, desc: 0.45 },
+  "2019|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2019|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2019|CL Personal Lujo":  { A: 97400.00,  F: 0.0530356364, desc: 0.45 },
+  "2019|Part. Comercial":   { A: 99450.91,  F: 0.0557923636, desc: 0.45 },
+  "2019|Part. Personal":    { A: 97400.00,  F: 0.0530356364, desc: 0.45 },
+  "2020|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2020|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2020|CL Personal Lujo":  { A: 97400.00,  F: 0.0455910909, desc: 0.45 },
+  "2020|Part. Comercial":   { A: 99450.91,  F: 0.0473805455, desc: 0.45 },
+  "2020|Part. Personal":    { A: 97400.00,  F: 0.0455910909, desc: 0.45 },
+  "2021|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2021|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2021|CL Personal Lujo":  { A: 97400.00,  F: 0.0455910909, desc: 0.45 },
+  "2021|Part. Comercial":   { A: 99450.91,  F: 0.0473805455, desc: 0.45 },
+  "2021|Part. Personal":    { A: 97400.00,  F: 0.0455910909, desc: 0.45 },
+  "2022|CL Comercial":      { A: 115641.82, F: 0.0581481818, desc: 0.45 },
+  "2022|CL Personal":       { A: 133838.18, F: 0.0607640000, desc: 0.45 },
+  "2022|CL Personal Lujo":  { A: 97400.00,  F: 0.0455910909, desc: 0.45 },
+  "2022|Part. Comercial":   { A: 99450.91,  F: 0.0473805455, desc: 0.45 },
+  "2022|Part. Personal":    { A: 97400.00,  F: 0.0455910909, desc: 0.45 },
+  "2023|CL Comercial":      { A: 115642.00, F: 0.0581482000, desc: 0.50 },
+  "2023|CL Personal":       { A: 133838.00, F: 0.0607640000, desc: 0.50 },
+  "2023|CL Personal Lujo":  { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2023|Part. Comercial":   { A: 99450.00,  F: 0.0294110000, desc: 0.50 },
+  "2023|Part. Personal":    { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2024|CL Comercial":      { A: 115642.00, F: 0.0581482000, desc: 0.50 },
+  "2024|CL Personal":       { A: 133838.00, F: 0.0607640000, desc: 0.50 },
+  "2024|CL Personal Lujo":  { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2024|Part. Comercial":   { A: 99450.00,  F: 0.0294110000, desc: 0.50 },
+  "2024|Part. Personal":    { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2025|CL Comercial":      { A: 115642.00, F: 0.0581482000, desc: 0.50 },
+  "2025|CL Personal":       { A: 133838.00, F: 0.0607640000, desc: 0.50 },
+  "2025|CL Personal Lujo":  { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2025|Part. Comercial":   { A: 99450.00,  F: 0.0294110000, desc: 0.50 },
+  "2025|Part. Personal":    { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2026|CL Comercial":      { A: 115642.00, F: 0.0581482000, desc: 0.50 },
+  "2026|CL Personal":       { A: 133838.00, F: 0.0607640000, desc: 0.50 },
+  "2026|CL Personal Lujo":  { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
+  "2026|Part. Comercial":   { A: 99450.00,  F: 0.0294110000, desc: 0.50 },
+  "2026|Part. Personal":    { A: 97400.00,  F: 0.0296842000, desc: 0.50 },
 };
 
+// Planes BAC (Tabla2 Condiciones del Excel).
+// 2023+ SemiNuevo → "General todo el plazo" (tasa fija TODO el plazo).
+// 2019-2022 Usado → "General Usados" (fija 2 años, luego variable SOFR+spread).
+const BAC_PLAN_SEMINUEVO = {
+  prima_min: 0.20, comision: 0.035, plazo_max: 96,
+  usd: { tasa_fija: 0.08 },
+  crc: { tasa_fija: 0.0925 },
+};
+const BAC_PLAN_USADO = {
+  prima_min: 0.25, comision: 0.0325, plazo_max: 84, plazo_fijo: 24,
+  usd: { tasa_fija_inicial: 0.0865, spread: 6.20, piso: 9.20 },
+  crc: { tasa_fija_inicial: 0.0995, spread: 6.20, piso: 10.20 },
+};
+
+// Rapimax
 const RAPIMAX_POL = {
   2027:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,spread:0.02,plazo_fijo:24,plazo_variable:72,plazo_max:96,comision:0.05},
   2026:{prima:0.20,tasa_usd:0.12,tasa_crc:0.14,spread:0.02,plazo_fijo:24,plazo_variable:72,plazo_max:96,comision:0.05},
@@ -47,130 +185,248 @@ const RAPIMAX_POL = {
   2016:{prima:0.25,tasa_usd:0.13,tasa_crc:0.15,spread:0.02,plazo_fijo:24,plazo_variable:36,plazo_max:60,comision:0.05},
 };
 
-const RM_SEG_ACTIVO_USD = 71;
-const RM_SEG_ACTIVO_CRC = 35500;
-const RM_FACTOR_SD = 0.37536;
-const RM_FACTOR_DES = 28.02297;
+const RM_FACTOR_SD = (0.32 * 1.15) * 1.02;        // 0.37536 - saldo deudor
+const RM_FACTOR_DES = (23.89 * 1.15) * 1.02;      // 28.02297 - desempleo
 const RM_FACTOR_MULT = 1000;
 const RM_GPS_USD = 32;
 const RM_GPS_CRC = 17000;
+const RM_FACTOR_AJUSTE_PMT = 0.014826326696;
+
 const CP_CUOTA_POR_MILLON = 21000;
 
-function cuotaAmort(P, tasaAnual, n) {
-  const r = tasaAnual / 12;
-  if (r === 0) return P / n;
-  return P * (r * Math.pow(1+r, n)) / (Math.pow(1+r, n) - 1);
+// PMT estándar (cuota nivelada mensual positiva)
+function pmt(tasaMensual, n, P) {
+  if (tasaMensual === 0) return P / n;
+  return P * (tasaMensual * Math.pow(1 + tasaMensual, n)) / (Math.pow(1 + tasaMensual, n) - 1);
 }
 
-function calcSegBAC(valor, anio, moneda, esPickup) {
-  const tabla = anio >= 2023 ? 'reciente' : 'usado';
-  const tipo = esPickup ? 'pickup' : 'particular';
-  const f = BAC_SEG_FACT[tabla][moneda.toLowerCase()][tipo];
-  const sub = f.A + valor*f.D + valor*f.F + valor*f.H;
-  return sub * 1.13 * 0.5 / 12; // formula Excel BAC: con impuesto 13%, descuento 50%, luego mensual
-}
-
-function cotizarBAC({ valorAuto, traspaso, moneda, anio, plazo, primaPct, esPickup, esAsalariado }) {
-  const mon = moneda.toLowerCase();
-  const plan = anio >= 2023 ? BAC_PLANES.seminuevo : (anio >= 2019 ? BAC_PLANES.usado : null);
-  if (!plan) return { error: 'BAC no financia este año (solo 2019+)' };
-  // Control Car: dispositivo GPS de BAC que se suma al financiamiento (instalación única)
-  const controlCar = mon === 'usd' ? 436 : 256000;
-  const precioTotal = valorAuto + traspaso;
-  const primaMonto = precioTotal * primaPct;
-  if (primaPct < plan.prima_min) return { error: `Prima mínima: ${(plan.prima_min*100).toFixed(0)}%` };
-  const sinCom = precioTotal - primaMonto;
-  const comision = sinCom * plan.comision;
-  // Seguro auto del primer mes tambien se suma al financiamiento
-  const segA = calcSegBAC(valorAuto, anio, mon, esPickup);
-  const monto = sinCom + comision + controlCar + segA; // incluye Control Car + seguro 1er mes
-  const cfg = plan[mon];
-  if (plazo > cfg.plazo_max) return { error: `Plazo máximo: ${cfg.plazo_max} meses` };
-  let cIni, cVar, tIni, tVar, tipoPlan;
-  if (cfg.tipo === 'fija_total') {
-    tIni = cfg.tasa_fija;
-    cIni = cuotaAmort(monto, tIni, plazo);
-    cVar = null;
-    tipoPlan = 'Tasa fija todo el plazo';
-  } else {
-    tIni = cfg.tasa_fija_inicial;
-    tVar = cfg.tasa_variable_piso;
-    cIni = cuotaAmort(monto, tIni, plazo);
-    let saldo = monto;
-    const r = tIni / 12;
-    for (let i = 0; i < 24; i++) {
-      const int = saldo * r;
-      saldo -= (cIni - int);
-    }
-    const mR = plazo - 24;
-    if (mR > 0 && saldo > 0) cVar = cuotaAmort(saldo, tVar, mR);
-    tipoPlan = 'Fija 2 años, luego variable';
+// Saldo después de pagar N cuotas de M (iterando mes a mes)
+function saldoDespuesN(P, tasaMensual, cuota, n) {
+  let saldo = P;
+  for (let i = 0; i < n; i++) {
+    const int = saldo * tasaMensual;
+    saldo -= (cuota - int);
   }
-  const segDI = esAsalariado ? monto * 0.0115 / 12 : 0; // 1.15% anual sobre saldo
-  const segDV = esAsalariado && cVar ? monto * 0.0115 / 12 : 0;
-  // Colchón: aseguramos que la cuota no se quede por debajo de la real. 8% + 20 unidades mínimo.
-  const cushionFactor = 1.08;
-  const cushionMin = mon === 'usd' ? 20 : 10000;
-  const applyCushion = (c) => Math.max(c * cushionFactor, c + cushionMin);
-  const cTI = applyCushion(cIni + segA + segDI);
-  const cTV = cVar ? applyCushion(cVar + segA + segDV) : null;
+  return saldo;
+}
+
+// Determina el plan BAC según año del vehículo
+function bacPlanPorAnio(anio) {
+  if (anio >= 2023) return { nombre: 'SemiNuevo', plan: BAC_PLAN_SEMINUEVO, tipoVeh: 'SemiNuevo' };
+  if (anio >= 2019) return { nombre: 'Usado',     plan: BAC_PLAN_USADO,     tipoVeh: 'Usado' };
+  return null;
+}
+
+// Uso BAC: si Pick Up → "CL Personal", sino "Part. Personal"
+function bacUsoDefault(esPickup) {
+  return esPickup ? 'CL Personal' : 'Part. Personal';
+}
+
+// Seguro auto BAC mensual. Replica fórmula exacta Excel:
+//   seg = (A + valor * F) * 1.13 * (1 - desc) / 12
+//   Si SemiNuevo: * 1.2488
+function calcSegBAC({ anio, moneda, uso, valorAuto, tipoVeh }) {
+  const tabla = moneda.toLowerCase() === 'usd' ? BAC_SEG_FACT_USD : BAC_SEG_FACT_CRC;
+  const key = `${anio}|${uso}`;
+  const f = tabla[key];
+  if (!f) return null;
+  let seg = (f.A + valorAuto * f.F) * 1.13 * (1 - f.desc) / 12;
+  if (tipoVeh === 'SemiNuevo') seg *= BAC_MULT_SEMINUEVO;
+  return seg;
+}
+
+function cotizarBAC({ valorAuto, traspaso = 0, moneda, anio, plazo, primaPct, esPickup = false, fuenteIngreso = 'Asalariado Nacional' }) {
+  const mon = moneda.toLowerCase();
+  if (mon !== 'usd' && mon !== 'crc') return { error: 'Moneda debe ser USD o CRC' };
+
+  const ctx = bacPlanPorAnio(anio);
+  if (!ctx) return { error: 'BAC solo financia vehículos 2019 en adelante' };
+  const plan = ctx.plan;
+  const cfg = plan[mon];
+
+  // Valor total = precio carro + traspaso (regla global)
+  const valorTotal = valorAuto + traspaso;
+  if (!valorTotal || valorTotal <= 0) return { error: 'Valor inválido' };
+
+  // Validar prima mínima
+  if (primaPct < plan.prima_min) {
+    return { error: `Prima mínima ${(plan.prima_min * 100).toFixed(0)}% para ${ctx.nombre}` };
+  }
+  const primaMonto = valorTotal * primaPct;
+  const saldoInicial = valorTotal - primaMonto;
+
+  // Plazo: capar al máximo (no devolver error)
+  let plazoAplicado = Math.min(plazo, plan.plazo_max);
+  let plazoCapado = plazo > plan.plazo_max;
+
+  // Comisión (mínimo 125 USD / 65,000 CRC)
+  const minCom = mon === 'usd' ? 125 : 65000;
+  const comision = Math.max(saldoInicial * plan.comision, minCom);
+
+  // Seguro auto mensual (depende de valor, año y uso)
+  const uso = bacUsoDefault(esPickup);
+  const segAuto = calcSegBAC({ anio, moneda: mon, uso, valorAuto, tipoVeh: ctx.tipoVeh });
+  if (segAuto == null) return { error: `Sin tabla de seguro para ${uso} ${anio} ${mon.toUpperCase()}` };
+
+  // Control Car (dispositivo)
+  const controlCar = mon === 'usd' ? BAC_CONTROL_CAR_USD : BAC_CONTROL_CAR_CRC;
+
+  // Monto total a financiar (redondeado como Excel)
+  const monto = Math.round(saldoInicial + comision + controlCar + segAuto);
+
+  // Cálculo de cuotas según tipo de plan
+  let tasaInicial, tasaVariable = null;
+  let cuotaFinInicial, cuotaFinVariable = null;
+  let plazoFijo, plazoVariable = 0;
+  let tipoPlanDesc;
+
+  if (ctx.nombre === 'SemiNuevo') {
+    // Tasa fija todo el plazo
+    tasaInicial = cfg.tasa_fija;
+    plazoFijo = plazoAplicado;
+    // Excel usa (tasa/12)*(365/360) como tasa mensual efectiva
+    const rMes = (tasaInicial / 12) * (365 / 360);
+    cuotaFinInicial = pmt(rMes, plazoFijo, monto);
+    tipoPlanDesc = `Tasa fija ${(tasaInicial * 100).toFixed(2)}% todo el plazo`;
+  } else {
+    // Usado: fija 2 años, luego variable
+    tasaInicial = cfg.tasa_fija_inicial;
+    plazoFijo = Math.min(plan.plazo_fijo, plazoAplicado);
+    plazoVariable = Math.max(0, plazoAplicado - plazoFijo);
+
+    // Tasa variable real: SOFR/TBP + spread, con piso
+    const ref = mon === 'usd' ? BAC_SOFR : BAC_TBP;
+    const tVarRaw = (ref + cfg.spread) / 100;
+    const tPiso = cfg.piso / 100;
+    tasaVariable = Math.max(tVarRaw, tPiso);
+
+    const rMesFija = (tasaInicial / 12) * (365 / 360);
+    cuotaFinInicial = pmt(rMesFija, plazoAplicado, monto);
+
+    if (plazoVariable > 0) {
+      const saldoM24 = saldoDespuesN(monto, rMesFija, cuotaFinInicial, plazoFijo);
+      const rMesVar = (tasaVariable / 12) * (365 / 360);
+      cuotaFinVariable = pmt(rMesVar, plazoVariable, saldoM24);
+    }
+    tipoPlanDesc = `Fija ${(tasaInicial * 100).toFixed(2)}% por 24m, luego variable ${(tasaVariable * 100).toFixed(2)}%`;
+  }
+
+  // Seguro saldo deudor (Prendario siempre = 0)
+  const segSaldoDeudor = 0;
+
+  // Seguro desempleo: (seg_auto + cuota_1 + saldo_deudor) * factor
+  // IMPORTANTE: el Excel calcula UN solo desempleo (sobre cuota 1) y lo suma a TODAS las cuotas
+  const factorDes = mon === 'usd' ? 0.0525 : 0.052;
+  const esEmpresa = fuenteIngreso === 'Empresa';
+  const segDesempleo = esEmpresa ? 0 : (segAuto + cuotaFinInicial + segSaldoDeudor) * factorDes;
+
+  // Cuota total final (Cuota Final 1/2 en Excel)
+  const cuotaTotalInicial = cuotaFinInicial + segAuto + segSaldoDeudor + segDesempleo;
+  const cuotaTotalVariable = cuotaFinVariable
+    ? (cuotaFinVariable + segAuto + segSaldoDeudor + segDesempleo)
+    : null;
+
   return {
-    banco: 'BAC',
-    plan: anio >= 2023 ? 'Seminuevo' : 'Usado',
-    tipoPlan, moneda: mon.toUpperCase(),
-    valorAuto, traspaso, precioTotal,
+    banco: 'BAC', plan: ctx.nombre, tipoPlan: tipoPlanDesc,
+    moneda: mon.toUpperCase(),
+    valorAuto, traspaso, valorTotal,
     primaPct, primaMonto, primaMinPct: plan.prima_min,
-    comision, comisionPct: plan.comision,
+    saldoInicial, comision, comisionPct: plan.comision,
     controlCar,
-    monto, plazo,
-    tasaInicial: tIni, tasaVariable: tVar,
-    cuotaFinInicial: cIni, cuotaFinVariable: cVar,
-    segAuto: segA, segDesempleoInicial: segDI, segDesempleoVariable: segDV,
-    cuotaTotalInicial: cTI, cuotaTotalVariable: cTV,
+    segAutoInicial: segAuto,
+    monto, plazo: plazoAplicado, plazoSolicitado: plazo, plazoCapado,
+    plazoFijo, plazoVariable,
+    tasaInicial, tasaVariable,
+    cuotaFinInicial, cuotaFinVariable,
+    segAuto, segSaldoDeudor,
+    segDesempleoInicial: segDesempleo, segDesempleoVariable: segDesempleo,
+    cuotaTotalInicial, cuotaTotalVariable,
+    uso, fuenteIngreso,
   };
 }
 
-function cotizarRAPIMAX({ valorAuto, traspaso, moneda, anio, plazo, primaPct, incluirGPS = true, incluirDesempleo = true }) {
+// Seguro activo Rapimax (fórmula exacta Excel)
+function calcSegActivoRM({ valorUsd, anio, uso }) {
+  const coef = uso === 'Comercial'
+    ? { a: 0.002976, b: 2.939, c: 5946.94 }
+    : { a: 0.002537, b: 2.871, c: 5810.86 };
+  return Math.ceil((coef.a * valorUsd - coef.b * anio + coef.c) * 1.12);
+}
+
+function cotizarRAPIMAX({ valorAuto, traspaso = 0, moneda, anio, plazo, primaPct, tipoCambio, uso = 'Particular' }) {
   const mon = moneda.toLowerCase();
+  if (mon !== 'usd' && mon !== 'crc') return { error: 'Moneda debe ser USD o CRC' };
+
   const pol = RAPIMAX_POL[anio];
-  if (!pol) return { error: 'RAPIMAX solo financia 2016-2027' };
-  const precioTotal = valorAuto + traspaso;
-  const primaMonto = precioTotal * primaPct;
-  if (primaPct < pol.prima) return { error: `Prima mínima: ${(pol.prima*100).toFixed(0)}%` };
-  const sinCom = precioTotal - primaMonto;
-  const comision = sinCom * pol.comision;
-  const monto = sinCom + comision;
-  if (plazo > pol.plazo_max) return { error: `Plazo máximo: ${pol.plazo_max} meses` };
-  const tF = mon === 'usd' ? pol.tasa_usd : pol.tasa_crc;
-  const tV = tF + pol.spread;
-  const cFF = cuotaAmort(monto, tF, plazo);
-  let saldo = monto;
-  const r = tF / 12;
-  const mF = Math.min(pol.plazo_fijo, plazo);
-  for (let i = 0; i < mF; i++) { const int = saldo * r; saldo -= (cFF - int); }
-  const mV = plazo - mF;
-  const cFV = mV > 0 && saldo > 0 ? cuotaAmort(saldo, tV, mV) : null;
-  const segA = mon === 'usd' ? RM_SEG_ACTIVO_USD : RM_SEG_ACTIVO_CRC;
-  const segSD = Math.ceil(monto * RM_FACTOR_SD / RM_FACTOR_MULT);
-  const gps = incluirGPS ? (mon === 'usd' ? RM_GPS_USD : RM_GPS_CRC) : 0;
-  const segDF = incluirDesempleo ? Math.ceil((cFF + segA + gps) * RM_FACTOR_DES / RM_FACTOR_MULT) : 0;
-  const segDV_rm = incluirDesempleo && cFV ? Math.ceil((cFV + segA + gps) * RM_FACTOR_DES / RM_FACTOR_MULT) : 0;
-  // Colchón: cuota por encima de la real. 8% + 20 unidades mínimo.
-  const cushionFactorRM = 1.08;
-  const cushionMinRM = mon === 'usd' ? 20 : 10000;
-  const applyCushionRM = (c) => Math.max(c * cushionFactorRM, c + cushionMinRM);
-  const cTF = applyCushionRM(cFF + segA + segSD + segDF + gps);
-  const cTV = cFV ? applyCushionRM(cFV + segA + segSD + segDV_rm + gps) : null;
+  if (!pol) return { error: 'Rapimax solo financia vehículos 2016-2027' };
+
+  const valorTotal = valorAuto + traspaso;
+  if (!valorTotal || valorTotal <= 0) return { error: 'Valor inválido' };
+
+  if (primaPct < pol.prima) {
+    return { error: `Prima mínima ${(pol.prima * 100).toFixed(0)}% para año ${anio}` };
+  }
+  const primaMonto = valorTotal * primaPct;
+  const saldoInicial = valorTotal - primaMonto;
+
+  const plazoAplicado = Math.min(plazo, pol.plazo_max);
+  const plazoCapado = plazo > pol.plazo_max;
+
+  const comision = saldoInicial * pol.comision;
+  const monto = saldoInicial + comision;
+
+  const tasaFija = mon === 'usd' ? pol.tasa_usd : pol.tasa_crc;
+  const tasaVariable = tasaFija + pol.spread;
+
+  const rMesFija = (tasaFija / 12) * (1 + RM_FACTOR_AJUSTE_PMT);
+  const rMesVar = (tasaVariable / 12) * (1 + RM_FACTOR_AJUSTE_PMT);
+
+  const plazoFijo = Math.min(pol.plazo_fijo, plazoAplicado);
+  const plazoVariable = Math.max(0, plazoAplicado - plazoFijo);
+
+  const cuotaFinFija = pmt(rMesFija, plazoAplicado, monto);
+  let cuotaFinVariable = null;
+  if (plazoVariable > 0) {
+    const saldoM24 = saldoDespuesN(monto, rMesFija, cuotaFinFija, plazoFijo);
+    cuotaFinVariable = pmt(rMesVar, plazoVariable, saldoM24);
+  }
+
+  const valorUsd = mon === 'usd' ? valorAuto : (tipoCambio ? valorAuto / tipoCambio : 0);
+  if (mon === 'crc' && !tipoCambio) return { error: 'TC requerido para cotización CRC' };
+  const segActivoUsd = calcSegActivoRM({ valorUsd, anio, uso });
+  const segActivo = mon === 'usd' ? segActivoUsd : (Math.ceil(segActivoUsd * tipoCambio / 100) * 100);
+
+  const gps = mon === 'usd' ? RM_GPS_USD : RM_GPS_CRC;
+
+  const segSaldoDeudor = mon === 'usd'
+    ? Math.ceil(monto * RM_FACTOR_SD / RM_FACTOR_MULT)
+    : (Math.ceil((monto / (tipoCambio || 1)) * RM_FACTOR_SD / RM_FACTOR_MULT) * (tipoCambio || 1));
+  const segSaldoDeudorRounded = mon === 'usd' ? segSaldoDeudor : Math.ceil(segSaldoDeudor / 100) * 100;
+
+  const segDesempleoFija = Math.ceil((cuotaFinFija + segActivo + gps) * RM_FACTOR_DES / RM_FACTOR_MULT);
+  const segDesempleoVariable = cuotaFinVariable
+    ? Math.ceil((cuotaFinVariable + segActivo + gps) * RM_FACTOR_DES / RM_FACTOR_MULT)
+    : 0;
+
+  const cuotaTotalFija = cuotaFinFija + segActivo + segSaldoDeudorRounded + segDesempleoFija + gps;
+  const cuotaTotalVariable = cuotaFinVariable
+    ? (cuotaFinVariable + segActivo + segSaldoDeudorRounded + segDesempleoVariable + gps)
+    : null;
+
   return {
-    banco: 'RAPIMAX', tipoPlan: 'Leasing', moneda: mon.toUpperCase(),
-    valorAuto, traspaso, precioTotal,
+    banco: 'RAPIMAX', tipoPlan: 'Leasing Financiero', moneda: mon.toUpperCase(),
+    valorAuto, traspaso, valorTotal,
     primaPct, primaMonto, primaMinPct: pol.prima,
-    comision, comisionPct: pol.comision, monto, plazo,
-    plazoFijo: mF, plazoVariable: mV,
-    tasaFija: tF, tasaVariable: tV,
-    cuotaFinFija: cFF, cuotaFinVariable: cFV,
-    segActivo: segA, segSaldoDeudor: segSD, segDesempleoFijo: segDF, segDesempleoVariable: segDV_rm, gps,
-    cuotaTotalFija: cTF, cuotaTotalVariable: cTV,
+    saldoInicial, comision, comisionPct: pol.comision,
+    monto, plazo: plazoAplicado, plazoSolicitado: plazo, plazoCapado,
+    plazoFijo, plazoVariable,
+    tasaFija, tasaVariable,
+    cuotaFinFija, cuotaFinVariable,
+    segActivo, segSaldoDeudor: segSaldoDeudorRounded,
+    segDesempleoFija, segDesempleoVariable,
+    gps,
+    cuotaTotalFija, cuotaTotalVariable,
+    uso,
   };
 }
 
@@ -186,8 +442,7 @@ function cotizarCP({ valorAuto, traspaso, monedaAuto, tipoCambio }) {
     banco: 'Crédito Personal', tipoPlan: 'Solo asalariados', moneda: 'CRC',
     valorAuto, traspaso, precioTotal, precioCRC,
     tipoCambio: monedaAuto.toLowerCase() === 'usd' ? tipoCambio : null,
-    cuotaMensual: cuota,
-    factor: CP_CUOTA_POR_MILLON,
+    cuotaMensual: cuota, factor: CP_CUOTA_POR_MILLON,
   };
 }
 
@@ -199,10 +454,18 @@ function bancosDispAnio(anio) {
   return b;
 }
 
-function primaMinBAC(anio) { return anio >= 2023 ? 0.20 : (anio >= 2019 ? 0.25 : null); }
+function primaMinBAC(anio) {
+  const ctx = bacPlanPorAnio(anio);
+  return ctx ? ctx.plan.prima_min : null;
+}
 function primaMinRM(anio) { return RAPIMAX_POL[anio]?.prima || null; }
-function plazoMaxBAC(anio) { return anio >= 2023 ? 96 : (anio >= 2019 ? 84 : null); }
+function plazoMaxBAC(anio) {
+  const ctx = bacPlanPorAnio(anio);
+  return ctx ? ctx.plan.plazo_max : null;
+}
 function plazoMaxRM(anio) { return RAPIMAX_POL[anio]?.plazo_max || null; }
+
+
 
 // ==================================================================
 // CALCULADORA DE TRASPASO VEHICULAR (CR)
@@ -1899,14 +2162,14 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
   const plazo = cotState.plazo != null ? cotState.plazo : plazoMax;
 
   const esPickup = cotState.esPickup != null ? cotState.esPickup : (v.style || '').toUpperCase().includes("PICK");
-  const esAsalariado = cotState.esAsalariado != null ? cotState.esAsalariado : true;
+  const fuenteIngreso = cotState.fuenteIngreso || 'Asalariado Nacional';
 
   let cot = null;
   try {
     if (cotBanco === 'BAC') {
-      cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct, esPickup, esAsalariado });
+      cot = cotizarBAC({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct, esPickup, fuenteIngreso });
     } else if (cotBanco === 'RAPIMAX') {
-      cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct });
+      cot = cotizarRAPIMAX({ valorAuto, traspaso, moneda: cotMoneda, anio: anioNum, plazo, primaPct, tipoCambio: cotTC });
     } else if (cotBanco === 'CP') {
       cot = cotizarCP({ valorAuto: precioOrig.val, traspaso: precioOrig.val * 0.035, monedaAuto: precioOrig.cur, tipoCambio: cotTC });
     }
@@ -2339,16 +2602,40 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
             {cotBanco !== 'CP' && (
               <>
                 <div style={{ marginBottom: "1rem" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.35rem" }}>
-                    <div style={S.detailLabel}>PRIMA: {(primaPct * 100).toFixed(1)}% — {fmt0((valorAuto + traspaso) * primaPct, cotMoneda)}</div>
-                    <div style={{ fontSize: "0.75rem", color: "#71717a" }}>Mínima: {(primaMin * 100).toFixed(0)}%</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.35rem" }}>
+                    <div style={S.detailLabel}>PRIMA: {(primaPct * 100).toFixed(1)}%</div>
+                    <div style={{ fontSize: "0.75rem", color: "#71717a" }}>Mínima: {(primaMin * 100).toFixed(0)}% — {fmt0((valorAuto + traspaso) * primaMin, cotMoneda)}</div>
                   </div>
-                  <input
-                    type="range" min={primaMin} max={1} step={0.01}
-                    value={primaPct}
-                    onChange={e => updCot({ primaPct: parseFloat(e.target.value) })}
-                    style={{ width: "100%" }}
-                  />
+                  <div style={{ display: "flex", gap: "0.6rem", alignItems: "center" }}>
+                    <input
+                      type="range" min={primaMin} max={1} step={0.01}
+                      value={primaPct}
+                      onChange={e => updCot({ primaPct: parseFloat(e.target.value) })}
+                      style={{ flex: 1 }}
+                    />
+                    <input
+                      type="number"
+                      value={Math.round((valorAuto + traspaso) * primaPct)}
+                      onChange={e => {
+                        const monto = parseFloat(e.target.value) || 0;
+                        const total = valorAuto + traspaso;
+                        if (total <= 0) return;
+                        const pct = monto / total;
+                        const pctFinal = Math.max(pct, primaMin);
+                        updCot({ primaPct: Math.min(pctFinal, 1) });
+                      }}
+                      onBlur={e => {
+                        const monto = parseFloat(e.target.value) || 0;
+                        const total = valorAuto + traspaso;
+                        if (total > 0 && monto / total < primaMin) {
+                          updCot({ primaPct: primaMin });
+                        }
+                      }}
+                      style={{ width: 130, textAlign: "right", padding: "0.4rem 0.6rem", borderRadius: 6, border: "1px solid #d4d4d8", fontSize: "0.9rem" }}
+                      placeholder="Monto prima"
+                    />
+                    <span style={{ fontSize: "0.8rem", color: "#71717a" }}>{cotMoneda}</span>
+                  </div>
                 </div>
 
                 <div style={{ marginBottom: "1rem" }}>
@@ -2367,14 +2654,21 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
                 </div>
 
                 {cotBanco === 'BAC' && (
-                  <div style={{ display: "flex", gap: "1.5rem", marginBottom: "1rem", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", gap: "1.5rem", marginBottom: "1rem", flexWrap: "wrap", alignItems: "center" }}>
                     <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer" }}>
                       <input type="checkbox" checked={esPickup} onChange={e => updCot({ esPickup: e.target.checked })} />
                       <span style={{ fontSize: "0.9rem" }}>Pick Up / Carga Liviana</span>
                     </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer" }}>
-                      <input type="checkbox" checked={esAsalariado} onChange={e => updCot({ esAsalariado: e.target.checked })} />
-                      <span style={{ fontSize: "0.9rem" }}>Asalariado (incluye seguro desempleo)</span>
+                    <label style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <span style={{ fontSize: "0.9rem", color: "#71717a" }}>Fuente ingreso:</span>
+                      <select
+                        value={fuenteIngreso}
+                        onChange={e => updCot({ fuenteIngreso: e.target.value })}
+                        style={{ padding: "0.4rem 0.6rem", borderRadius: 6, border: "1px solid #d4d4d8", fontSize: "0.9rem", background: "#fff" }}
+                      >
+                        <option value="Asalariado Nacional">Asalariado Nacional</option>
+                        <option value="Independiente">Independiente</option>
+                      </select>
                     </label>
                   </div>
                 )}
@@ -2426,7 +2720,7 @@ function ShowroomDetailView({ v, cotState, setCotState, fotoElegida, setFotoEleg
                             Cuota mensual: {fmt0(cot.cuotaTotalInicial, cot.moneda)}
                           </div>
                         )}
-                        <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.5rem" }}>Incluye seguro del auto{esAsalariado ? ' + desempleo' : ''}</div>
+                        <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.5rem" }}>Incluye seguro del auto + seguro desempleo ({fuenteIngreso})</div>
                       </div>
                     )}
 
