@@ -473,13 +473,33 @@ export default async function handler(req, res) {
           }
 
           let isVehiclePurchase = false;
+          // Detección 1: CAByS 491/492 (códigos oficiales de vehículos)
           for (const line of parsed.lines) {
             const code = line.cabys_code || "";
             if (code.startsWith('491') || code.startsWith('492')) {
               const lineAmt = line.line_total || 0;
-              const isSignificant = (parsed.currency === 'USD' && lineAmt >= 3000) || 
+              const isSignificant = (parsed.currency === 'USD' && lineAmt >= 3000) ||
                                     (parsed.currency !== 'USD' && lineAmt >= 2000000);
               if (isSignificant) {
+                isVehiclePurchase = true;
+                break;
+              }
+            }
+          }
+          // Detección 2: Si no matcheó por CAByS, intentar por keywords + placa/VIN en descripción
+          // (muchas agencias no usan CAByS correctamente pero sí describen el vehículo)
+          if (!isVehiclePurchase) {
+            const vehKeywords = /\b(toyota|nissan|hyundai|kia|mazda|mitsubishi|suzuki|chevrolet|ford|honda|volkswagen|vw|isuzu|jeep|bmw|audi|mercedes|subaru|dodge|ram|renault|peugeot|fiat|chery|jac|haval|geely|byd|gac|zotye|great wall|pickup|vitara|rav4|hilux|civic|corolla|yaris|sentra|montero|forester|outlander|tucson|sportage|fortuner|prado|4runner|cr-v|crv|x-trail|xtrail|cx-5|cx5|tiguan|frontier|navara|dmax|d-max|ranger|amarok|l200|tacoma|tundra|silverado|grand cherokee|wrangler|patriot)\b/i;
+            // Placa CR (ABC123 o CL-123456) o VIN (17 chars alfanuméricos)
+            const plateOrVinRx = /\b([A-Z]{3}\d{3}|CL[-\s]?\d{5,7}|[A-HJ-NPR-Z0-9]{17})\b/i;
+            for (const line of parsed.lines) {
+              const desc = line.description || "";
+              const lineAmt = line.line_total || 0;
+              const hasVehKeyword = vehKeywords.test(desc);
+              const hasPlateOrVin = plateOrVinRx.test(desc);
+              const isSignificant = (parsed.currency === 'USD' && lineAmt >= 3000) ||
+                                    (parsed.currency !== 'USD' && lineAmt >= 2000000);
+              if (hasVehKeyword && hasPlateOrVin && isSignificant) {
                 isVehiclePurchase = true;
                 break;
               }
