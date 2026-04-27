@@ -205,18 +205,31 @@ export default async function handler(req, res) {
     const clientRef = sale.client_name ? ` - ${sale.client_name}` : '';
     const notes = `${notesDesc}. Recibido como trade-in en ${saleRef}${clientRef}.`;
 
+    // Helper para normalizar color: "BRONCE" -> "Bronce"
+    const normalizeColorVD = (s) => {
+      if (!s) return null;
+      return String(s).trim().toLowerCase()
+        .split(/\s+/)
+        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
+    };
+
     // 6. Datos del vehiculo
     const vehicleData = {
       plate: plateFormatted,
       brand: sale.tradein_brand ? String(sale.tradein_brand).toUpperCase() : null,
       model: sale.tradein_model ? String(sale.tradein_model).toUpperCase() : null,
       year: sale.tradein_year || null,
-      color: sale.tradein_color ? String(sale.tradein_color).toUpperCase() : null,
+      color: normalizeColorVD(sale.tradein_color),
       km: parseInt(sale.tradein_km) || 0,
       engine: sale.tradein_engine ? String(sale.tradein_engine).toUpperCase() : null,
       engine_cc: sale.tradein_engine_cc || null,
+      transmission: sale.tradein_transmission || null,
       drivetrain: sale.tradein_drive || null,
       fuel: sale.tradein_fuel || null,
+      cylinders: sale.tradein_cylinders || null,
+      origin: sale.tradein_origin || null,
+      passengers: sale.tradein_passengers || null,
       style: sale.tradein_style || null,
       chassis: sale.tradein_chassis ? String(sale.tradein_chassis).toUpperCase() : null,
       cabys_code: sale.tradein_cabys || null,
@@ -273,6 +286,15 @@ export default async function handler(req, res) {
       if (existingShowroom) {
         showroomMsg = `Ya estaba en Showroom`;
       } else {
+        // Helper para normalizar color: "BRONCE" -> "Bronce", "rojo oscuro" -> "Rojo Oscuro"
+        const normalizeColor = (s) => {
+          if (!s) return '';
+          return String(s).trim().toLowerCase()
+            .split(/\s+/)
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+            .join(' ');
+        };
+
         // Llamar al endpoint sync-showroom con action=add para meterlo al Sheets
         // Y al mismo tiempo se inserta en showroom_vehicles como efecto secundario.
         const baseUrl = process.env.APP_BASE_URL || 'https://vcr-manager.vercel.app';
@@ -282,15 +304,15 @@ export default async function handler(req, res) {
           brand: (sale.tradein_brand || '').toUpperCase(),
           model: (sale.tradein_model || '').toUpperCase(),
           year: String(sale.tradein_year || ''),
-          transmission: sale.tradein_drive || '',
-          color: (sale.tradein_color || '').toUpperCase(),
+          transmission: sale.tradein_transmission || '',
+          color: normalizeColor(sale.tradein_color),
           km: sale.tradein_km ? String(sale.tradein_km) : '',
           fuel: sale.tradein_fuel || '',
           engine_cc: sale.tradein_engine_cc ? String(sale.tradein_engine_cc) : '',
-          cylinders: '',
-          origin: '',
+          cylinders: sale.tradein_cylinders ? String(sale.tradein_cylinders) : '',
+          origin: sale.tradein_origin || '',
           drivetrain: sale.tradein_drive || '',
-          passengers: '',
+          passengers: sale.tradein_passengers ? String(sale.tradein_passengers) : '',
           style: sale.tradein_style || '',
           price: '0',
           currency: sale.sale_currency || 'USD',
