@@ -941,28 +941,58 @@ async function pymCreateAlegraPayment({ alegraAuth, bills_array, bank_alegra_id,
   return { id: data.id, payload };
 }
 
-// Parsear fecha (Quicken suele exportar M/D/YYYY o YYYY-MM-DD)
+// Parsear fecha. Soporta:
+//   - ISO: 2026-04-25 (preferido)
+//   - D/M/YYYY (formato Costa Rica): 25/04/2026 → 2026-04-25
+//   - M/D/YYYY (formato US): 04/25/2026 → 2026-04-25
+// Detección inteligente: si uno de los dos primeros valores es >12, ese es el día.
+// Si ambos son ≤12 (caso ambiguo, ej "04/05/2026"), asumimos D/M/YYYY (formato CR).
 function pymParseDate(s) {
   if (!s) return null;
   const str = String(s).trim();
-  // Intento ISO directo
-  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
-  // M/D/YYYY
-  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
+  // 1. Intento ISO directo (2026-04-25)
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+    const isoSlice = str.slice(0, 10);
+    // Validar que el mes y día sean válidos
+    const [yy, mm, dd] = isoSlice.split('-').map(Number);
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) return isoSlice;
+    return null;
+  }
+
+  // 2. Formato con / : detectar D/M/YYYY vs M/D/YYYY
+  const m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
   if (m) {
-    const mm = m[1].padStart(2, '0');
-    const dd = m[2].padStart(2, '0');
-    return `${m[3]}-${mm}-${dd}`;
+    const a = parseInt(m[1], 10);   // primer número
+    const b = parseInt(m[2], 10);   // segundo número
+    const yRaw = m[3];
+    const yy = yRaw.length === 2 ? `20${yRaw}` : yRaw;
+
+    let day, month;
+    if (a > 12 && b <= 12) {
+      // a es claramente el día (D/M/YYYY)
+      day = a;
+      month = b;
+    } else if (b > 12 && a <= 12) {
+      // b es claramente el día (M/D/YYYY)
+      month = a;
+      day = b;
+    } else if (a <= 12 && b <= 12) {
+      // Ambiguo. Asumir D/M/YYYY (formato Costa Rica)
+      day = a;
+      month = b;
+    } else {
+      // Ambos >12 → fecha inválida
+      return null;
+    }
+
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const mmStr = String(month).padStart(2, '0');
+    const ddStr = String(day).padStart(2, '0');
+    return `${yy}-${mmStr}-${ddStr}`;
   }
-  // D/M/YYYY (formato CR)
-  const m2 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-  if (m2) {
-    const yy = m2[3].length === 2 ? `20${m2[3]}` : m2[3];
-    const mm = m2[2].padStart(2, '0');
-    const dd = m2[1].padStart(2, '0');
-    return `${yy}-${mm}-${dd}`;
-  }
-  // Fallback: parsear Date
+
+  // 3. Fallback: parsear Date (último recurso, no muy confiable)
   try {
     const d = new Date(str);
     if (!isNaN(d)) return d.toISOString().slice(0, 10);
