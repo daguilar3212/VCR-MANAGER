@@ -1781,7 +1781,73 @@ export default function App() {
       alegraMsg = `\n⚠ No se pudo sincronizar con Alegra: ${e.message}`;
     }
 
-    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase() + (allDone ? "" : ` (${newCompleted.size}/${totalLines} líneas completadas)`) + alegraMsg);
+    // Sincronizar al Showroom si no esta ya (Sheets + showroom_vehicles)
+    let showroomMsg = "";
+    try {
+      const plateNorm = vehicleForm.plate.toUpperCase().replace(/\s+/g, '-');
+      // Revisar si ya existe en showroom
+      const { data: existingShow } = await supabase
+        .from('showroom_vehicles')
+        .select('id, plate')
+        .eq('plate', plateNorm)
+        .maybeSingle();
+
+      if (existingShow) {
+        showroomMsg = `\n🏬 Ya estaba en Showroom`;
+      } else {
+        // Determinar precio y moneda para el showroom
+        const priceUsdNum = parseFloat(vehicleForm.price_usd) || 0;
+        const priceCrcNum = parseFloat(vehicleForm.price_crc) || 0;
+        // Si el form tiene USD usamos USD; sino si tiene CRC usamos CRC; sino 0
+        let showPrice = '0';
+        let showCurrency = invCurrency || 'USD';
+        if (priceUsdNum > 0) {
+          showPrice = String(priceUsdNum);
+          showCurrency = 'USD';
+        } else if (priceCrcNum > 0) {
+          showPrice = String(priceCrcNum);
+          showCurrency = 'CRC';
+        }
+
+        const showroomCar = {
+          estado: 'DISPONIBLE',
+          plate: plateNorm,
+          brand: (vehicleForm.brand || '').toUpperCase(),
+          model: (vehicleForm.model || '').toUpperCase(),
+          year: String(vehicleForm.year || ''),
+          transmission: vehicleForm.transmission || '',
+          color: vehicleForm.color || '',
+          km: vehicleForm.km ? String(vehicleForm.km).replace(/[,.\s]/g, '') : '',
+          fuel: vehicleForm.fuel || '',
+          engine_cc: vehicleForm.engine_cc ? String(vehicleForm.engine_cc) : '',
+          cylinders: vehicleForm.cylinders ? String(vehicleForm.cylinders) : '',
+          origin: vehicleForm.origin || '',
+          drivetrain: vehicleForm.drive || '',
+          passengers: vehicleForm.passengers ? String(vehicleForm.passengers) : '',
+          style: vehicleForm.style || '',
+          price: showPrice,
+          currency: showCurrency,
+        };
+
+        const showRes = await fetch('/api/sync-showroom', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'add', car: showroomCar }),
+        });
+        const showData = await showRes.json().catch(() => ({ ok: false }));
+        if (showData.ok) {
+          showroomMsg = showPrice === '0'
+            ? `\n🏬 Agregado al Showroom (sin precio - ajustar manualmente)`
+            : `\n🏬 Agregado al Showroom (${showCurrency} ${showPrice})`;
+        } else {
+          showroomMsg = `\n⚠ No se agrego al Showroom: ${showData.error || 'error'}`;
+        }
+      }
+    } catch (e) {
+      showroomMsg = `\n⚠ Error agregando al Showroom: ${e.message}`;
+    }
+
+    alert("Vehículo agregado al inventario: " + vehicleForm.plate.toUpperCase() + (allDone ? "" : ` (${newCompleted.size}/${totalLines} líneas completadas)`) + alegraMsg + showroomMsg);
   };
 
   const dismissVehicle = async () => {
