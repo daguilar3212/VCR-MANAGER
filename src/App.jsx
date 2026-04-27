@@ -997,6 +997,7 @@ export default function App() {
   const [fCurrency, setFCurrency] = useState("all");
   const [fDateFrom, setFDateFrom] = useState("");
   const [fDateTo, setFDateTo] = useState("");
+  const [fSearch, setFSearch] = useState("");
   const [selectedInvs, setSelectedInvs] = useState(new Set());
   const [costView, setCostView] = useState("vehicles");
   const [costExpanded, setCostExpanded] = useState(null);
@@ -4574,6 +4575,70 @@ export default function App() {
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:16}}>
           <div><h2 style={{fontSize:20,fontWeight:800,margin:0}}>{picked.b} {picked.m}</h2><p style={{fontSize:13,color:"#8b8fa4",margin:"4px 0 0"}}>{picked.y} · {picked.p}</p></div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            {!editingVehicle && (() => {
+              // Mostrar boton "Mandar a Showroom" solo si:
+              // 1. El vehiculo esta disponible
+              // 2. No esta ya en showroom_vehicles
+              if (picked.s !== 'disponible') return null;
+              const plateNorm = (picked.p || '').toUpperCase().trim();
+              const enShowroom = (showroomVehicles || []).some(s => (s.plate || '').toUpperCase().trim() === plateNorm);
+              if (enShowroom) return null;
+              return (
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`¿Mandar ${picked.p} al Showroom?\n\nSi no tiene precio, se enviará con precio 0 y lo ajusta después.`)) return;
+                    try {
+                      const priceUsdNum = parseFloat(picked.usd) || 0;
+                      const priceCrcNum = parseFloat(picked.crc) || 0;
+                      let showPrice = '0';
+                      let showCurrency = picked.priceCurrency || 'USD';
+                      if (priceUsdNum > 0) { showPrice = String(priceUsdNum); showCurrency = 'USD'; }
+                      else if (priceCrcNum > 0) { showPrice = String(priceCrcNum); showCurrency = 'CRC'; }
+
+                      const showroomCar = {
+                        estado: 'DISPONIBLE',
+                        plate: plateNorm,
+                        brand: (picked.b || '').toUpperCase(),
+                        model: (picked.m || '').toUpperCase(),
+                        year: String(picked.y || ''),
+                        transmission: picked.transmission || '',
+                        color: picked.co || '',
+                        km: picked.km ? String(picked.km).replace(/[,.\s]/g, '') : '',
+                        fuel: picked.f || picked.fuel || '',
+                        engine_cc: picked.engine_cc ? String(picked.engine_cc) : '',
+                        cylinders: picked.cylinders ? String(picked.cylinders) : '',
+                        origin: picked.origin || '',
+                        drivetrain: picked.dr || picked.drivetrain || '',
+                        passengers: picked.passengers ? String(picked.passengers) : '',
+                        style: picked.st || picked.style || '',
+                        price: showPrice,
+                        currency: showCurrency,
+                      };
+
+                      const r = await fetch('/api/sync-showroom', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action: 'add', car: showroomCar }),
+                      });
+                      const d = await r.json().catch(() => ({ ok: false }));
+                      if (d.ok) {
+                        await loadShowroomVehicles();
+                        const priceMsg = showPrice === '0' ? '(sin precio - ajustar después)' : `(${showCurrency} ${showPrice})`;
+                        alert(`✅ ${plateNorm} agregado al Showroom ${priceMsg}`);
+                      } else {
+                        alert(`⚠ No se agregó al Showroom: ${d.error || 'error desconocido'}`);
+                      }
+                    } catch (e) {
+                      alert(`⚠ Error: ${e.message}`);
+                    }
+                  }}
+                  style={{...S.sel,background:"#f59e0b18",color:"#f59e0b",fontWeight:600,fontSize:12}}
+                  title="Este vehículo no está en el Showroom"
+                >
+                  🏬 Mandar a Showroom
+                </button>
+              );
+            })()}
             {!editingVehicle && <button onClick={()=>setEditingVehicle({
               id:picked.id, brand:picked.b||"", model:picked.m||"", year:picked.y||"", color:picked.co||"",
               km:picked.km||"", drive:picked.dr||"", fuel:picked.f||"", style:picked.st||"",
@@ -4723,6 +4788,14 @@ export default function App() {
       if (fCurrency!=="all" && x.currency!==fCurrency) return false;
       if (fDateFrom && x.date && x.date.split('T')[0] < fDateFrom) return false;
       if (fDateTo && x.date && x.date.split('T')[0] > fDateTo) return false;
+      if (fSearch && fSearch.trim()) {
+        const q = fSearch.trim().toLowerCase();
+        const supName = (x.supName || "").toLowerCase();
+        const supComm = (x.supComm || "").toLowerCase();
+        const supId = (x.supId || "").toLowerCase();
+        const cons = (x.consecutive || "").toLowerCase();
+        if (!supName.includes(q) && !supComm.includes(q) && !supId.includes(q) && !cons.includes(q)) return false;
+      }
       return true;
     });
     return (
@@ -4732,6 +4805,18 @@ export default function App() {
           <button onClick={syncGmail} disabled={syncing} style={{...S.sel,background:syncing?"#1e2130":"#4f8cff18",color:syncing?"#8b8fa4":"#4f8cff",fontWeight:600,padding:"10px 20px"}}>
             {syncing?"Sincronizando...":"Sincronizar Gmail"}
           </button>
+          <input
+            type="text"
+            value={fSearch}
+            onChange={e => setFSearch(e.target.value)}
+            placeholder="🔍 Buscar por proveedor, cédula o consecutivo..."
+            style={{...S.inp, flex:"1 1 280px", minWidth:240, maxWidth:400, padding:"10px 14px", fontSize:13}}
+          />
+          {fSearch && (
+            <button onClick={()=>setFSearch("")} style={{...S.sel, padding:"6px 12px", fontSize:12, color:"#8b8fa4"}}>
+              ✕ Limpiar
+            </button>
+          )}
           <button onClick={async ()=>{
             const rows = [];
             for (const inv of fList) {
