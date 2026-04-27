@@ -3306,6 +3306,9 @@ export default function App() {
   const costsByPlate = useMemo(() => {
     const map = {};
     invoices.filter(i => i.assignStatus === "assigned" && i.plate).forEach(i => {
+      // Si la factura ES la compra del vehículo, NO contar como costo asociado
+      // (esa factura YA está en vehicles.purchase_cost)
+      if (i.isVehicle) return;
       if (!map[i.plate]) map[i.plate] = { items: [], total: 0 };
       map[i.plate].items.push(i);
       map[i.plate].total += i.total;
