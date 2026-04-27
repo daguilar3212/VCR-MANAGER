@@ -1374,7 +1374,15 @@ export default function AgentPanel() {
       tradein_model: saleForm.tradein_model || null,
       tradein_year: parseInt(saleForm.tradein_year) || null,
       tradein_color: saleForm.tradein_color || null,
-      tradein_km: parseFloat(saleForm.tradein_km) || null,
+      tradein_km: (() => {
+        // Parseo robusto: quitar comas, puntos, espacios (separadores de miles)
+        const v = saleForm.tradein_km;
+        if (v == null || v === '') return null;
+        if (typeof v === 'number') return Math.round(v);
+        const cleaned = String(v).replace(/[,.\s]/g, '');
+        const n = parseInt(cleaned, 10);
+        return isNaN(n) ? null : n;
+      })(),
       tradein_engine: saleForm.tradein_engine || null,
       tradein_drive: saleForm.tradein_drive || null,
       tradein_fuel: saleForm.tradein_fuel || null,
