@@ -2267,7 +2267,14 @@ export default function App() {
       tradein_model: saleForm.has_tradein ? saleForm.tradein_model : null,
       tradein_year: saleForm.has_tradein ? (parseInt(saleForm.tradein_year) || null) : null,
       tradein_color: saleForm.has_tradein ? saleForm.tradein_color : null,
-      tradein_km: saleForm.has_tradein ? (parseFloat(saleForm.tradein_km) || null) : null,
+      tradein_km: saleForm.has_tradein ? (() => {
+        const v = saleForm.tradein_km;
+        if (v == null || v === '') return null;
+        if (typeof v === 'number') return Math.round(v);
+        const cleaned = String(v).replace(/[,.\s]/g, '');
+        const n = parseInt(cleaned, 10);
+        return isNaN(n) ? null : n;
+      })() : null,
       tradein_engine: saleForm.has_tradein ? saleForm.tradein_engine : null,
       tradein_drive: saleForm.has_tradein ? saleForm.tradein_drive : null,
       tradein_fuel: saleForm.has_tradein ? saleForm.tradein_fuel : null,
