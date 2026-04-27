@@ -1368,7 +1368,17 @@ async function pymUpsertImport(supabase, data) {
 
   if (existing) {
     const { error } = await supabase.from('payment_imports').update(row).eq('id', existing.id);
-    if (error) return { status: row.status, error: error.message, import_id: existing.id };
+    if (error) {
+      console.error('[payment_imports UPDATE FAIL]', {
+        error_message: error.message,
+        error_details: error.details,
+        error_hint: error.hint,
+        error_code: error.code,
+        row_attempted: row,
+        existing_id: existing.id,
+      });
+      return { status: row.status, error: error.message, import_id: existing.id };
+    }
     return { status: row.status, import_id: existing.id, updated: true };
   }
   const { data: inserted, error } = await supabase
@@ -1376,7 +1386,16 @@ async function pymUpsertImport(supabase, data) {
     .insert(row)
     .select('id')
     .single();
-  if (error) return { status: row.status, error: error.message };
+  if (error) {
+    console.error('[payment_imports INSERT FAIL]', {
+      error_message: error.message,
+      error_details: error.details,
+      error_hint: error.hint,
+      error_code: error.code,
+      row_attempted: row,
+    });
+    return { status: row.status, error: error.message };
+  }
   return { status: row.status, import_id: inserted?.id };
 }
 
