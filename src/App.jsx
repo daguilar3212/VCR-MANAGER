@@ -1961,6 +1961,7 @@ export default function App() {
     tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "", tradein_color: "",
     tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "", tradein_value: 0,
     tradein_engine_cc: "", tradein_chassis: "", tradein_style: "", tradein_cabys: "",
+    tradein_transmission: "", tradein_cylinders: "", tradein_origin: "", tradein_passengers: "",
     sale_type: "propio", sale_currency: "USD", sale_price: "", sale_exchange_rate: "", tradein_amount: 0, down_payment: 0, deposit_signal: 0, total_balance: 0,
     payment_method: "", financing_term_months: "", financing_interest_pct: "", financing_amount: "",
     credit_due_days: "",
@@ -2274,6 +2275,10 @@ export default function App() {
       tradein_chassis: saleForm.has_tradein ? (saleForm.tradein_chassis || null) : null,
       tradein_style: saleForm.has_tradein ? (saleForm.tradein_style || null) : null,
       tradein_cabys: saleForm.has_tradein ? (saleForm.tradein_cabys || null) : null,
+      tradein_transmission: saleForm.has_tradein ? (saleForm.tradein_transmission || null) : null,
+      tradein_cylinders: saleForm.has_tradein ? (parseInt(saleForm.tradein_cylinders) || null) : null,
+      tradein_origin: saleForm.has_tradein ? (saleForm.tradein_origin || null) : null,
+      tradein_passengers: saleForm.has_tradein ? (parseInt(saleForm.tradein_passengers) || null) : null,
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
       sale_currency: saleForm.sale_currency || "USD",
@@ -2581,6 +2586,8 @@ export default function App() {
       tradein_engine: sale.tradein_engine || "", tradein_drive: sale.tradein_drive || "", tradein_fuel: sale.tradein_fuel || "",
       tradein_engine_cc: sale.tradein_engine_cc || "", tradein_chassis: sale.tradein_chassis || "",
       tradein_style: sale.tradein_style || "", tradein_cabys: sale.tradein_cabys || "",
+      tradein_transmission: sale.tradein_transmission || "", tradein_cylinders: sale.tradein_cylinders || "",
+      tradein_origin: sale.tradein_origin || "", tradein_passengers: sale.tradein_passengers || "",
       tradein_value: sale.tradein_value || 0,
       sale_type: sale.sale_type || "propio",
       sale_currency: sale.sale_currency || "USD",
@@ -2677,6 +2684,10 @@ export default function App() {
       tradein_chassis: saleForm.has_tradein ? (saleForm.tradein_chassis || null) : null,
       tradein_style: saleForm.has_tradein ? (saleForm.tradein_style || null) : null,
       tradein_cabys: saleForm.has_tradein ? (saleForm.tradein_cabys || null) : null,
+      tradein_transmission: saleForm.has_tradein ? (saleForm.tradein_transmission || null) : null,
+      tradein_cylinders: saleForm.has_tradein ? (parseInt(saleForm.tradein_cylinders) || null) : null,
+      tradein_origin: saleForm.has_tradein ? (saleForm.tradein_origin || null) : null,
+      tradein_passengers: saleForm.has_tradein ? (parseInt(saleForm.tradein_passengers) || null) : null,
       tradein_value: saleForm.has_tradein ? (parseFloat(saleForm.tradein_value) || 0) : 0,
       sale_type: saleType, commission_pct: commPct, commission_amount: commAmt,
       sale_currency: saleForm.sale_currency || "USD",
@@ -5365,10 +5376,70 @@ export default function App() {
                   />
                 </div>
                 {fld("Año", "tradein_year", { inputType: "number" })}
-                {fld("Color", "tradein_color", { upperCase: true })}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Color</div>
+                  <input
+                    value={F.tradein_color || ""}
+                    onChange={e => uf("tradein_color", e.target.value)}
+                    onBlur={e => {
+                      const v = (e.target.value || '').trim().toLowerCase()
+                        .split(/\s+/)
+                        .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+                        .join(' ');
+                      if (v !== F.tradein_color) uf("tradein_color", v);
+                    }}
+                    style={{ ...S.inp, width: "100%", fontSize: 12 }}
+                  />
+                </div>
                 {fld("Kilometraje", "tradein_km", { inputType: "number" })}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Transmisión</div>
+                  <select
+                    value={F.tradein_transmission || ""}
+                    onChange={e => uf("tradein_transmission", e.target.value)}
+                    style={{ ...S.sel, width: "100%", fontSize: 12 }}
+                  >
+                    <option value="">Seleccionar</option>
+                    <option value="Automática">Automática</option>
+                    <option value="Manual">Manual</option>
+                  </select>
+                </div>
                 {fld("Tracción", "tradein_drive", { type: "select", options: DRIVETRAIN_OPTIONS.map(o=>({v:o,l:o})) })}
                 {fld("Combustible", "tradein_fuel", { type: "select", options: FUEL_OPTIONS.map(o=>({v:o,l:o})) })}
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Procedencia</div>
+                  <select
+                    value={F.tradein_origin || ""}
+                    onChange={e => uf("tradein_origin", e.target.value)}
+                    style={{ ...S.sel, width: "100%", fontSize: 12 }}
+                  >
+                    <option value="">Seleccionar</option>
+                    <option value="Nacional">Nacional</option>
+                    <option value="Importado">Importado</option>
+                  </select>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Cilindros</div>
+                  <select
+                    value={F.tradein_cylinders || ""}
+                    onChange={e => uf("tradein_cylinders", e.target.value)}
+                    style={{ ...S.sel, width: "100%", fontSize: 12 }}
+                  >
+                    <option value="">Seleccionar</option>
+                    {[3, 4, 5, 6, 8].map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginBottom: 3 }}>Capacidad (pasajeros)</div>
+                  <select
+                    value={F.tradein_passengers || ""}
+                    onChange={e => uf("tradein_passengers", e.target.value)}
+                    style={{ ...S.sel, width: "100%", fontSize: 12 }}
+                  >
+                    <option value="">Seleccionar</option>
+                    {[2, 3, 4, 5, 7, 8, 9].map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
                 <div>
                   <div style={{ fontSize: 10, color: "#8b8fa4", marginBottom: 2 }}>Estilo</div>
                   <select
