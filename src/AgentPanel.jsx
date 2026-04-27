@@ -719,6 +719,7 @@ const emptyForm = () => ({
   tradein_plate: "", tradein_brand: "", tradein_model: "", tradein_year: "",
   tradein_color: "", tradein_km: "", tradein_engine: "", tradein_drive: "", tradein_fuel: "",
   tradein_engine_cc: "", tradein_chassis: "", tradein_style: "", tradein_cabys: "",
+  tradein_transmission: "", tradein_cylinders: "", tradein_origin: "", tradein_passengers: "",
   tradein_value: "",
   sale_type: "propio",
   sale_price: "", sale_exchange_rate: "", tradein_amount: "", down_payment: "",
@@ -1381,6 +1382,10 @@ export default function AgentPanel() {
       tradein_chassis: saleForm.tradein_chassis || null,
       tradein_style: saleForm.tradein_style || null,
       tradein_cabys: saleForm.tradein_cabys || null,
+      tradein_transmission: saleForm.tradein_transmission || null,
+      tradein_cylinders: saleForm.tradein_cylinders ? parseInt(saleForm.tradein_cylinders) : null,
+      tradein_origin: saleForm.tradein_origin || null,
+      tradein_passengers: saleForm.tradein_passengers ? parseInt(saleForm.tradein_passengers) : null,
       tradein_value: parseFloat(saleForm.tradein_value) || null,
       sale_type: saleForm.sale_type || "propio",
       sale_price: salePrice,
@@ -3108,11 +3113,72 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <div><label style={S.label}>Marca</label><input style={S.input} value={form.tradein_brand} onChange={e => upd("tradein_brand", e.target.value)} /></div>
             <div><label style={S.label}>Modelo</label><input style={S.input} value={form.tradein_model} onChange={e => upd("tradein_model", e.target.value)} /></div>
             <div><label style={S.label}>Año</label><input style={S.input} type="number" value={form.tradein_year} onChange={e => upd("tradein_year", e.target.value)} /></div>
-            <div><label style={S.label}>Color</label><input style={S.input} value={form.tradein_color} onChange={e => upd("tradein_color", e.target.value)} /></div>
+            <div>
+              <label style={S.label}>Color</label>
+              <input
+                style={S.input}
+                value={form.tradein_color}
+                onChange={e => upd("tradein_color", e.target.value)}
+                onBlur={e => {
+                  // Normalizar: "BRONCE" -> "Bronce", "rojo oscuro" -> "Rojo Oscuro"
+                  const v = (e.target.value || '').trim().toLowerCase()
+                    .split(/\s+/)
+                    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+                    .join(' ');
+                  if (v !== form.tradein_color) upd("tradein_color", v);
+                }}
+              />
+            </div>
             <div><label style={S.label}>Km</label><input style={S.input} type="number" value={form.tradein_km} onChange={e => upd("tradein_km", e.target.value)} /></div>
             <div><label style={S.label}>Motor</label><input style={S.input} value={form.tradein_engine} onChange={e => upd("tradein_engine", e.target.value)} /></div>
-            <div><label style={S.label}>Tracción</label><input style={S.input} value={form.tradein_drive} onChange={e => upd("tradein_drive", e.target.value)} /></div>
-            <div><label style={S.label}>Combustible</label><input style={S.input} value={form.tradein_fuel} onChange={e => upd("tradein_fuel", e.target.value)} /></div>
+            <div>
+              <label style={S.label}>Transmisión</label>
+              <select style={S.sel} value={form.tradein_transmission || ""} onChange={e => upd("tradein_transmission", e.target.value)}>
+                <option value="">Seleccionar</option>
+                <option value="Automática">Automática</option>
+                <option value="Manual">Manual</option>
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Tracción</label>
+              <select style={S.sel} value={form.tradein_drive || ""} onChange={e => upd("tradein_drive", e.target.value)}>
+                <option value="">Seleccionar</option>
+                <option value="4x2">4x2</option>
+                <option value="4x4">4x4</option>
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Combustible</label>
+              <select style={S.sel} value={form.tradein_fuel || ""} onChange={e => upd("tradein_fuel", e.target.value)}>
+                <option value="">Seleccionar</option>
+                <option value="Gasolina">Gasolina</option>
+                <option value="Diesel">Diesel</option>
+                <option value="Híbrido">Híbrido</option>
+                <option value="Eléctrico">Eléctrico</option>
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Procedencia</label>
+              <select style={S.sel} value={form.tradein_origin || ""} onChange={e => upd("tradein_origin", e.target.value)}>
+                <option value="">Seleccionar</option>
+                <option value="Nacional">Nacional</option>
+                <option value="Importado">Importado</option>
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Cilindros</label>
+              <select style={S.sel} value={form.tradein_cylinders || ""} onChange={e => upd("tradein_cylinders", e.target.value)}>
+                <option value="">Seleccionar</option>
+                {[3, 4, 5, 6, 8].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={S.label}>Capacidad (pasajeros)</label>
+              <select style={S.sel} value={form.tradein_passengers || ""} onChange={e => upd("tradein_passengers", e.target.value)}>
+                <option value="">Seleccionar</option>
+                {[2, 3, 4, 5, 7, 8, 9].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
             <div>
               <label style={S.label}>Estilo</label>
               <select
@@ -3126,7 +3192,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                 }}
               >
                 <option value="">Seleccionar</option>
-                {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
+                {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS","VAN"].map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
             <div>
