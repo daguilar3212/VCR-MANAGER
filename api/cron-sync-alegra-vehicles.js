@@ -852,32 +852,49 @@ async function pymFindBankAccount(supabase, bank, currency) {
   return scored[0].account;
 }
 
-// Extraer TODOS los grupos de 4+ dígitos del memo, normalizados a últimos 4.
+// Extraer TODOS los grupos de 3+ dígitos del memo, normalizados a posibles last_four.
 // Soporta separadores variados: coma, espacio, "y", "fact", "facts", slash, guión.
+// Para cada número encontrado, devuelve UN array de variantes posibles de last_four:
+//   - Si el número tiene 4+ dígitos: solo se usa los últimos 4
+//   - Si tiene 3 dígitos: se prueban DOS variantes: el número tal cual y con un "0" adelante
+//
 // Ejemplos:
-//   "fact 6232" → ['6232']
-//   "facts 6232,6238,6239" → ['6232', '6238', '6239']
-//   "fact 6232, 6235, 6358 y 8968" → ['6232', '6235', '6358', '8968']
-//   "Fac-5678" → ['5678']
+//   "fact 6232" → [['6232']]
+//   "facts 6232,6238,6239" → [['6232'], ['6238'], ['6239']]
+//   "fact 727" → [['727', '0727']]
+//   "fact 727 y 6238" → [['727', '0727'], ['6238']]
 function pymExtractAllLast4(memo) {
   if (!memo) return [];
-  const matches = String(memo).match(/\d{4,}/g);
+  // Aceptar ahora 3+ dígitos. Antes era 4+ y eso dejaba afuera consecutivos cortos
+  // que en BD pueden estar guardados con padding (ej. last_four = '0727')
+  const matches = String(memo).match(/\d{3,}/g);
   if (!matches || matches.length === 0) return [];
-  // Normalizar cada match a sus últimos 4 dígitos (por si vienen consecutivos largos)
-  const last4s = matches.map(m => m.slice(-4));
-  // Quitar duplicados preservando orden
+
+  // Para cada match, construir las variantes posibles de last_four
+  const variantsList = matches.map(m => {
+    if (m.length >= 4) {
+      return [m.slice(-4)];   // solo los últimos 4
+    }
+    // 3 dígitos: probar tal cual Y con cero adelante (formato 0NNN)
+    return [m, '0' + m];
+  });
+
+  // Quitar duplicados de matches enteros (preservando orden)
   const seen = new Set();
   const unique = [];
-  for (const x of last4s) {
-    if (!seen.has(x)) { seen.add(x); unique.push(x); }
+  for (const variants of variantsList) {
+    const key = variants.join('|');
+    if (!seen.has(key)) { seen.add(key); unique.push(variants); }
   }
   return unique;
 }
 
-// Compatibilidad: versión vieja que devuelve solo el último (sigue usándose en logs)
+// Compatibilidad: versión vieja que devuelve solo el primer variant del último match
+// (sigue usándose en logs)
 function pymExtractLast4(memo) {
   const all = pymExtractAllLast4(memo);
-  return all.length > 0 ? all[all.length - 1] : null;
+  if (all.length === 0) return null;
+  return all[all.length - 1][0];
 }
 
 // Leer una hoja entera del Sheet
@@ -1068,9 +1085,13 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
     return { status: 'already_processed', import_id: existing.id };
   }
 
-  // 2. Extraer TODOS los últimos 4 del memo (soporta pagos múltiples)
+  // 2. Extraer TODOS los grupos del memo. Cada item es un array de variantes posibles
+  //    de last_four para ese match (ej. "727" puede matchear "727" O "0727").
   const memoLast4Array = pymExtractAllLast4(memo);
-  const memoLast4 = memoLast4Array.length > 0 ? memoLast4Array[memoLast4Array.length - 1] : null;
+  // Para logs: tomar el primer variant del último match
+  const memoLast4 = memoLast4Array.length > 0
+    ? memoLast4Array[memoLast4Array.length - 1][0]
+    : null;
 
   // Si no hay últimos 4, no se puede hacer match
   if (memoLast4Array.length === 0) {
@@ -1088,13 +1109,14 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
   // RAMA A: PAGO ÚNICO (1 sola factura listada en el memo)
   // ============================================================
   if (memoLast4Array.length === 1) {
-    // 3. Buscar factura por last_four + monto + currency
+    const variantsToTry = memoLast4Array[0];  // ej. ['727', '0727'] o ['6232']
+    // 3. Buscar factura por last_four (probando variantes) + monto + currency
     // Tolerancia: ±0.01 USD ±1.0 CRC por redondeos
     const tolerance = currency === 'USD' ? 0.01 : 1.0;
     const { data: candidates } = await supabase
       .from('invoices')
       .select('id, consecutive, last_four, total, currency, supplier_name, alegra_bill_id, pay_status, exchange_rate')
-      .eq('last_four', memoLast4)
+      .in('last_four', variantsToTry)
       .eq('currency', currency)
       .gte('total', amount - tolerance)
       .lte('total', amount + tolerance);
@@ -1219,11 +1241,18 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
   //   3. Si una factura tiene múltiples coincidencias por last_four, falla
   //   4. Si alguna factura ya está pagada, falla (avisa al usuario)
 
-  // Buscar todas las facturas candidatas que matcheen alguno de los last_four
+  // Buscar todas las facturas candidatas que matcheen cualquier variante.
+  // Aplanamos memoLast4Array (que es array de arrays) en una sola lista.
+  const allVariants = [];
+  for (const variants of memoLast4Array) {
+    for (const v of variants) {
+      if (!allVariants.includes(v)) allVariants.push(v);
+    }
+  }
   const { data: allCandidates } = await supabase
     .from('invoices')
     .select('id, consecutive, last_four, total, currency, supplier_name, alegra_bill_id, pay_status, exchange_rate')
-    .in('last_four', memoLast4Array)
+    .in('last_four', allVariants)
     .eq('currency', currency);
 
   const candArr = allCandidates || [];
@@ -1235,15 +1264,34 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
     byLast4[c.last_four].push(c);
   }
 
-  // Verificar que cada last_four del memo tenga exactamente 1 factura
+  // Para mostrar al usuario, etiqueta amigable: el primer variant de cada match
+  const labels = memoLast4Array.map(variants => variants[0]);
+
+  // Verificar que cada match del memo tenga exactamente 1 factura.
+  // Para cada match, probamos TODAS sus variantes (ej. '727' Y '0727')
   const missing = [];
   const ambiguous = [];
   const matchedInvoices = [];
-  for (const l4 of memoLast4Array) {
-    const found = byLast4[l4] || [];
-    if (found.length === 0) missing.push(l4);
-    else if (found.length > 1) ambiguous.push({ last4: l4, count: found.length });
-    else matchedInvoices.push(found[0]);
+  for (let i = 0; i < memoLast4Array.length; i++) {
+    const variants = memoLast4Array[i];
+    const label = labels[i];
+    // Recolectar todas las facturas que matcheen cualquier variante
+    let foundAcrossVariants = [];
+    for (const v of variants) {
+      const f = byLast4[v] || [];
+      foundAcrossVariants = foundAcrossVariants.concat(f);
+    }
+    // Quitar duplicados por id
+    const seenIds = new Set();
+    foundAcrossVariants = foundAcrossVariants.filter(inv => {
+      if (seenIds.has(inv.id)) return false;
+      seenIds.add(inv.id);
+      return true;
+    });
+
+    if (foundAcrossVariants.length === 0) missing.push(label);
+    else if (foundAcrossVariants.length > 1) ambiguous.push({ last4: label, count: foundAcrossVariants.length });
+    else matchedInvoices.push(foundAcrossVariants[0]);
   }
 
   if (missing.length > 0) {
@@ -1253,7 +1301,7 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
       bank_account_id: bankAccount?.id || null,
       status: 'unmatched',
       notes: `Pago múltiple: faltan facturas con last_four=${missing.join(',')} en moneda ${currency}`,
-      raw_row: { row, expected_last4: memoLast4Array },
+      raw_row: { row, expected_last4: labels },
       existing,
     });
   }
