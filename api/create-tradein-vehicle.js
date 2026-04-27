@@ -214,6 +214,17 @@ export default async function handler(req, res) {
         .join(' ');
     };
 
+    // Helper para parsear km/cantidades grandes que pueden venir con comas/puntos/espacios
+    // como separadores de miles. Ej: "484,000" -> 484000, "150.000" -> 150000
+    const parseIntSafe = (v) => {
+      if (v == null || v === '') return 0;
+      if (typeof v === 'number') return Math.round(v);
+      // Quitar comas, puntos, espacios (separadores de miles en CR/USA)
+      const cleaned = String(v).replace(/[,.\s]/g, '');
+      const n = parseInt(cleaned, 10);
+      return isNaN(n) ? 0 : n;
+    };
+
     // 6. Datos del vehiculo
     const vehicleData = {
       plate: plateFormatted,
@@ -221,7 +232,7 @@ export default async function handler(req, res) {
       model: sale.tradein_model ? String(sale.tradein_model).toUpperCase() : null,
       year: sale.tradein_year || null,
       color: normalizeColorVD(sale.tradein_color),
-      km: parseInt(sale.tradein_km) || 0,
+      km: parseIntSafe(sale.tradein_km),
       engine: sale.tradein_engine ? String(sale.tradein_engine).toUpperCase() : null,
       engine_cc: sale.tradein_engine_cc || null,
       transmission: sale.tradein_transmission || null,
