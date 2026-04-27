@@ -852,15 +852,32 @@ async function pymFindBankAccount(supabase, bank, currency) {
   return scored[0].account;
 }
 
-// Extraer hasta 4 dígitos del memo. Memo puede venir con guiones, espacios, etc.
-// Ej: "#1234", "Factura 1234", "1234", "Fac-5678" → '1234' / '5678'
-function pymExtractLast4(memo) {
-  if (!memo) return null;
-  // Buscar todos los grupos de dígitos de 4+ y usar los últimos 4 del último grupo
+// Extraer TODOS los grupos de 4+ dígitos del memo, normalizados a últimos 4.
+// Soporta separadores variados: coma, espacio, "y", "fact", "facts", slash, guión.
+// Ejemplos:
+//   "fact 6232" → ['6232']
+//   "facts 6232,6238,6239" → ['6232', '6238', '6239']
+//   "fact 6232, 6235, 6358 y 8968" → ['6232', '6235', '6358', '8968']
+//   "Fac-5678" → ['5678']
+function pymExtractAllLast4(memo) {
+  if (!memo) return [];
   const matches = String(memo).match(/\d{4,}/g);
-  if (!matches || matches.length === 0) return null;
-  // Si hay múltiples grupos, tomamos el último (más probable que sea el consecutivo)
-  return matches[matches.length - 1].slice(-4);
+  if (!matches || matches.length === 0) return [];
+  // Normalizar cada match a sus últimos 4 dígitos (por si vienen consecutivos largos)
+  const last4s = matches.map(m => m.slice(-4));
+  // Quitar duplicados preservando orden
+  const seen = new Set();
+  const unique = [];
+  for (const x of last4s) {
+    if (!seen.has(x)) { seen.add(x); unique.push(x); }
+  }
+  return unique;
+}
+
+// Compatibilidad: versión vieja que devuelve solo el último (sigue usándose en logs)
+function pymExtractLast4(memo) {
+  const all = pymExtractAllLast4(memo);
+  return all.length > 0 ? all[all.length - 1] : null;
 }
 
 // Leer una hoja entera del Sheet
@@ -879,8 +896,17 @@ async function pymReadSheet(accessToken, sheetId, tabName) {
   return data.values || [];
 }
 
-// Llama a Alegra para crear un payment vinculado a una bill
-async function pymCreateAlegraPayment({ alegraAuth, bill_id, bank_alegra_id, payment_method, amount, currency, exchange_rate, date, reference }) {
+// Llama a Alegra para crear un payment vinculado a una o varias bills.
+// `bills_array` es un array de { id, amount } - permite pagar múltiples facturas
+// con una sola transacción bancaria.
+async function pymCreateAlegraPayment({ alegraAuth, bills_array, bank_alegra_id, payment_method, amount, currency, exchange_rate, date, reference }) {
+  // Soportar legacy: si recibimos bill_id en lugar de bills_array, convertir
+  const bills = Array.isArray(bills_array) && bills_array.length > 0
+    ? bills_array.map(b => ({ id: parseInt(b.id), amount: parseFloat(b.amount) }))
+    : [];
+  if (bills.length === 0) {
+    throw new Error('pymCreateAlegraPayment: bills_array vacío');
+  }
   const payload = {
     type: 'out',
     date: date,
@@ -889,7 +915,7 @@ async function pymCreateAlegraPayment({ alegraAuth, bill_id, bank_alegra_id, pay
     bankAccount: { id: String(bank_alegra_id) },
     observations: reference ? `TR ${reference}` : '',
     anotation: reference ? `TR ${reference}` : '',
-    bills: [{ id: parseInt(bill_id), amount: parseFloat(amount) }],
+    bills: bills,
   };
   if (currency && currency !== 'CRC') {
     payload.currency = {
@@ -1012,11 +1038,12 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
     return { status: 'already_processed', import_id: existing.id };
   }
 
-  // 2. Extraer últimos 4 del memo
-  const memoLast4 = pymExtractLast4(memo);
+  // 2. Extraer TODOS los últimos 4 del memo (soporta pagos múltiples)
+  const memoLast4Array = pymExtractAllLast4(memo);
+  const memoLast4 = memoLast4Array.length > 0 ? memoLast4Array[memoLast4Array.length - 1] : null;
 
   // Si no hay últimos 4, no se puede hacer match
-  if (!memoLast4) {
+  if (memoLast4Array.length === 0) {
     return await pymUpsertImport(supabase, {
       bank_sheet: tab, row_date: rowDate, check_num: checkNum,
       payee, memo, amount, currency, memo_last4: null,
@@ -1027,124 +1054,309 @@ async function pymProcessRow(supabase, alegraAuth, accessToken, tab, row, bankAc
     });
   }
 
-  // 3. Buscar factura por last_four + monto + currency
-  // Tolerancia: ±0.02 CRC ±0.01 USD por redondeos
-  const tolerance = currency === 'USD' ? 0.01 : 1.0;
-  const { data: candidates } = await supabase
+  // ============================================================
+  // RAMA A: PAGO ÚNICO (1 sola factura listada en el memo)
+  // ============================================================
+  if (memoLast4Array.length === 1) {
+    // 3. Buscar factura por last_four + monto + currency
+    // Tolerancia: ±0.01 USD ±1.0 CRC por redondeos
+    const tolerance = currency === 'USD' ? 0.01 : 1.0;
+    const { data: candidates } = await supabase
+      .from('invoices')
+      .select('id, consecutive, last_four, total, currency, supplier_name, alegra_bill_id, pay_status, exchange_rate')
+      .eq('last_four', memoLast4)
+      .eq('currency', currency)
+      .gte('total', amount - tolerance)
+      .lte('total', amount + tolerance);
+
+    const matches = candidates || [];
+
+    if (matches.length === 0) {
+      return await pymUpsertImport(supabase, {
+        bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+        payee, memo, amount, currency, memo_last4: memoLast4,
+        bank_account_id: bankAccount?.id || null,
+        status: 'unmatched',
+        notes: `No hay factura con last_four=${memoLast4} monto=${amount} moneda=${currency}`,
+        raw_row: { row },
+        existing,
+      });
+    }
+
+    if (matches.length > 1) {
+      return await pymUpsertImport(supabase, {
+        bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+        payee, memo, amount, currency, memo_last4: memoLast4,
+        bank_account_id: bankAccount?.id || null,
+        status: 'ambiguous',
+        notes: `Múltiples facturas coinciden (${matches.length}): ${matches.map(m => m.consecutive).join(', ')}`,
+        raw_row: { row, candidates: matches.map(m => ({ id: m.id, consecutive: m.consecutive, supplier: m.supplier_name })) },
+        existing,
+      });
+    }
+
+    // Match único
+    const inv = matches[0];
+
+    // 3.5. Si ya está pagada, solo registrar como duplicado
+    if (inv.pay_status === 'paid') {
+      return await pymUpsertImport(supabase, {
+        bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+        payee, memo, amount, currency, memo_last4: memoLast4,
+        matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+        bank_account_id: bankAccount?.id || null,
+        status: 'duplicate',
+        notes: 'La factura ya estaba marcada como pagada',
+        raw_row: { row },
+        existing,
+      });
+    }
+
+    // 4. Marcar factura como pagada en Supabase
+    const { error: updErr } = await supabase.from('invoices').update({
+      pay_status: 'paid',
+      paid_date: rowDate,
+      paid_bank_id: bankAccount?.id || null,
+      paid_reference: checkNum,
+    }).eq('id', inv.id);
+
+    if (updErr) {
+      return await pymUpsertImport(supabase, {
+        bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+        payee, memo, amount, currency, memo_last4: memoLast4,
+        matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+        bank_account_id: bankAccount?.id || null,
+        status: 'error',
+        notes: `Error marcando factura pagada: ${updErr.message}`,
+        raw_row: { row },
+        existing,
+      });
+    }
+
+    // 5. Si tiene alegra_bill_id y la cuenta tiene alegra_account_id, mandar pago a Alegra
+    let alegraPaymentId = null;
+    let alegraErr = null;
+    if (inv.alegra_bill_id && bankAccount?.alegra_account_id) {
+      try {
+        const result = await pymCreateAlegraPayment({
+          alegraAuth,
+          bills_array: [{ id: inv.alegra_bill_id, amount: inv.total }],
+          bank_alegra_id: bankAccount.alegra_account_id,
+          payment_method: bankAccount.alegra_payment_method || 'transfer',
+          amount: inv.total,
+          currency: inv.currency,
+          exchange_rate: inv.exchange_rate,
+          date: rowDate,
+          reference: checkNum,
+        });
+        alegraPaymentId = result.id;
+        await supabase.from('invoices').update({
+          alegra_payment_id: alegraPaymentId,
+          alegra_payment_synced_at: new Date().toISOString(),
+        }).eq('id', inv.id);
+      } catch (err) {
+        alegraErr = err.message;
+      }
+    }
+
+    const finalStatus = alegraPaymentId ? 'paid_alegra' : (alegraErr ? 'error' : 'paid_supabase_only');
+    const finalNotes = alegraErr
+      ? `Pagada en Supabase pero Alegra falló: ${alegraErr}`
+      : (!inv.alegra_bill_id ? 'Factura sin alegra_bill_id, solo Supabase' :
+         (!bankAccount?.alegra_account_id ? 'Cuenta sin alegra_account_id, solo Supabase' : 'OK'));
+
+    return await pymUpsertImport(supabase, {
+      bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+      payee, memo, amount, currency, memo_last4: memoLast4,
+      matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+      alegra_payment_id: alegraPaymentId,
+      alegra_bill_id: inv.alegra_bill_id,
+      bank_account_id: bankAccount?.id || null,
+      status: finalStatus,
+      notes: finalNotes,
+      raw_row: { row },
+      existing,
+    });
+  }
+
+  // ============================================================
+  // RAMA B: PAGO MÚLTIPLE (varias facturas listadas en el memo)
+  // ============================================================
+  // Reglas estrictas para evitar matches falsos:
+  //   1. Toda factura listada en el memo debe existir y estar en la moneda correcta
+  //   2. La suma de los totales debe cuadrar con el monto del pago
+  //      Tolerancia: ±0.05 USD o ±5 CRC (redondeos acumulados)
+  //   3. Si una factura tiene múltiples coincidencias por last_four, falla
+  //   4. Si alguna factura ya está pagada, falla (avisa al usuario)
+
+  // Buscar todas las facturas candidatas que matcheen alguno de los last_four
+  const { data: allCandidates } = await supabase
     .from('invoices')
     .select('id, consecutive, last_four, total, currency, supplier_name, alegra_bill_id, pay_status, exchange_rate')
-    .eq('last_four', memoLast4)
-    .eq('currency', currency)
-    .gte('total', amount - tolerance)
-    .lte('total', amount + tolerance);
+    .in('last_four', memoLast4Array)
+    .eq('currency', currency);
 
-  const matches = candidates || [];
+  const candArr = allCandidates || [];
 
-  if (matches.length === 0) {
+  // Agrupar por last_four
+  const byLast4 = {};
+  for (const c of candArr) {
+    if (!byLast4[c.last_four]) byLast4[c.last_four] = [];
+    byLast4[c.last_four].push(c);
+  }
+
+  // Verificar que cada last_four del memo tenga exactamente 1 factura
+  const missing = [];
+  const ambiguous = [];
+  const matchedInvoices = [];
+  for (const l4 of memoLast4Array) {
+    const found = byLast4[l4] || [];
+    if (found.length === 0) missing.push(l4);
+    else if (found.length > 1) ambiguous.push({ last4: l4, count: found.length });
+    else matchedInvoices.push(found[0]);
+  }
+
+  if (missing.length > 0) {
     return await pymUpsertImport(supabase, {
       bank_sheet: tab, row_date: rowDate, check_num: checkNum,
       payee, memo, amount, currency, memo_last4: memoLast4,
       bank_account_id: bankAccount?.id || null,
       status: 'unmatched',
-      notes: `No hay factura con last_four=${memoLast4} monto=${amount} moneda=${currency}`,
-      raw_row: { row },
+      notes: `Pago múltiple: faltan facturas con last_four=${missing.join(',')} en moneda ${currency}`,
+      raw_row: { row, expected_last4: memoLast4Array },
       existing,
     });
   }
 
-  if (matches.length > 1) {
+  if (ambiguous.length > 0) {
     return await pymUpsertImport(supabase, {
       bank_sheet: tab, row_date: rowDate, check_num: checkNum,
       payee, memo, amount, currency, memo_last4: memoLast4,
       bank_account_id: bankAccount?.id || null,
       status: 'ambiguous',
-      notes: `Múltiples facturas coinciden (${matches.length}): ${matches.map(m => m.consecutive).join(', ')}`,
-      raw_row: { row, candidates: matches.map(m => ({ id: m.id, consecutive: m.consecutive, supplier: m.supplier_name })) },
+      notes: `Pago múltiple: hay ambigüedad en last_four=${ambiguous.map(a => `${a.last4}(${a.count})`).join(',')}`,
+      raw_row: { row, ambiguous },
       existing,
     });
   }
 
-  // Match único
-  const inv = matches[0];
-
-  // 3.5. Si ya está pagada, solo registrar como duplicado
-  if (inv.pay_status === 'paid') {
+  // Verificar que ninguna esté ya pagada
+  const yaPagadas = matchedInvoices.filter(inv => inv.pay_status === 'paid');
+  if (yaPagadas.length > 0) {
     return await pymUpsertImport(supabase, {
       bank_sheet: tab, row_date: rowDate, check_num: checkNum,
       payee, memo, amount, currency, memo_last4: memoLast4,
-      matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
       bank_account_id: bankAccount?.id || null,
       status: 'duplicate',
-      notes: 'La factura ya estaba marcada como pagada',
-      raw_row: { row },
+      notes: `Pago múltiple: ya están pagadas las facturas ${yaPagadas.map(i => i.consecutive).join(', ')}`,
+      raw_row: { row, ya_pagadas: yaPagadas.map(i => i.consecutive) },
       existing,
     });
   }
 
-  // 4. Marcar factura como pagada en Supabase
-  const { error: updErr } = await supabase.from('invoices').update({
-    pay_status: 'paid',
-    paid_date: rowDate,
-    paid_bank_id: bankAccount?.id || null,
-    paid_reference: checkNum,
-  }).eq('id', inv.id);
-
-  if (updErr) {
+  // Verificar que la suma de totales cuadre con el monto del pago
+  const sumaTotales = matchedInvoices.reduce((s, inv) => s + parseFloat(inv.total), 0);
+  const toleranciaMulti = currency === 'USD' ? 0.05 : 5.0;
+  const diff = Math.abs(sumaTotales - amount);
+  if (diff > toleranciaMulti) {
     return await pymUpsertImport(supabase, {
       bank_sheet: tab, row_date: rowDate, check_num: checkNum,
       payee, memo, amount, currency, memo_last4: memoLast4,
-      matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
       bank_account_id: bankAccount?.id || null,
-      status: 'error',
-      notes: `Error marcando factura pagada: ${updErr.message}`,
-      raw_row: { row },
+      status: 'unmatched',
+      notes: `Pago múltiple: suma de facturas (${sumaTotales.toFixed(2)}) no cuadra con monto pagado (${amount.toFixed(2)}). Diff=${diff.toFixed(2)} ${currency}`,
+      raw_row: { row, invoices: matchedInvoices.map(i => ({ consecutive: i.consecutive, total: i.total })) },
       existing,
     });
   }
 
-  // 5. Si tiene alegra_bill_id y la cuenta tiene alegra_account_id, mandar pago a Alegra
+  // Todo válido. Marcar TODAS las facturas como pagadas
+  const consecutivos = matchedInvoices.map(i => i.consecutive).join(', ');
+  for (const inv of matchedInvoices) {
+    const { error: updErr } = await supabase.from('invoices').update({
+      pay_status: 'paid',
+      paid_date: rowDate,
+      paid_bank_id: bankAccount?.id || null,
+      paid_reference: checkNum,
+    }).eq('id', inv.id);
+    if (updErr) {
+      return await pymUpsertImport(supabase, {
+        bank_sheet: tab, row_date: rowDate, check_num: checkNum,
+        payee, memo, amount, currency, memo_last4: memoLast4,
+        bank_account_id: bankAccount?.id || null,
+        status: 'error',
+        notes: `Pago múltiple: error marcando factura ${inv.consecutive} como pagada: ${updErr.message}`,
+        raw_row: { row },
+        existing,
+      });
+    }
+  }
+
+  // Crear pago en Alegra apuntando a TODAS las bills
+  // Solo si TODAS las facturas tienen alegra_bill_id y la cuenta tiene alegra_account_id
   let alegraPaymentId = null;
   let alegraErr = null;
-  if (inv.alegra_bill_id && bankAccount?.alegra_account_id) {
+  const todasTienenBillId = matchedInvoices.every(i => i.alegra_bill_id);
+
+  if (todasTienenBillId && bankAccount?.alegra_account_id) {
     try {
+      const billsArray = matchedInvoices.map(i => ({
+        id: i.alegra_bill_id,
+        amount: parseFloat(i.total),
+      }));
+      // Para conversión de moneda, usar el TC promedio ponderado de las facturas
+      // (si todas tienen mismo TC, da el mismo valor)
+      let avgRate = 1;
+      if (currency !== 'CRC') {
+        const totalSum = matchedInvoices.reduce((s, i) => s + parseFloat(i.total), 0);
+        const weightedRate = matchedInvoices.reduce((s, i) =>
+          s + parseFloat(i.total) * (parseFloat(i.exchange_rate) || 1), 0);
+        avgRate = totalSum > 0 ? weightedRate / totalSum : 1;
+      }
       const result = await pymCreateAlegraPayment({
         alegraAuth,
-        bill_id: inv.alegra_bill_id,
+        bills_array: billsArray,
         bank_alegra_id: bankAccount.alegra_account_id,
         payment_method: bankAccount.alegra_payment_method || 'transfer',
-        amount: inv.total,
-        currency: inv.currency,
-        exchange_rate: inv.exchange_rate,
+        amount: amount, // monto total de la transacción bancaria
+        currency: currency,
+        exchange_rate: avgRate,
         date: rowDate,
         reference: checkNum,
       });
       alegraPaymentId = result.id;
-      // Guardar en invoices
-      await supabase.from('invoices').update({
-        alegra_payment_id: alegraPaymentId,
-        alegra_payment_synced_at: new Date().toISOString(),
-      }).eq('id', inv.id);
+      // Guardar el alegra_payment_id en cada factura
+      for (const inv of matchedInvoices) {
+        await supabase.from('invoices').update({
+          alegra_payment_id: alegraPaymentId,
+          alegra_payment_synced_at: new Date().toISOString(),
+        }).eq('id', inv.id);
+      }
     } catch (err) {
       alegraErr = err.message;
     }
   }
 
-  const finalStatus = alegraPaymentId ? 'paid_alegra' : (alegraErr ? 'error' : 'paid_supabase_only');
-  const finalNotes = alegraErr
-    ? `Pagada en Supabase pero Alegra falló: ${alegraErr}`
-    : (!inv.alegra_bill_id ? 'Factura sin alegra_bill_id, solo Supabase' :
-       (!bankAccount?.alegra_account_id ? 'Cuenta sin alegra_account_id, solo Supabase' : 'OK'));
+  const finalStatusMulti = alegraPaymentId ? 'paid_alegra' : (alegraErr ? 'error' : 'paid_supabase_only');
+  const finalNotesMulti = alegraErr
+    ? `Pago múltiple (${matchedInvoices.length} facturas: ${consecutivos}). Pagadas en Supabase pero Alegra falló: ${alegraErr}`
+    : (!todasTienenBillId
+        ? `Pago múltiple (${matchedInvoices.length} facturas: ${consecutivos}). Alguna sin alegra_bill_id, solo Supabase`
+        : (!bankAccount?.alegra_account_id
+            ? `Pago múltiple (${matchedInvoices.length} facturas: ${consecutivos}). Cuenta sin alegra_account_id, solo Supabase`
+            : `OK pago múltiple (${matchedInvoices.length} facturas: ${consecutivos})`));
 
   return await pymUpsertImport(supabase, {
     bank_sheet: tab, row_date: rowDate, check_num: checkNum,
     payee, memo, amount, currency, memo_last4: memoLast4,
-    matched_invoice_id: inv.id, matched_invoice_consecutive: inv.consecutive,
+    matched_invoice_id: matchedInvoices[0].id, // primera para indexar
+    matched_invoice_consecutive: consecutivos,
     alegra_payment_id: alegraPaymentId,
-    alegra_bill_id: inv.alegra_bill_id,
+    alegra_bill_id: matchedInvoices[0].alegra_bill_id,
     bank_account_id: bankAccount?.id || null,
-    status: finalStatus,
-    notes: finalNotes,
-    raw_row: { row },
+    status: finalStatusMulti,
+    notes: finalNotesMulti,
+    raw_row: { row, multi_invoices: matchedInvoices.map(i => ({ id: i.id, consecutive: i.consecutive, total: i.total })) },
     existing,
   });
 }
