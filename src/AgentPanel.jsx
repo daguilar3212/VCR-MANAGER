@@ -797,6 +797,15 @@ export default function AgentPanel() {
       })
       .subscribe();
 
+    // Canal 1b: showroom (silencioso, solo refresca lista). Cuando el admin
+    // agrega/edita/marca-vendido un carro, los vendedores ven el cambio al instante.
+    const showroomChannel = supabase
+      .channel('agent-showroom-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'showroom_vehicles' }, () => {
+        loadShowroomVehicles();
+      })
+      .subscribe();
+
     // Canal 2: mis ventas (con sonido y notificación cuando cambia mi status)
     const salesChannel = supabase
       .channel('agent-sales-changes')
@@ -825,6 +834,7 @@ export default function AgentPanel() {
     // Cleanup al desmontar
     return () => {
       supabase.removeChannel(vehiclesChannel);
+      supabase.removeChannel(showroomChannel);
       supabase.removeChannel(salesChannel);
     };
   }, [profile?.agent_id]);
