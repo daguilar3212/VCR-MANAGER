@@ -1074,6 +1074,7 @@ export default function App() {
   const [reporteFrom, setReporteFrom] = useState("");
   const [reporteTo, setReporteTo] = useState("");
   const [inventorySnapshots, setInventorySnapshots] = useState([]);
+  const [showroomCosts, setShowroomCosts] = useState([]);
 
   const loadInventorySnapshots = async () => {
     const { data } = await supabase
@@ -1082,6 +1083,15 @@ export default function App() {
       .order('snapshot_date', { ascending: false })
       .limit(24);
     if (data) setInventorySnapshots(data);
+  };
+
+  // Carga global de TODOS los costos de compra del showroom (para reportes).
+  // Se usa para calcular valor del inventario propio y carros que no rotan.
+  const loadAllShowroomCosts = async () => {
+    const { data } = await supabase
+      .from('showroom_vehicle_costs')
+      .select('plate, purchase_cost_amount, purchase_cost_currency, purchase_cost_tc, purchase_cost_date');
+    if (data) setShowroomCosts(data);
   };
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [newVehicleForm, setNewVehicleForm] = useState(null);
@@ -1206,7 +1216,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); loadInventorySnapshots(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); loadInventorySnapshots(); loadAllShowroomCosts(); }, []);
 
   // Realtime: escuchar cambios en showroom_vehicles para que el admin vea
   // cambios de vendedores (o de otros admins) sin tener que recargar.
@@ -4186,17 +4196,61 @@ export default function App() {
 
     // ============================================================
     // CÁLCULOS PARA REPORTE INVENTARIO
+    //   Usa SHOWROOM (no la pestaña Inventario interna que es histórico de Alegra).
+    //   Incluye DISPONIBLES y RESERVADOS, excluye VENDIDOS y CONSIGNACIÓN.
     // ============================================================
     const todayMs = today.getTime();
-    const carrosDisponibles = vehicles.filter(v => v.s === "disponible" || v.status === "disponible");
-    const carrosNoRotan = carrosDisponibles.map(v => {
-      const dCompra = v.purchase_date ? new Date(v.purchase_date) : null;
+
+    // Mapa rápido de costos por placa
+    const costoMap = {};
+    (showroomCosts || []).forEach(c => {
+      costoMap[(c.plate || '').toUpperCase().trim()] = c;
+    });
+
+    // Carros activos del showroom (no vendidos, no consignación)
+    const carrosActivos = (showroomVehicles || []).filter(v =>
+      v.estado !== 'VENDIDO' && !v.is_consignment
+    );
+
+    const carrosNoRotan = carrosActivos.map(sv => {
+      const plateKey = (sv.plate || '').toUpperCase().trim();
+      const costo = costoMap[plateKey];
+      // Días en stock: usar purchase_cost_date como fecha de entrada al inventario
+      const dCompra = costo?.purchase_cost_date ? new Date(costo.purchase_cost_date) : null;
       const dias = dCompra ? Math.floor((todayMs - dCompra.getTime()) / 86400000) : null;
-      const costos = costsByPlate[v.p] || { total: 0 };
-      const costoTotal = (parseFloat(v.purchase_price) || 0) + costos.total;
-      const precio = parseFloat(v.crc) || 0;
-      const margenEst = precio > 0 && costoTotal > 0 ? precio - costoTotal : null;
-      return { v, dias, costoTotal, precio, margenEst };
+
+      // Costo de compra en CRC
+      let costoCRC = 0;
+      if (costo) {
+        const cAmt = parseFloat(costo.purchase_cost_amount) || 0;
+        const cCur = costo.purchase_cost_currency || 'USD';
+        const cTc = parseFloat(costo.purchase_cost_tc) || 0;
+        if (cCur === 'USD') {
+          costoCRC = cAmt * (cTc > 1 ? cTc : bccrVenta);
+        } else {
+          costoCRC = cAmt;
+        }
+      }
+
+      // Precio de venta en CRC
+      const precioAmt = parseFloat(sv.price) || 0;
+      const precioCur = sv.currency || 'USD';
+      const precioCRC = precioCur === 'USD' ? precioAmt * bccrVenta : precioAmt;
+
+      const margenEst = precioCRC > 0 && costoCRC > 0 ? precioCRC - costoCRC : null;
+      return {
+        v: {
+          p: sv.plate,
+          b: sv.brand,
+          m: sv.model,
+          y: sv.year,
+          estado: sv.estado,
+        },
+        dias,
+        costoTotal: costoCRC,
+        precio: precioCRC,
+        margenEst,
+      };
     }).sort((a, b) => (b.dias || 0) - (a.dias || 0));
 
     const capitalTrabado = carrosNoRotan.reduce((s, c) => s + c.costoTotal, 0);
@@ -4227,28 +4281,36 @@ export default function App() {
       .sort((a, b) => b.vendidos - a.vendidos);
 
     // ============================================================
-    // VALOR DEL INVENTARIO PROPIO (desde showroom_vehicles)
+    // VALOR DEL INVENTARIO PROPIO (desde showroom_vehicles + showroom_vehicle_costs)
+    //   Incluye DISPONIBLES y RESERVADOS, excluye VENDIDOS y CONSIGNACIÓN.
+    //   El costo viene de showroom_vehicle_costs (no de la pestaña Inventario).
     // ============================================================
     const showroomActivos = (showroomVehicles || []).filter(v => v.estado !== 'VENDIDO');
     const propiosActivos = showroomActivos.filter(v => !v.is_consignment);
     const consigActivos = showroomActivos.filter(v => v.is_consignment);
 
-    // Cargar costos de propios (esto es desde memoria, asumiendo que están cargados)
-    // Para el cálculo necesitamos showroom_vehicle_costs por placa.
-    // Como no tenemos eso global, hacemos cálculo aproximado usando vehicles.purchase_cost
-    // Si la placa coincide con vehicles, sumamos el purchase_cost.
     let invCostoCRC = 0;
     let invPrecioCRC = 0;
-    const detalleInv = [];
     propiosActivos.forEach(sv => {
-      const v = vehicles.find(vv => vv.plate === sv.plate);
-      const costoCRC = v ? (parseFloat(v.purchase_price) || 0) : 0;
+      const plateKey = (sv.plate || '').toUpperCase().trim();
+      const costo = costoMap[plateKey];
+
+      // Costo a CRC
+      if (costo) {
+        const cAmt = parseFloat(costo.purchase_cost_amount) || 0;
+        const cCur = costo.purchase_cost_currency || 'USD';
+        const cTc = parseFloat(costo.purchase_cost_tc) || 0;
+        if (cCur === 'USD') {
+          invCostoCRC += cAmt * (cTc > 1 ? cTc : bccrVenta);
+        } else {
+          invCostoCRC += cAmt;
+        }
+      }
+
+      // Precio venta a CRC
       const precio = parseFloat(sv.price) || 0;
       const precioCur = sv.currency || 'USD';
-      const precioCRC = precioCur === 'USD' ? precio * bccrVenta : precio;
-      invCostoCRC += costoCRC;
-      invPrecioCRC += precioCRC;
-      detalleInv.push({ plate: sv.plate, marca: `${sv.brand} ${sv.model}`, costo: costoCRC, precio: precioCRC });
+      invPrecioCRC += precioCur === 'USD' ? precio * bccrVenta : precio;
     });
     const invMargenCRC = invPrecioCRC - invCostoCRC;
 
