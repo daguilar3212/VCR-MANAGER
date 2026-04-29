@@ -1020,7 +1020,7 @@ export default function App() {
     estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
     transmission: '', color: '', km: '', fuel: '', engine_cc: '',
     cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
-    price: '', currency: 'USD'
+    price: '', currency: 'USD', is_consignment: false,
   });
   const [addingCar, setAddingCar] = useState(false);
 
@@ -1068,6 +1068,21 @@ export default function App() {
   const [completedVehicleLines, setCompletedVehicleLines] = useState(new Set()); // line indices already added
   const [cars, setCars] = useState([]);
   const [invFilter, setInvFilter] = useState("disponible"); // disponible, reservado, vendido, all
+  // Reportes: tab actual y rango de fechas
+  const [reporteTab, setReporteTab] = useState("economicos");  // economicos, inventario, rrhh
+  const [reportePeriod, setReportePeriod] = useState("mes_actual");  // mes_actual, mes_anterior, ano_actual, custom
+  const [reporteFrom, setReporteFrom] = useState("");
+  const [reporteTo, setReporteTo] = useState("");
+  const [inventorySnapshots, setInventorySnapshots] = useState([]);
+
+  const loadInventorySnapshots = async () => {
+    const { data } = await supabase
+      .from('inventory_snapshots')
+      .select('*')
+      .order('snapshot_date', { ascending: false })
+      .limit(24);
+    if (data) setInventorySnapshots(data);
+  };
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [newVehicleForm, setNewVehicleForm] = useState(null);
 
@@ -1191,7 +1206,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); loadInventorySnapshots(); }, []);
 
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
   // showroomPicked es un ID (number), hay que resolverlo al objeto en showroomVehicles
@@ -1307,7 +1322,7 @@ export default function App() {
           estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
           transmission: '', color: '', km: '', fuel: '', engine_cc: '',
           cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
-          price: '', currency: 'USD'
+          price: '', currency: 'USD', is_consignment: false
         });
         await loadShowroomVehicles();
       } else {
@@ -1337,7 +1352,7 @@ export default function App() {
           estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
           transmission: '', color: '', km: '', fuel: '', engine_cc: '',
           cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
-          price: '', currency: 'USD'
+          price: '', currency: 'USD', is_consignment: false
         });
         await loadShowroomVehicles();
       } else {
@@ -1390,7 +1405,8 @@ export default function App() {
       passengers: v.passengers || '',
       style: v.style || '',
       price: v.price || '',
-      currency: v.currency || 'USD'
+      currency: v.currency || 'USD',
+      is_consignment: !!v.is_consignment,
     });
     setShowAddCarModal(true);
   };
@@ -3929,6 +3945,767 @@ export default function App() {
       );
     }
     return null;
+  };
+
+  // ======= RENDER: REPORTES =======
+  const renderReportes = () => {
+    // 1. Calcular rango de fechas según período seleccionado
+    const today = new Date();
+    let fromDate, toDate;
+    if (reportePeriod === "mes_actual") {
+      fromDate = new Date(today.getFullYear(), today.getMonth(), 1);
+      toDate = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    } else if (reportePeriod === "mes_anterior") {
+      fromDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      toDate = new Date(today.getFullYear(), today.getMonth(), 0);
+    } else if (reportePeriod === "ano_actual") {
+      fromDate = new Date(today.getFullYear(), 0, 1);
+      toDate = new Date(today.getFullYear(), 11, 31);
+    } else if (reportePeriod === "custom" && reporteFrom && reporteTo) {
+      fromDate = new Date(reporteFrom + "T00:00:00");
+      toDate = new Date(reporteTo + "T23:59:59");
+    } else {
+      fromDate = new Date(today.getFullYear(), today.getMonth(), 1);
+      toDate = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+    }
+    const fromStr = fromDate.toISOString().slice(0, 10);
+    const toStr = toDate.toISOString().slice(0, 10);
+
+    // Período anterior para comparación
+    const periodMs = toDate - fromDate;
+    const prevTo = new Date(fromDate.getTime() - 86400000);
+    const prevFrom = new Date(prevTo.getTime() - periodMs);
+    const prevFromStr = prevFrom.toISOString().slice(0, 10);
+    const prevToStr = prevTo.toISOString().slice(0, 10);
+
+    // Helper: convertir un monto a CRC usando tcItem o tc actual del BCCR
+    const bccrCompra = tcRates.bccr?.compra || 510;
+    const bccrVenta = tcRates.bccr?.venta || 515;
+    const toCRC = (amount, currency, tcItem) => {
+      const a = parseFloat(amount) || 0;
+      if (currency === "USD") {
+        const tc = (tcItem && tcItem > 1) ? tcItem : bccrVenta;
+        return a * tc;
+      }
+      return a;
+    };
+    const toUSD = (amount, currency, tcItem) => {
+      const a = parseFloat(amount) || 0;
+      if (currency === "USD") return a;
+      const tc = (tcItem && tcItem > 1) ? tcItem : bccrCompra;
+      return tc > 0 ? a / tc : 0;
+    };
+
+    // ============================================================
+    // CÁLCULOS PARA REPORTE ECONÓMICOS
+    // ============================================================
+    // Ventas aprobadas en el período
+    const salesPeriod = sales.filter(s => {
+      if (s.status !== "aprobada") return false;
+      const d = (s.sale_date || s.approved_at || "").slice(0, 10);
+      return d >= fromStr && d <= toStr;
+    });
+    const salesPrev = sales.filter(s => {
+      if (s.status !== "aprobada") return false;
+      const d = (s.sale_date || s.approved_at || "").slice(0, 10);
+      return d >= prevFromStr && d <= prevToStr;
+    });
+
+    // Ingresos por ventas (en CRC para sumar)
+    const ingresoCRC = salesPeriod.reduce((s, sale) => {
+      return s + toCRC(sale.sale_price, sale.sale_currency || "USD", sale.sale_exchange_rate);
+    }, 0);
+    const ingresoCRCPrev = salesPrev.reduce((s, sale) => {
+      return s + toCRC(sale.sale_price, sale.sale_currency || "USD", sale.sale_exchange_rate);
+    }, 0);
+
+    // Costo de los carros vendidos (purchase_cost) en CRC
+    const costoCarrosVendidosCRC = salesPeriod.reduce((s, sale) => {
+      const v = vehicles.find(vv => vv.plate === sale.vehicle_plate);
+      if (!v) return s;
+      // purchase_cost en vehicles ya está en CRC (por el flujo)
+      return s + (parseFloat(v.purchase_cost) || 0);
+    }, 0);
+    const costoCarrosVendidosCRCPrev = salesPrev.reduce((s, sale) => {
+      const v = vehicles.find(vv => vv.plate === sale.vehicle_plate);
+      if (!v) return s;
+      return s + (parseFloat(v.purchase_cost) || 0);
+    }, 0);
+
+    // Costos asociados de los carros vendidos (facturas con plate, no isVehicle)
+    const costosAsocVendidosCRC = salesPeriod.reduce((s, sale) => {
+      const facts = invoices.filter(i =>
+        i.assignStatus === "assigned" &&
+        i.plate === sale.vehicle_plate &&
+        !i.isVehicle
+      );
+      return s + facts.reduce((f, inv) => f + toCRC(inv.total, inv.currency, inv.exchangeRate), 0);
+    }, 0);
+
+    // Comisiones pagadas a agentes en el período (de las sales aprobadas)
+    const comisionesCRC = salesPeriod.reduce((s, sale) => {
+      const com = parseFloat(sale.commission_amount) || 0;
+      return s + toCRC(com, sale.sale_currency || "USD", sale.sale_exchange_rate);
+    }, 0);
+
+    // Margen bruto = Ingresos - Costo carros - Costos asociados
+    const margenBrutoCRC = ingresoCRC - costoCarrosVendidosCRC - costosAsocVendidosCRC;
+    const margenBrutoCRCPrev = ingresoCRCPrev - costoCarrosVendidosCRCPrev;
+
+    // Gastos operativos: facturas en el período con assignStatus=operational (no asignadas a carros)
+    // PERO TAMBIÉN: facturas con isVehicle=false NO ASIGNADAS pero del período (gastos comunes)
+    const gastosOpFacturas = invoices.filter(i => {
+      const d = (i.date || "").slice(0, 10);
+      if (d < fromStr || d > toStr) return false;
+      // Excluir compras de carros
+      if (i.isVehicle) return false;
+      // Tomar las operativas y las asignadas a carros (todos son gastos del negocio)
+      // Excluir las asignadas a carros porque ya las contamos en costosAsoc... pero solo
+      // si el carro fue vendido en este período. Si el carro NO se vendió aún, esa factura
+      // sigue siendo un gasto incurrido. PERO para el P&L del período, solo cuentan las
+      // de carros vendidos. Las asociadas a carros NO vendidos quedan como inventario,
+      // no como gasto.
+      // Entonces aquí solo cuentan las que NO están asignadas a un carro.
+      if (i.plate) return false;
+      return true;
+    });
+    const gastosOpCRC = gastosOpFacturas.reduce((s, inv) => s + toCRC(inv.total, inv.currency, inv.exchangeRate), 0);
+
+    // Desglose de gastos operativos por categoría
+    const gastosPorCat = {};
+    gastosOpFacturas.forEach(inv => {
+      const cat = catLabel(inv.catId);
+      if (!gastosPorCat[cat]) gastosPorCat[cat] = 0;
+      gastosPorCat[cat] += toCRC(inv.total, inv.currency, inv.exchangeRate);
+    });
+    const gastosCatList = Object.entries(gastosPorCat).sort(([, a], [, b]) => b - a);
+
+    // Planilla del período: payrolls confirmadas con pay_date en el período
+    const planillasPeriod = (payrolls || []).filter(p => {
+      const d = (p.pay_date || "").slice(0, 10);
+      return p.status !== "draft" && d >= fromStr && d <= toStr;
+    });
+    const planillaCRC = planillasPeriod.reduce((s, p) => s + (parseFloat(p.total_neto) || 0), 0);
+
+    // Utilidad neta
+    const utilidadNetaCRC = margenBrutoCRC - gastosOpCRC - planillaCRC - comisionesCRC;
+    const utilidadNetaCRCPrev = margenBrutoCRCPrev - gastosOpCRC - planillaCRC - comisionesCRC; // simplificado
+
+    // Tendencia 12 meses
+    const trend = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+      const fStr = d.toISOString().slice(0, 10);
+      const tStr = monthEnd.toISOString().slice(0, 10);
+      const monthSales = sales.filter(s => {
+        if (s.status !== "aprobada") return false;
+        const sd = (s.sale_date || s.approved_at || "").slice(0, 10);
+        return sd >= fStr && sd <= tStr;
+      });
+      const monthIngr = monthSales.reduce((s, sale) => s + toCRC(sale.sale_price, sale.sale_currency || "USD", sale.sale_exchange_rate), 0);
+      const monthCost = monthSales.reduce((s, sale) => {
+        const v = vehicles.find(vv => vv.plate === sale.vehicle_plate);
+        return s + (v ? (parseFloat(v.purchase_cost) || 0) : 0);
+      }, 0);
+      trend.push({
+        label: d.toLocaleDateString("es-CR", { month: "short", year: "2-digit" }),
+        ingresos: monthIngr,
+        margen: monthIngr - monthCost,
+        ventas: monthSales.length,
+      });
+    }
+    const maxTrendIngr = Math.max(...trend.map(t => t.ingresos), 1);
+
+    // Rentabilidad por proveedor
+    const proveedorStats = {};
+    vehicles.forEach(v => {
+      const sup = (v.purchase_supplier || "Sin proveedor").trim();
+      if (!proveedorStats[sup]) {
+        proveedorStats[sup] = { comprados: 0, vendidos: 0, costoTotal: 0, ingresoTotal: 0, diasTotal: 0, diasCount: 0 };
+      }
+      proveedorStats[sup].comprados++;
+      proveedorStats[sup].costoTotal += parseFloat(v.purchase_cost) || 0;
+
+      // Buscar si este carro fue vendido
+      const venta = sales.find(s => s.vehicle_plate === v.plate && s.status === "aprobada");
+      if (venta) {
+        proveedorStats[sup].vendidos++;
+        proveedorStats[sup].ingresoTotal += toCRC(venta.sale_price, venta.sale_currency || "USD", venta.sale_exchange_rate);
+        // Días en stock = sale_date - purchase_date
+        if (v.purchase_date && venta.sale_date) {
+          const dCompra = new Date(v.purchase_date);
+          const dVenta = new Date(venta.sale_date);
+          const dias = Math.floor((dVenta - dCompra) / 86400000);
+          if (dias >= 0) {
+            proveedorStats[sup].diasTotal += dias;
+            proveedorStats[sup].diasCount++;
+          }
+        }
+      }
+    });
+    const proveedorList = Object.entries(proveedorStats)
+      .map(([sup, st]) => ({
+        proveedor: sup,
+        comprados: st.comprados,
+        vendidos: st.vendidos,
+        tasaVenta: st.comprados > 0 ? (st.vendidos / st.comprados) * 100 : 0,
+        margenPromedio: st.vendidos > 0 ? (st.ingresoTotal - st.costoTotal) / st.vendidos : 0,
+        diasPromedio: st.diasCount > 0 ? Math.round(st.diasTotal / st.diasCount) : null,
+      }))
+      .filter(p => p.comprados >= 1)
+      .sort((a, b) => b.margenPromedio - a.margenPromedio);
+
+    // ============================================================
+    // CÁLCULOS PARA REPORTE INVENTARIO
+    // ============================================================
+    const todayMs = today.getTime();
+    const carrosDisponibles = vehicles.filter(v => v.s === "disponible" || v.status === "disponible");
+    const carrosNoRotan = carrosDisponibles.map(v => {
+      const dCompra = v.purchase_date ? new Date(v.purchase_date) : null;
+      const dias = dCompra ? Math.floor((todayMs - dCompra.getTime()) / 86400000) : null;
+      const costos = costsByPlate[v.p] || { total: 0 };
+      const costoTotal = (parseFloat(v.purchase_price) || 0) + costos.total;
+      const precio = parseFloat(v.crc) || 0;
+      const margenEst = precio > 0 && costoTotal > 0 ? precio - costoTotal : null;
+      return { v, dias, costoTotal, precio, margenEst };
+    }).sort((a, b) => (b.dias || 0) - (a.dias || 0));
+
+    const capitalTrabado = carrosNoRotan.reduce((s, c) => s + c.costoTotal, 0);
+
+    // Velocidad por marca/modelo
+    const modeloStats = {};
+    sales.filter(s => s.status === "aprobada" && s.vehicle_plate).forEach(s => {
+      const v = vehicles.find(vv => vv.plate === s.vehicle_plate);
+      if (!v) return;
+      const key = `${v.b || "?"} ${v.m || "?"}`;
+      if (!modeloStats[key]) modeloStats[key] = { count: 0, diasTotal: 0, diasCount: 0 };
+      modeloStats[key].count++;
+      if (v.purchase_date && s.sale_date) {
+        const dC = new Date(v.purchase_date), dV = new Date(s.sale_date);
+        const dias = Math.floor((dV - dC) / 86400000);
+        if (dias >= 0) {
+          modeloStats[key].diasTotal += dias;
+          modeloStats[key].diasCount++;
+        }
+      }
+    });
+    const modeloList = Object.entries(modeloStats)
+      .map(([k, s]) => ({
+        modelo: k,
+        vendidos: s.count,
+        diasPromedio: s.diasCount > 0 ? Math.round(s.diasTotal / s.diasCount) : null,
+      }))
+      .sort((a, b) => b.vendidos - a.vendidos);
+
+    // ============================================================
+    // VALOR DEL INVENTARIO PROPIO (desde showroom_vehicles)
+    // ============================================================
+    const showroomActivos = (showroomVehicles || []).filter(v => v.estado !== 'VENDIDO');
+    const propiosActivos = showroomActivos.filter(v => !v.is_consignment);
+    const consigActivos = showroomActivos.filter(v => v.is_consignment);
+
+    // Cargar costos de propios (esto es desde memoria, asumiendo que están cargados)
+    // Para el cálculo necesitamos showroom_vehicle_costs por placa.
+    // Como no tenemos eso global, hacemos cálculo aproximado usando vehicles.purchase_cost
+    // Si la placa coincide con vehicles, sumamos el purchase_cost.
+    let invCostoCRC = 0;
+    let invPrecioCRC = 0;
+    const detalleInv = [];
+    propiosActivos.forEach(sv => {
+      const v = vehicles.find(vv => vv.plate === sv.plate);
+      const costoCRC = v ? (parseFloat(v.purchase_price) || 0) : 0;
+      const precio = parseFloat(sv.price) || 0;
+      const precioCur = sv.currency || 'USD';
+      const precioCRC = precioCur === 'USD' ? precio * bccrVenta : precio;
+      invCostoCRC += costoCRC;
+      invPrecioCRC += precioCRC;
+      detalleInv.push({ plate: sv.plate, marca: `${sv.brand} ${sv.model}`, costo: costoCRC, precio: precioCRC });
+    });
+    const invMargenCRC = invPrecioCRC - invCostoCRC;
+
+    // ============================================================
+    // CÁLCULOS PARA REPORTE RRHH
+    // ============================================================
+    const agentesStats = {};
+    salesPeriod.forEach(s => {
+      // Si una venta tiene múltiples agentes, dividir comisión
+      const sAgents = (s.agents_data && Array.isArray(s.agents_data)) ? s.agents_data : [];
+      // Si no, usar agent_id directo
+      const list = sAgents.length > 0 ? sAgents : (s.agent_id ? [{ agent_id: s.agent_id, share: 100 }] : []);
+      list.forEach(a => {
+        const agentId = a.agent_id || a.id;
+        if (!agentesStats[agentId]) {
+          const aInfo = agents.find(ag => ag.id === agentId);
+          agentesStats[agentId] = {
+            id: agentId,
+            name: aInfo?.name || `Agente ${agentId}`,
+            isEmployee: aInfo?.is_employee !== false,
+            ventas: 0,
+            volumenCRC: 0,
+            comisionesCRC: 0,
+          };
+        }
+        const share = (parseFloat(a.share) || 100) / 100;
+        agentesStats[agentId].ventas += share;
+        agentesStats[agentId].volumenCRC += toCRC(s.sale_price, s.sale_currency || "USD", s.sale_exchange_rate) * share;
+        agentesStats[agentId].comisionesCRC += toCRC(s.commission_amount || 0, s.sale_currency || "USD", s.sale_exchange_rate) * share;
+      });
+    });
+
+    // Sumar planilla del período por empleado
+    planillasPeriod.forEach(p => {
+      const items = p.items || [];
+      items.forEach(it => {
+        const agId = it.agent_id || it.employee_id;
+        if (!agId) return;
+        if (!agentesStats[agId]) {
+          const aInfo = agents.find(ag => ag.id === agId);
+          agentesStats[agId] = {
+            id: agId,
+            name: aInfo?.name || `Empleado ${agId}`,
+            isEmployee: true,
+            ventas: 0,
+            volumenCRC: 0,
+            comisionesCRC: 0,
+          };
+        }
+        if (!agentesStats[agId].planillaCRC) agentesStats[agId].planillaCRC = 0;
+        agentesStats[agId].planillaCRC += parseFloat(it.neto || it.salario_neto || 0);
+      });
+    });
+
+    const agentesList = Object.values(agentesStats).map(a => ({
+      ...a,
+      planillaCRC: a.planillaCRC || 0,
+      costoTotal: (a.comisionesCRC || 0) + (a.planillaCRC || 0),
+      // Margen aproximado generado: 50% del volumen como estimado (esto es aproximación)
+      // Mejor: volumen vendido - comisiones - costo proporcional planilla
+      margenNeto: (a.volumenCRC * 0.20) - (a.comisionesCRC || 0) - (a.planillaCRC || 0),
+    })).sort((a, b) => b.margenNeto - a.margenNeto);
+
+    // Total planilla vs ingresos por mes (12 meses)
+    const planillaTrend = trend.map(t => {
+      const month = new Date();
+      month.setMonth(today.getMonth() - (11 - trend.indexOf(t)));
+      const fStr = new Date(month.getFullYear(), month.getMonth(), 1).toISOString().slice(0, 10);
+      const tStr = new Date(month.getFullYear(), month.getMonth() + 1, 0).toISOString().slice(0, 10);
+      const ps = (payrolls || []).filter(p => {
+        const d = (p.pay_date || "").slice(0, 10);
+        return p.status !== "draft" && d >= fStr && d <= tStr;
+      });
+      return { label: t.label, planilla: ps.reduce((s, p) => s + (parseFloat(p.total_neto) || 0), 0), ingresos: t.ingresos };
+    });
+    const maxPlanillaIngr = Math.max(...planillaTrend.map(p => Math.max(p.planilla, p.ingresos)), 1);
+
+    // ============================================================
+    // RENDER UI
+    // ============================================================
+    const Card = ({ title, value, subtitle, color, big }) => (
+      <div style={{ ...S.card, padding: 16, flex: 1, minWidth: 180 }}>
+        <div style={{ fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{title}</div>
+        <div style={{ fontSize: big ? 28 : 22, fontWeight: 800, color: color || "#e8eaf0" }}>{value}</div>
+        {subtitle && <div style={{ fontSize: 11, color: "#8b8fa4", marginTop: 4 }}>{subtitle}</div>}
+      </div>
+    );
+
+    const deltaArrow = (curr, prev) => {
+      if (!prev || prev === 0) return null;
+      const delta = ((curr - prev) / Math.abs(prev)) * 100;
+      const isUp = delta >= 0;
+      return (
+        <span style={{ color: isUp ? "#10b981" : "#e11d48", fontSize: 11, fontWeight: 600 }}>
+          {isUp ? "▲" : "▼"} {Math.abs(delta).toFixed(1)}%
+        </span>
+      );
+    };
+
+    return (
+      <div>
+        <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 16 }}>📊 Reportes</h1>
+
+        {/* Selector de período */}
+        <div style={{ ...S.card, padding: 12, marginBottom: 16, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "#8b8fa4", marginRight: 4 }}>Período:</span>
+          {[["mes_actual", "Mes actual"], ["mes_anterior", "Mes anterior"], ["ano_actual", "Año actual"], ["custom", "Personalizado"]].map(([k, l]) => (
+            <button key={k} onClick={() => setReportePeriod(k)} style={{ ...S.sel, background: reportePeriod === k ? "#4f8cff20" : "#1e2130", color: reportePeriod === k ? "#4f8cff" : "#8b8fa4", fontWeight: reportePeriod === k ? 600 : 400, padding: "6px 14px" }}>{l}</button>
+          ))}
+          {reportePeriod === "custom" && (
+            <>
+              <input type="date" value={reporteFrom} onChange={e => setReporteFrom(e.target.value)} style={{ ...S.inp, padding: "6px 10px" }} />
+              <span style={{ color: "#8b8fa4" }}>→</span>
+              <input type="date" value={reporteTo} onChange={e => setReporteTo(e.target.value)} style={{ ...S.inp, padding: "6px 10px" }} />
+            </>
+          )}
+          <span style={{ marginLeft: "auto", fontSize: 11, color: "#5a5e72" }}>
+            {fromDate.toLocaleDateString("es-CR")} → {toDate.toLocaleDateString("es-CR")}
+          </span>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+          {[["economicos", "💰 Económicos"], ["inventario", "🚗 Inventario"], ["rrhh", "👥 Recurso Humano"]].map(([k, l]) => (
+            <button key={k} onClick={() => setReporteTab(k)} style={{ ...S.sel, background: reporteTab === k ? "#4f8cff" : "#1e2130", color: reporteTab === k ? "#fff" : "#8b8fa4", fontWeight: 600, padding: "10px 18px", border: "none" }}>{l}</button>
+          ))}
+        </div>
+
+        {/* TAB ECONÓMICOS */}
+        {reporteTab === "economicos" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* P&L */}
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>📈 Estado de Resultados</div>
+
+              <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+                <Card title="Ingresos" value={`₡${fmt0(ingresoCRC)}`} subtitle={<>{salesPeriod.length} ventas {deltaArrow(ingresoCRC, ingresoCRCPrev)}</>} color="#10b981" big />
+                <Card title="Margen Bruto" value={`₡${fmt0(margenBrutoCRC)}`} subtitle={`${ingresoCRC > 0 ? ((margenBrutoCRC / ingresoCRC) * 100).toFixed(1) : 0}% del ingreso`} color="#4f8cff" big />
+                <Card title="Utilidad Neta" value={`₡${fmt0(utilidadNetaCRC)}`} subtitle={ingresoCRC > 0 ? `${((utilidadNetaCRC / ingresoCRC) * 100).toFixed(1)}% del ingreso` : "—"} color={utilidadNetaCRC >= 0 ? "#10b981" : "#e11d48"} big />
+              </div>
+
+              <div style={{ background: "#1e2130", borderRadius: 8, padding: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13 }}>
+                  <span>Ingresos por ventas</span>
+                  <span style={{ fontWeight: 700, color: "#10b981" }}>₡{fmt0(ingresoCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: "#e11d48" }}>
+                  <span>− Costo carros vendidos</span>
+                  <span>₡{fmt0(costoCarrosVendidosCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: "#e11d48" }}>
+                  <span>− Costos asociados a carros vendidos</span>
+                  <span>₡{fmt0(costosAsocVendidosCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", fontSize: 13, fontWeight: 700, borderTop: "1px solid #2a2d3d", borderBottom: "1px solid #2a2d3d", marginTop: 4, marginBottom: 4 }}>
+                  <span>= Margen Bruto</span>
+                  <span style={{ color: "#4f8cff" }}>₡{fmt0(margenBrutoCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: "#e11d48" }}>
+                  <span>− Planilla del período</span>
+                  <span>₡{fmt0(planillaCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: "#e11d48" }}>
+                  <span>− Comisiones agentes</span>
+                  <span>₡{fmt0(comisionesCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: "#e11d48" }}>
+                  <span>− Gastos operativos</span>
+                  <span>₡{fmt0(gastosOpCRC)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", fontSize: 15, fontWeight: 800, borderTop: "2px solid #4f8cff", marginTop: 4 }}>
+                  <span>= Utilidad Neta</span>
+                  <span style={{ color: utilidadNetaCRC >= 0 ? "#10b981" : "#e11d48" }}>₡{fmt0(utilidadNetaCRC)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Desglose gastos operativos */}
+            {gastosCatList.length > 0 && (
+              <div style={{ ...S.card, padding: 18 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>💸 Gastos operativos por categoría</div>
+                <div style={{ background: "#1e2130", borderRadius: 8, overflow: "hidden" }}>
+                  {gastosCatList.map(([cat, monto], i) => {
+                    const pct = gastosOpCRC > 0 ? (monto / gastosOpCRC) * 100 : 0;
+                    return (
+                      <div key={i} style={{ padding: "10px 14px", borderBottom: i < gastosCatList.length - 1 ? "1px solid #2a2d3d" : "none" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
+                          <span>{cat}</span>
+                          <span style={{ fontWeight: 700 }}>₡{fmt0(monto)} <span style={{ fontSize: 11, color: "#8b8fa4", fontWeight: 400 }}>({pct.toFixed(1)}%)</span></span>
+                        </div>
+                        <div style={{ height: 4, background: "#2a2d3d", borderRadius: 2, overflow: "hidden" }}>
+                          <div style={{ width: `${pct}%`, height: "100%", background: "#f59e0b" }}></div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Tendencia 12 meses */}
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>📊 Tendencia últimos 12 meses</div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 180, padding: "10px 0" }}>
+                {trend.map((t, i) => {
+                  const hIngr = (t.ingresos / maxTrendIngr) * 150;
+                  const hMargen = (Math.max(0, t.margen) / maxTrendIngr) * 150;
+                  return (
+                    <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                      <div style={{ position: "relative", display: "flex", alignItems: "flex-end", height: 150, gap: 2, width: "100%", justifyContent: "center" }}>
+                        <div style={{ width: "40%", height: hIngr, background: "#4f8cff", borderRadius: "3px 3px 0 0" }} title={`Ingresos: ₡${fmt0(t.ingresos)}`}></div>
+                        <div style={{ width: "40%", height: hMargen, background: "#10b981", borderRadius: "3px 3px 0 0" }} title={`Margen: ₡${fmt0(t.margen)}`}></div>
+                      </div>
+                      <div style={{ fontSize: 9, color: "#8b8fa4" }}>{t.label}</div>
+                      <div style={{ fontSize: 9, color: "#5a5e72" }}>{t.ventas}v</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8, fontSize: 11 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ width: 10, height: 10, background: "#4f8cff", borderRadius: 2, display: "inline-block" }}></span>
+                  <span style={{ color: "#8b8fa4" }}>Ingresos</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ width: 10, height: 10, background: "#10b981", borderRadius: 2, display: "inline-block" }}></span>
+                  <span style={{ color: "#8b8fa4" }}>Margen Bruto</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Rentabilidad por proveedor */}
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>🏪 Rentabilidad por proveedor de compra</div>
+              {proveedorList.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#8b8fa4", fontSize: 12 }}>Sin datos de proveedores aún.</div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#1e2130" }}>
+                        <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Proveedor</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Comprados</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Vendidos</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Tasa Venta</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Margen Prom.</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Días Prom.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {proveedorList.map((p, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid #2a2d3d" }}>
+                          <td style={{ padding: 10, fontWeight: 600 }}>{p.proveedor}</td>
+                          <td style={{ padding: 10, textAlign: "right" }}>{p.comprados}</td>
+                          <td style={{ padding: 10, textAlign: "right" }}>{p.vendidos}</td>
+                          <td style={{ padding: 10, textAlign: "right", color: p.tasaVenta >= 70 ? "#10b981" : p.tasaVenta >= 40 ? "#f59e0b" : "#e11d48" }}>{p.tasaVenta.toFixed(0)}%</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: p.margenPromedio > 0 ? "#10b981" : "#e11d48" }}>₡{fmt0(p.margenPromedio)}</td>
+                          <td style={{ padding: 10, textAlign: "right", color: "#8b8fa4" }}>{p.diasPromedio !== null ? `${p.diasPromedio}d` : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB INVENTARIO */}
+        {reporteTab === "inventario" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* VALOR DEL INVENTARIO PROPIO (showroom) */}
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>💼 Valor del Inventario Propio (Showroom)</div>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+                <Card title="Carros propios" value={propiosActivos.length} subtitle={consigActivos.length > 0 ? `+ ${consigActivos.length} en consignación` : "todos propios"} color="#4f8cff" big />
+                <Card title="Costo total" value={`₡${fmt0(invCostoCRC)}`} subtitle="Lo que tengo invertido" color="#f59e0b" big />
+                <Card title="Valor de venta" value={`₡${fmt0(invPrecioCRC)}`} subtitle="A precio de etiqueta" color="#10b981" big />
+                <Card title="Margen potencial" value={`₡${fmt0(invMargenCRC)}`} subtitle={invCostoCRC > 0 ? `${((invMargenCRC / invCostoCRC) * 100).toFixed(1)}% sobre costo` : "—"} color={invMargenCRC >= 0 ? "#10b981" : "#e11d48"} big />
+              </div>
+
+              {/* Comparación con snapshots históricos */}
+              {inventorySnapshots.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#8b8fa4", marginBottom: 8, textTransform: "uppercase" }}>📅 Comparación con meses anteriores</div>
+                  <div style={{ overflowX: "auto" }}>
+                    <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr style={{ background: "#1e2130" }}>
+                          <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Fecha snapshot</th>
+                          <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Carros propios</th>
+                          <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Costo total</th>
+                          <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Valor de venta</th>
+                          <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Margen potencial</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr style={{ background: "#10b98115", borderBottom: "2px solid #10b98140" }}>
+                          <td style={{ padding: 10, fontWeight: 700, color: "#10b981" }}>📍 HOY</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 700 }}>{propiosActivos.length}</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 700 }}>₡{fmt0(invCostoCRC)}</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 700 }}>₡{fmt0(invPrecioCRC)}</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: invMargenCRC >= 0 ? "#10b981" : "#e11d48" }}>₡{fmt0(invMargenCRC)}</td>
+                        </tr>
+                        {inventorySnapshots.map((s, i) => (
+                          <tr key={s.id} style={{ borderBottom: "1px solid #2a2d3d" }}>
+                            <td style={{ padding: 10 }}>{new Date(s.snapshot_date + "T12:00:00").toLocaleDateString("es-CR", { year: "numeric", month: "long", day: "numeric" })}</td>
+                            <td style={{ padding: 10, textAlign: "right" }}>{s.carros_propios}</td>
+                            <td style={{ padding: 10, textAlign: "right" }}>₡{fmt0(parseFloat(s.costo_total_crc))}</td>
+                            <td style={{ padding: 10, textAlign: "right" }}>₡{fmt0(parseFloat(s.precio_venta_crc))}</td>
+                            <td style={{ padding: 10, textAlign: "right", color: parseFloat(s.margen_potencial_crc) >= 0 ? "#10b981" : "#e11d48" }}>₡{fmt0(parseFloat(s.margen_potencial_crc))}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+              {inventorySnapshots.length === 0 && (
+                <div style={{ marginTop: 10, padding: 12, background: "#1e2130", borderRadius: 8, fontSize: 11, color: "#8b8fa4" }}>
+                  💡 Los snapshots se crean automáticamente el día 1 de cada mes. Aún no hay snapshots históricos.
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <Card title="Capital trabado" value={`₡${fmt0(capitalTrabado)}`} subtitle={`${carrosNoRotan.length} carros disponibles`} color="#f59e0b" big />
+              <Card title="🔴 > 60 días" value={carrosNoRotan.filter(c => (c.dias || 0) > 60).length} subtitle="Considere bajar precio" color="#e11d48" big />
+              <Card title="🟡 30-60 días" value={carrosNoRotan.filter(c => (c.dias || 0) > 30 && (c.dias || 0) <= 60).length} subtitle="Revisar pronto" color="#f59e0b" big />
+              <Card title="🟢 < 30 días" value={carrosNoRotan.filter(c => (c.dias || 0) <= 30).length} subtitle="Ritmo normal" color="#10b981" big />
+            </div>
+
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>🚗 Carros disponibles ordenados por días en stock</div>
+              {carrosNoRotan.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#8b8fa4", fontSize: 12 }}>Sin carros en inventario.</div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#1e2130" }}>
+                        <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Estado</th>
+                        <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Vehículo</th>
+                        <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Placa</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Días</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Costo Total</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Precio</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Margen Est.</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {carrosNoRotan.map(({ v, dias, costoTotal, precio, margenEst }, i) => {
+                        const semaforo = !dias ? "🟢" : dias > 60 ? "🔴" : dias > 30 ? "🟡" : "🟢";
+                        return (
+                          <tr key={v.id} style={{ borderBottom: "1px solid #2a2d3d" }}>
+                            <td style={{ padding: 10, fontSize: 14 }}>{semaforo}</td>
+                            <td style={{ padding: 10 }}>
+                              <div style={{ fontWeight: 700 }}>{v.b} {v.m}</div>
+                              <div style={{ fontSize: 10, color: "#8b8fa4" }}>{v.y}</div>
+                            </td>
+                            <td style={{ padding: 10, fontWeight: 600 }}>{v.p}</td>
+                            <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: dias > 60 ? "#e11d48" : dias > 30 ? "#f59e0b" : "#10b981" }}>{dias !== null ? `${dias}d` : "—"}</td>
+                            <td style={{ padding: 10, textAlign: "right" }}>₡{fmt0(costoTotal)}</td>
+                            <td style={{ padding: 10, textAlign: "right" }}>{precio > 0 ? `₡${fmt0(precio)}` : "—"}</td>
+                            <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: margenEst > 0 ? "#10b981" : margenEst < 0 ? "#e11d48" : "#8b8fa4" }}>
+                              {margenEst !== null ? `₡${fmt0(margenEst)}` : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Velocidad por modelo */}
+            {modeloList.length > 0 && (
+              <div style={{ ...S.card, padding: 18 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>⚡ Velocidad de rotación por marca/modelo</div>
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#1e2130" }}>
+                        <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Marca / Modelo</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Vendidos</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Días promedio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {modeloList.map((m, i) => (
+                        <tr key={i} style={{ borderBottom: "1px solid #2a2d3d" }}>
+                          <td style={{ padding: 10, fontWeight: 600 }}>{m.modelo}</td>
+                          <td style={{ padding: 10, textAlign: "right" }}>{m.vendidos}</td>
+                          <td style={{ padding: 10, textAlign: "right", color: m.diasPromedio !== null && m.diasPromedio < 30 ? "#10b981" : m.diasPromedio !== null && m.diasPromedio < 60 ? "#f59e0b" : "#e11d48" }}>
+                            {m.diasPromedio !== null ? `${m.diasPromedio}d` : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB RECURSO HUMANO */}
+        {reporteTab === "rrhh" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>👤 Productividad por agente (período seleccionado)</div>
+              {agentesList.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#8b8fa4", fontSize: 12 }}>Sin actividad de agentes en el período.</div>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 12, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#1e2130" }}>
+                        <th style={{ padding: 10, textAlign: "left", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Agente</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Ventas</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Volumen</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Comisiones</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Planilla</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Costo Total</th>
+                        <th style={{ padding: 10, textAlign: "right", color: "#8b8fa4", fontWeight: 600, fontSize: 11 }}>Margen Neto*</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {agentesList.map((a, i) => (
+                        <tr key={a.id} style={{ borderBottom: "1px solid #2a2d3d" }}>
+                          <td style={{ padding: 10, fontWeight: 600 }}>
+                            {a.name}
+                            {a.isEmployee && <span style={{ marginLeft: 6, fontSize: 10, color: "#8b8fa4" }}>(empleado)</span>}
+                          </td>
+                          <td style={{ padding: 10, textAlign: "right" }}>{a.ventas.toFixed(1)}</td>
+                          <td style={{ padding: 10, textAlign: "right" }}>₡{fmt0(a.volumenCRC)}</td>
+                          <td style={{ padding: 10, textAlign: "right", color: "#f59e0b" }}>₡{fmt0(a.comisionesCRC)}</td>
+                          <td style={{ padding: 10, textAlign: "right", color: "#f59e0b" }}>{a.planillaCRC > 0 ? `₡${fmt0(a.planillaCRC)}` : "—"}</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 600 }}>₡{fmt0(a.costoTotal)}</td>
+                          <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: a.margenNeto > 0 ? "#10b981" : "#e11d48" }}>₡{fmt0(a.margenNeto)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <div style={{ marginTop: 10, fontSize: 10, color: "#5a5e72", fontStyle: "italic" }}>
+                * Margen Neto = (20% del volumen estimado como margen) − Comisiones − Planilla. Es una aproximación; para datos exactos use el reporte económico.
+              </div>
+            </div>
+
+            {/* Planilla vs Ingresos 12 meses */}
+            <div style={{ ...S.card, padding: 18 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12 }}>📈 Planilla vs Ingresos (12 meses)</div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 180, padding: "10px 0" }}>
+                {planillaTrend.map((p, i) => {
+                  const hPlan = (p.planilla / maxPlanillaIngr) * 150;
+                  const hIngr = (p.ingresos / maxPlanillaIngr) * 150;
+                  return (
+                    <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                      <div style={{ position: "relative", display: "flex", alignItems: "flex-end", height: 150, gap: 2, width: "100%", justifyContent: "center" }}>
+                        <div style={{ width: "40%", height: hIngr, background: "#10b981", borderRadius: "3px 3px 0 0" }} title={`Ingresos: ₡${fmt0(p.ingresos)}`}></div>
+                        <div style={{ width: "40%", height: hPlan, background: "#e11d48", borderRadius: "3px 3px 0 0" }} title={`Planilla: ₡${fmt0(p.planilla)}`}></div>
+                      </div>
+                      <div style={{ fontSize: 9, color: "#8b8fa4" }}>{p.label}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 16, justifyContent: "center", marginTop: 8, fontSize: 11 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ width: 10, height: 10, background: "#10b981", borderRadius: 2, display: "inline-block" }}></span>
+                  <span style={{ color: "#8b8fa4" }}>Ingresos</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span style={{ width: 10, height: 10, background: "#e11d48", borderRadius: 2, display: "inline-block" }}></span>
+                  <span style={{ color: "#8b8fa4" }}>Planilla</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   // ======= RENDER: SETTINGS =======
@@ -6915,6 +7692,25 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Checkbox de consignación */}
+              <div style={{marginTop:16, padding:12, background:"#1e2130", borderRadius:8, border:"1px solid #2a2d3d"}}>
+                <label style={{display:"flex", alignItems:"center", gap:10, cursor:"pointer", fontSize:13}}>
+                  <input
+                    type="checkbox"
+                    checked={!!newCar.is_consignment}
+                    onChange={e => setNewCar({...newCar, is_consignment: e.target.checked})}
+                    style={{width:18, height:18, cursor:"pointer"}}
+                  />
+                  <div>
+                    <div style={{fontWeight:600, color:"#e8eaf0"}}>📦 Carro en consignación</div>
+                    <div style={{fontSize:11, color:"#8b8fa4", marginTop:2}}>
+                      Marque si NO es un carro propio (un tercero lo deja para que usted lo venda).
+                      Los carros en consignación NO cuentan en el valor del inventario propio.
+                    </div>
+                  </div>
+                </label>
+              </div>
+
               <div style={{display:"flex",gap:10,marginTop:20,justifyContent:"flex-end"}}>
                 <button onClick={() => { if (!addingCar) { setShowAddCarModal(false); setEditingPlate(null); } }} style={S.btnGhost} disabled={addingCar}>Cancelar</button>
                 <button
@@ -7062,7 +7858,13 @@ export default function App() {
 
     // Calcular conversión
     let tc = parseFloat(tcItem) || 0;
-    if (!tc || tc <= 0) {
+    // Detectar TC inválido:
+    //   - tc <= 0 (no existe)
+    //   - tc === 1 con moneda CRC (caso típico: factura CRC sin TipoCambio en XML,
+    //     que el parser puso 1 por defecto). 1 colón = 1 USD es absurdo, así que
+    //     lo tratamos como faltante y usamos el TC del BCCR.
+    const tcInvalido = !tc || tc <= 0 || (!origIsUSD && tc === 1);
+    if (tcInvalido) {
       tc = origIsUSD ? bccrVenta : bccrCompra;
     }
     const altAmt = origIsUSD
@@ -8130,7 +8932,13 @@ export default function App() {
               {/* Detalles expandibles */}
               {showCostPanel && (
                 <div style={{borderTop: "1px solid #2a2d3d", paddingTop: 16}}>
-                  {/* COSTO DE COMPRA */}
+                  {v.is_consignment && (
+                    <div style={{padding: 14, background: "#f59e0b18", border: "1px solid #f59e0b44", borderRadius: 8, marginBottom: 16, fontSize: 12, color: "#f59e0b", fontWeight: 600}}>
+                      📦 Carro en consignación. No tiene costo de compra ni cuenta en el inventario propio.
+                    </div>
+                  )}
+                  {/* COSTO DE COMPRA - oculto si es consignación */}
+                  {!v.is_consignment && (
                   <div style={{marginBottom: 20}}>
                     <div style={{fontSize: 13, fontWeight: 700, color: "#e8eaf0", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center"}}>
                       <span>🛒 Costo de compra</span>
@@ -8171,6 +8979,7 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                  )}
 
                   {/* COSTOS AUTOMÁTICOS (FACTURAS) */}
                   <div style={{marginBottom: 20}}>
@@ -8602,6 +9411,7 @@ export default function App() {
     if (tab==="Planillas") return renderPlanillas();
     if (tab==="Egresos") return renderEgresos();
     if (tab==="Settings") return renderSettings();
+    if (tab==="Reportes") return renderReportes();
     return <PH t={tab}/>;
   };
 
