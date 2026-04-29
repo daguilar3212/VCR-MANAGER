@@ -687,6 +687,7 @@ function computeBreakdown(form) {
   const salePrice = parseFloat(form.sale_price) || 0;
   const tradein = parseFloat(form.tradein_amount) || 0;
   const down = parseFloat(form.down_payment) || 0;
+  const signal = parseFloat(form.deposit_signal) || 0;
   const depsTotal = (form.deposits || []).reduce((sum, d) => sum + (parseFloat(d.amount) || 0), 0);
 
   // Prima efectiva = MAX(trade-in, prima digitada, suma de depositos).
@@ -699,9 +700,11 @@ function computeBreakdown(form) {
   const transferApart = !!form.transfer_included && !form.transfer_in_price && !form.transfer_in_financing;
   const transferExtra = transferApart ? (parseFloat(form.transfer_amount) || 0) : 0;
 
-  const balance = salePrice + transferExtra - primaEfectiva;
+  // La señal de trato es plata adicional que el cliente ya entregó como compromiso de compra
+  // y se descuenta del saldo, igual que en el Admin Panel.
+  const balance = salePrice + transferExtra - primaEfectiva - signal;
 
-  return { salePrice, transferExtra, transferApart, tradein, down, depsTotal, primaEfectiva, balance };
+  return { salePrice, transferExtra, transferApart, tradein, down, signal, depsTotal, primaEfectiva, balance };
 }
 
 const emptyForm = () => ({
@@ -1298,7 +1301,7 @@ export default function AgentPanel() {
       return;
     }
     if (!saleForm.vehicle_plate) {
-      alert("Debés seleccionar un vehículo.");
+      alert("Debés ingresar la placa del vehículo (elegí del inventario o seleccioná 'Otro' y escribila a mano).");
       return;
     }
     if (!saleForm.sale_price || parseFloat(saleForm.sale_price) <= 0) {
@@ -1680,7 +1683,7 @@ export default function AgentPanel() {
         {tab === "ventas" && view === "form" && <VentaFormView
           form={saleForm}
           setForm={setSaleForm}
-          vehicles={vehicles.filter(v => v.status === "disponible" || (editingSaleId && v.plate === saleForm?.vehicle_plate))}
+          vehicles={vehicles}
           agents={agentsList.filter(a => a.id !== profile.agent_id)}
           editingId={editingSaleId}
           onSave={saveSale}
@@ -2863,6 +2866,35 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
   const removeDeposit = (idx) => setForm(prev => ({ ...prev, deposits: (prev.deposits || []).filter((_, i) => i !== idx) }));
 
   const onPickVehicle = (id) => {
+    // Caso "Otro": limpiar campos para que el agente los digite manualmente.
+    // Igual que el Admin: vehicle_id=null marca que no es del inventario.
+    if (id === "__OTRO__") {
+      setForm(prev => ({
+        ...prev,
+        vehicle_id: null,
+        vehicle_plate: "",
+        vehicle_brand: "",
+        vehicle_model: "",
+        vehicle_year: "",
+        vehicle_color: "",
+        vehicle_km: "",
+        vehicle_engine: "",
+        vehicle_drive: "",
+        vehicle_fuel: "",
+        vehicle_style: "",
+        vehicle_engine_cc: "",
+        vehicle_cabys: "",
+        sale_price: "",
+      }));
+      return;
+    }
+
+    // Caso "vacío": deseleccionar todo
+    if (!id) {
+      setForm(prev => ({ ...prev, vehicle_id: "" }));
+      return;
+    }
+
     const v = vehicles.find(x => x.id === id);
     if (!v) return;
     setForm(prev => {
@@ -2897,7 +2929,79 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
         vehicle_engine: v.engine || "",
         vehicle_drive: v.drivetrain || "",
         vehicle_fuel: v.fuel || "",
+        vehicle_style: v.style || "",
+        vehicle_engine_cc: v.engine_cc || "",
         vehicle_cabys: v.cabys_code || "",
+        sale_price: newPrice,
+        sale_currency: newCurrency,
+        currency: newCurrency,
+      };
+    });
+  };
+
+  // Handler del campo placa (onBlur). Formatea la placa con las reglas estándar
+  // y, si encuentra match en el inventario, autocompleta los datos del carro
+  // para evitar duplicados.
+  const handlePlateBlur = (rawValue) => {
+    const formatted = formatPlate(rawValue);
+    if (!formatted) {
+      upd("vehicle_plate", "");
+      return;
+    }
+
+    // Si la placa formateada coincide con el carro ya asociado por vehicle_id,
+    // no hace falta hacer nada extra.
+    if (form.vehicle_id) {
+      const current = vehicles.find(v => v.id === form.vehicle_id);
+      if (current && formatPlate(current.plate) === formatted) {
+        upd("vehicle_plate", formatted);
+        return;
+      }
+    }
+
+    // Buscar match en inventario por placa formateada
+    const match = vehicles.find(v => formatPlate(v.plate) === formatted);
+
+    if (!match) {
+      // No existe en inventario: solo guardar la placa formateada, dejar lo demás como está
+      upd("vehicle_plate", formatted);
+      return;
+    }
+
+    // Match encontrado: autocompletar todos los datos del carro
+    setForm(prev => {
+      const vUsd = parseFloat(match.price_usd) || 0;
+      const vCrc = parseFloat(match.price_crc) || 0;
+      const vPrice = vUsd || vCrc;
+      let newCurrency = prev.sale_currency || "USD";
+      let newPrice = prev.sale_price;
+      if (!prev.sale_price) {
+        if (match.price_currency === "CRC" || (!match.price_currency && vPrice > 100000)) {
+          newCurrency = "CRC";
+          newPrice = vPrice || "";
+        } else if (match.price_currency === "USD") {
+          newCurrency = "USD";
+          newPrice = vUsd || "";
+        } else {
+          newCurrency = "USD";
+          newPrice = vPrice || "";
+        }
+      }
+      return {
+        ...prev,
+        vehicle_id: match.id,
+        vehicle_plate: formatted,
+        vehicle_brand: match.brand || "",
+        vehicle_model: match.model || "",
+        vehicle_year: match.year || "",
+        vehicle_color: match.color || "",
+        vehicle_km: match.km || "",
+        vehicle_engine: match.engine || "",
+        vehicle_drive: match.drivetrain || "",
+        vehicle_fuel: match.fuel || "",
+        vehicle_style: match.style || "",
+        vehicle_engine_cc: match.engine_cc || "",
+        vehicle_cabys: match.cabys_code || "",
         sale_price: newPrice,
         sale_currency: newCurrency,
         currency: newCurrency,
@@ -3056,25 +3160,118 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
       <div style={S.card}>
         <div style={S.cardTitle}>Vehículo a vender</div>
         <div>
-          <label style={S.label}>Seleccionar vehículo *</label>
-          <select style={S.sel} value={form.vehicle_id} onChange={e => onPickVehicle(e.target.value)}>
+          <label style={S.label}>Seleccionar del inventario</label>
+          <select
+            style={S.sel}
+            value={
+              form.vehicle_id === null
+                ? "__OTRO__"
+                : (form.vehicle_id || "")
+            }
+            onChange={e => onPickVehicle(e.target.value)}
+          >
             <option value="">-- Elegir vehículo --</option>
             {vehicles.map(v => (
               <option key={v.id} value={v.id}>
                 {v.plate} - {v.brand} {v.model} {v.year} ({v.color})
               </option>
             ))}
+            <option value="__OTRO__">➕ Otro (carro no listado)</option>
           </select>
+          <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.25rem" }}>
+            Elegí del inventario o "Otro" para escribir los datos a mano.
+          </div>
         </div>
-        {form.vehicle_plate && (
+
+        {/* Campos editables siempre que haya algo seleccionado o el agente eligió "Otro" */}
+        {(form.vehicle_id !== "" || form.vehicle_plate) && (
           <>
             <div style={{ ...S.grid4, marginTop: "1rem" }}>
-              <div><label style={S.label}>Placa</label><input style={S.input} value={form.vehicle_plate} readOnly /></div>
-              <div><label style={S.label}>Marca</label><input style={S.input} value={form.vehicle_brand} readOnly /></div>
-              <div><label style={S.label}>Modelo</label><input style={S.input} value={form.vehicle_model} readOnly /></div>
-              <div><label style={S.label}>Año</label><input style={S.input} value={form.vehicle_year} readOnly /></div>
+              <div>
+                <label style={S.label}>Placa</label>
+                <input
+                  style={S.input}
+                  value={form.vehicle_plate || ""}
+                  onChange={e => upd("vehicle_plate", e.target.value.toUpperCase())}
+                  onBlur={e => handlePlateBlur(e.target.value)}
+                  placeholder="Ej: BMN455 o CL-12345"
+                />
+              </div>
+              <div>
+                <label style={S.label}>Marca</label>
+                <input
+                  style={S.input}
+                  value={form.vehicle_brand || ""}
+                  onChange={e => upd("vehicle_brand", e.target.value.toUpperCase())}
+                />
+              </div>
+              <div>
+                <label style={S.label}>Modelo</label>
+                <input
+                  style={S.input}
+                  value={form.vehicle_model || ""}
+                  onChange={e => upd("vehicle_model", e.target.value.toUpperCase())}
+                />
+              </div>
+              <div>
+                <label style={S.label}>Año</label>
+                <input
+                  style={S.input}
+                  type="number"
+                  value={form.vehicle_year || ""}
+                  onChange={e => upd("vehicle_year", e.target.value)}
+                />
+              </div>
             </div>
+
             <div style={{ ...S.grid3, marginTop: "0.75rem" }}>
+              <div>
+                <label style={S.label}>Color</label>
+                <input
+                  style={S.input}
+                  value={form.vehicle_color || ""}
+                  onChange={e => upd("vehicle_color", e.target.value.toUpperCase())}
+                />
+              </div>
+              <div>
+                <label style={S.label}>Kilometraje</label>
+                <input
+                  style={S.input}
+                  type="number"
+                  value={form.vehicle_km || ""}
+                  onChange={e => upd("vehicle_km", e.target.value)}
+                />
+              </div>
+              <div>
+                <label style={S.label}>Tracción</label>
+                <select
+                  style={S.sel}
+                  value={form.vehicle_drive || ""}
+                  onChange={e => upd("vehicle_drive", e.target.value)}
+                >
+                  <option value="">Seleccionar</option>
+                  <option value="4x2">4x2</option>
+                  <option value="4x4">4x4</option>
+                </select>
+              </div>
+              <div>
+                <label style={S.label}>Combustible</label>
+                <select
+                  style={S.sel}
+                  value={form.vehicle_fuel || ""}
+                  onChange={e => {
+                    upd("vehicle_fuel", e.target.value);
+                    const sug = suggestCabys(form.vehicle_style, form.vehicle_engine_cc, e.target.value);
+                    if (sug && !form.vehicle_cabys) upd("vehicle_cabys", sug);
+                  }}
+                >
+                  <option value="">Seleccionar</option>
+                  <option value="Gasolina">Gasolina</option>
+                  <option value="Diesel">Diesel</option>
+                  <option value="Híbrido">Híbrido</option>
+                  <option value="Eléctrico">Eléctrico</option>
+                </select>
+              </div>
               <div>
                 <label style={S.label}>Estilo</label>
                 <select
@@ -3087,7 +3284,7 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                   }}
                 >
                   <option value="">Seleccionar</option>
-                  {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS"].map(s => <option key={s} value={s}>{s}</option>)}
+                  {["SUV","SEDAN","HATCHBACK","TODOTERRENO","PICK UP","MICROBUS","COUPE","FAMILIAR","VAN"].map(s => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
@@ -3103,17 +3300,18 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
                   }}
                 />
               </div>
-              <div style={{ gridColumn: "span 1" }}>
-                <label style={S.label}>Código CABYS</label>
-                <select
-                  style={S.sel}
-                  value={form.vehicle_cabys || ""}
-                  onChange={e => upd("vehicle_cabys", e.target.value)}
-                >
-                  <option value="">Seleccionar</option>
-                  {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}
-                </select>
-              </div>
+            </div>
+
+            <div style={{ marginTop: "0.75rem" }}>
+              <label style={S.label}>Código CABYS</label>
+              <select
+                style={S.sel}
+                value={form.vehicle_cabys || ""}
+                onChange={e => upd("vehicle_cabys", e.target.value)}
+              >
+                <option value="">Seleccionar CABYS (se sugiere con estilo + CC)</option>
+                {CABYS_VEHICLES.map(c => <option key={c.code} value={c.code}>{c.code} - {c.label}</option>)}
+              </select>
             </div>
           </>
         )}
@@ -3290,8 +3488,8 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             <label style={S.label}>Tipo de venta</label>
             <select style={S.sel} value={form.sale_type} onChange={e => upd("sale_type", e.target.value)}>
               <option value="propio">Propio</option>
-              <option value="consignacion_grupo">Consignación Grupo (1%)</option>
-              <option value="consignacion_externa">Consignación Externa (5%)</option>
+              <option value="consignacion_grupo">Consignación Grupo</option>
+              <option value="consignacion_externa">Consignación Externa</option>
             </select>
           </div>
           <div>
@@ -3339,6 +3537,13 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             </div>
           </div>
           <div>
+            <label style={S.label}>Señal de trato ({form.sale_currency || "USD"})</label>
+            <input style={S.input} type="number" value={form.deposit_signal || ""} onChange={e => upd("deposit_signal", e.target.value)} />
+            <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.25rem" }}>
+              Adelanto/seña que entrega el cliente como compromiso de compra. Se descuenta del saldo total.
+            </div>
+          </div>
+          <div>
             <label style={S.label}>Método de pago</label>
             <select style={S.sel} value={form.payment_method} onChange={e => upd("payment_method", e.target.value)}>
               <option value="contado">Contado</option>
@@ -3347,6 +3552,28 @@ function VentaFormView({ form, setForm, vehicles, agents, editingId, onSave, onC
             </select>
           </div>
         </div>
+
+        {/* Saldo total inline (igual al Admin) */}
+        {(() => {
+          const bdLive = computeBreakdown(form);
+          return (
+            <div style={{
+              background: "#f4f4f5",
+              borderRadius: 10,
+              padding: "0.75rem 1rem",
+              marginTop: "0.75rem",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              border: "1px solid #e4e4e7"
+            }}>
+              <span style={{ fontSize: "0.9rem", color: "#52525b" }}>Saldo total:</span>
+              <span style={{ fontSize: "1.25rem", fontWeight: 800, color: "#1e40af" }}>
+                {fmt(bdLive.balance, form.sale_currency || "USD")}
+              </span>
+            </div>
+          );
+        })()}
 
         {(form.payment_method === "financiamiento" || form.payment_method === "mixto") && (() => {
           const bdForm = computeBreakdown(form);
@@ -3687,6 +3914,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
                 <div><strong>Tipo de cambio:</strong> {sale.sale_exchange_rate || "-"}</div>
                 <div><strong>Trade-in:</strong> {fmt(sale.tradein_amount, cur)}</div>
                 <div><strong>Prima:</strong> {fmt(sale.down_payment, cur)}</div>
+                <div><strong>Señal de trato:</strong> {fmt(sale.deposit_signal || 0, cur)}</div>
                 <div><strong>Depósitos totales:</strong> {fmt(sale.deposits_total, cur)}</div>
                 <div><strong>Saldo:</strong> {fmt(sale.total_balance, cur)}</div>
                 <div><strong>Método de pago:</strong> {sale.payment_method || "-"}</div>
@@ -3741,7 +3969,7 @@ function VentaDetailView({ sale, onBack, onEdit, onDelete }) {
 function BreakdownCard({ form }) {
   const currency = form.sale_currency || "USD";
   const isCash = (form.payment_method || "contado") === "contado";
-  const { salePrice, transferExtra, transferApart, tradein, down, depsTotal, primaEfectiva, balance } = computeBreakdown(form);
+  const { salePrice, transferExtra, transferApart, tradein, down, signal, depsTotal, primaEfectiva, balance } = computeBreakdown(form);
 
   const tolerance = 0.01;
   const isZero = Math.abs(balance) <= tolerance;
@@ -3823,6 +4051,14 @@ function BreakdownCard({ form }) {
           </>
         );
       })()}
+
+      {/* Señal de trato (se descuenta del saldo igual que el Admin) */}
+      {signal > 0 && (
+        <div style={lineBorder}>
+          <span>− Señal de trato</span>
+          <strong style={{ color: "#10b981" }}>− {fmt(signal, currency)}</strong>
+        </div>
+      )}
 
       {/* TOTAL */}
       <div style={{
