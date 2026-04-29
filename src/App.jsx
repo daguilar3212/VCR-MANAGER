@@ -5640,8 +5640,69 @@ export default function App() {
 
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14}}>
         <div style={S.card}>
-          <div style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",fontWeight:700,fontSize:14}}>Vehículos</div>
-          {cars.slice(0,5).map((v,i)=>(<div key={i} style={{padding:"10px 18px",borderBottom:"1px solid #2a2d3d",display:"flex",justifyContent:"space-between"}}><div><div style={{fontSize:13,fontWeight:600}}>{v.b} {v.m} {v.y}</div><div style={{fontSize:11,color:"#8b8fa4"}}>{v.p==="CONSIGNA"?"Consignación":v.p}</div></div><span style={{fontSize:14,fontWeight:700,color:"#4f8cff"}}>{fmt(v.usd,"USD")}</span></div>))}
+          <div style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",fontWeight:700,fontSize:14}}>Vehículos en Showroom</div>
+          {(() => {
+            // Mostrar carros activos del showroom (no vendidos), priorizando los disponibles.
+            // Click navega al detalle del carro en la pestaña Showroom.
+            const activos = (showroomVehicles || [])
+              .filter(v => v.estado !== 'VENDIDO')
+              .sort((a, b) => {
+                // Disponibles primero, después reservados
+                const aRank = a.estado === 'DISPONIBLE' || !a.estado ? 0 : 1;
+                const bRank = b.estado === 'DISPONIBLE' || !b.estado ? 0 : 1;
+                if (aRank !== bRank) return aRank - bRank;
+                return 0;
+              });
+            if (activos.length === 0) {
+              return (
+                <div style={{padding:"20px 18px",fontSize:13,color:"#8b8fa4"}}>
+                  No hay vehículos activos en el showroom
+                </div>
+              );
+            }
+            return activos.slice(0, 5).map((v, i) => {
+              const priceCur = v.currency || (parseFloat(v.price) > 100000 ? "CRC" : "USD");
+              const priceVal = parseFloat(v.price) || 0;
+              const isReservado = v.estado === 'RESERVADO';
+              return (
+                <div
+                  key={v.id || i}
+                  onClick={() => {
+                    setCotState({});
+                    setFotoElegida(null);
+                    setShowroomPicked(v.id);
+                    setTab("Showroom");
+                  }}
+                  style={{
+                    padding: "10px 18px",
+                    borderBottom: "1px solid #2a2d3d",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    cursor: "pointer",
+                    transition: "background 0.15s",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "#1e2130"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                >
+                  <div style={{flex:1, minWidth:0}}>
+                    <div style={{fontSize:13, fontWeight:600, color:"#e8eaf0"}}>
+                      {v.brand} {v.model} {v.year}
+                    </div>
+                    <div style={{fontSize:11, color:"#8b8fa4", marginTop:2}}>
+                      {v.is_consignment ? "Consignación" : (v.plate || "-")}
+                      {isReservado && (
+                        <span style={{marginLeft:8, color:"#f59e0b", fontWeight:600}}>· Reservado</span>
+                      )}
+                    </div>
+                  </div>
+                  <span style={{fontSize:14, fontWeight:700, color:"#4f8cff", flexShrink:0, marginLeft:10}}>
+                    {fmt(priceVal, priceCur === "USD" ? "USD" : undefined)}
+                  </span>
+                </div>
+              );
+            });
+          })()}
         </div>
         <div style={S.card}>
           <div style={{padding:"12px 18px",borderBottom:"1px solid #2a2d3d",fontWeight:700,fontSize:14}}>Últimas facturas</div>
