@@ -717,6 +717,27 @@ const fmt2 = (n, c) => {
 };
 const fK = (n) => Number(n).toLocaleString("es-CR") + " km";
 
+// Lista de aliases para estandarizar nombres de proveedores. Si el nombre de
+// una factura contiene una de estas palabras, se guarda con la forma corta
+// estandarizada. Esto evita duplicados como "SANJOCAR SA" vs "Sanjocar S.A.".
+const SUPPLIER_ALIASES = [
+  { keyword: "SANJOCAR", name: "SANJOCAR" },
+  { keyword: "CENTRIZ",  name: "CENTRIZ"  },
+  { keyword: "SIXT",     name: "SIXT"     },
+  { keyword: "ANC CAR",  name: "ANC"      },
+];
+
+// Normaliza un nombre de proveedor. Si contiene alguna keyword de la lista
+// de aliases, devuelve el nombre estandarizado. Si no, devuelve el original.
+const normalizeSupplierName = (rawName) => {
+  if (!rawName) return null;
+  const upper = String(rawName).toUpperCase().trim();
+  for (const alias of SUPPLIER_ALIASES) {
+    if (upper.includes(alias.keyword)) return alias.name;
+  }
+  return String(rawName).trim();
+};
+
 // Convertir fecha ISO (yyyy-mm-dd) a formato CR (dd-mm-aaaa) para mostrar
 const isoToCr = (iso) => {
   if (!iso) return "";
@@ -1007,12 +1028,15 @@ export default function App() {
   // COSTOS DEL SHOWROOM (solo admin ve esto)
   // ============================================================
   const [showCostPanel, setShowCostPanel] = useState(false);
-  const [vehicleCost, setVehicleCost] = useState(null);        // { purchase_cost_amount, purchase_cost_currency, purchase_cost_tc, purchase_cost_date }
+  const [vehicleCost, setVehicleCost] = useState(null);        // { purchase_cost_amount, purchase_cost_currency, purchase_cost_tc, purchase_cost_date, supplier_name }
   const [manualCosts, setManualCosts] = useState([]);          // [{id, concept, amount, currency, tc, cost_date, description}]
   const [invoiceCosts, setInvoiceCosts] = useState([]);        // [{id, emission_date, supplier_name, total, currency, exchange_rate}]
   const [loadingCosts, setLoadingCosts] = useState(false);
   const [editingCost, setEditingCost] = useState(null);        // para editar/crear costo manual
   const [savingPurchaseCost, setSavingPurchaseCost] = useState(false);
+  const [purchaseCostModal, setPurchaseCostModal] = useState(null);  // null o {amount, currency, date_cr, supplier, plate, supplier_mode}
+  const [manualCostModal, setManualCostModal] = useState(null);      // null o {concept, amount, currency, date_cr, description, plate}
+  const [knownSuppliers, setKnownSuppliers] = useState([]);          // lista de supplier_name únicos ya usados
   const [fCat, setFCat] = useState("all");
   const [fPay, setFPay] = useState("all");
   const [fAssign, setFAssign] = useState("all");
@@ -1167,7 +1191,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); }, []);
 
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
   // showroomPicked es un ID (number), hay que resolverlo al objeto en showroomVehicles
@@ -1874,6 +1898,22 @@ export default function App() {
           showroomMsg = showPrice === '0'
             ? `\n🏬 Agregado al Showroom (sin precio - ajustar manualmente)`
             : `\n🏬 Agregado al Showroom (${showCurrency} ${showPrice})`;
+
+          // Guardar costo de compra automáticamente en showroom_vehicle_costs
+          // con el emisor de la factura como proveedor.
+          try {
+            const supplierName = supDisplay(inv) || inv.supplier_name || '';
+            const fechaCompra = inv.date ? inv.date.split('T')[0] : new Date().toISOString().slice(0, 10);
+            await savePurchaseCost(
+              plateNorm,
+              lineCost,
+              invCurrency,
+              fechaCompra,
+              supplierName
+            );
+          } catch (costErr) {
+            console.error('No se pudo guardar costo de compra automático:', costErr.message);
+          }
         } else {
           showroomMsg = `\n⚠ No se agrego al Showroom: ${showData.error || 'error'}`;
         }
@@ -7063,6 +7103,19 @@ export default function App() {
   // ============================================================
   // CARGA DE COSTOS DE UN VEHÍCULO DEL SHOWROOM (por plate)
   // ============================================================
+  // Cargar lista de proveedores únicos ya usados en costos de compra.
+  // Se mezcla con la lista fija de proveedores comunes para armar el dropdown.
+  const loadKnownSuppliers = async () => {
+    const { data } = await supabase
+      .from('showroom_vehicle_costs')
+      .select('supplier_name')
+      .not('supplier_name', 'is', null);
+    if (data) {
+      const unique = [...new Set(data.map(d => (d.supplier_name || '').trim()).filter(Boolean))];
+      setKnownSuppliers(unique);
+    }
+  };
+
   const loadShowroomCosts = async (plate) => {
     if (!plate) return;
     // IMPORTANTE: limpiar los estados ANTES de cargar para no mostrar
@@ -7456,7 +7509,7 @@ export default function App() {
   };
 
   // Guardar costo de compra (upsert por plate)
-  const savePurchaseCost = async (plate, amount, currency, fecha) => {
+  const savePurchaseCost = async (plate, amount, currency, fecha, supplier) => {
     if (!plate) return { ok: false, error: 'Sin placa' };
     setSavingPurchaseCost(true);
     try {
@@ -7475,6 +7528,7 @@ export default function App() {
         purchase_cost_currency: currency,
         purchase_cost_tc: tcResult.tc,
         purchase_cost_date: fechaFinal,
+        supplier_name: normalizeSupplierName(supplier),
         updated_at: new Date().toISOString(),
       };
 
@@ -7484,6 +7538,10 @@ export default function App() {
 
       if (error) return { ok: false, error: error.message };
       await loadShowroomCosts(np);
+      // Refrescar lista de suppliers conocidos (puede haberse agregado uno nuevo)
+      if (supplier && supplier.trim()) {
+        await loadKnownSuppliers();
+      }
       return { ok: true, tc: tcResult.tc };
     } finally {
       setSavingPurchaseCost(false);
@@ -8052,24 +8110,13 @@ export default function App() {
                       <span>🛒 Costo de compra</span>
                       <button
                         onClick={() => {
-                          const currentAmt = vehicleCost?.purchase_cost_amount || "";
-                          const currentCur = vehicleCost?.purchase_cost_currency || "USD";
-                          const currentDateIso = vehicleCost?.purchase_cost_date || new Date().toISOString().slice(0, 10);
-
-                          const amt = prompt(`Monto del costo de compra en ${currentCur}:`, currentAmt);
-                          if (amt == null) return;
-                          const cur = prompt("Moneda (USD o CRC):", currentCur);
-                          if (cur == null || !["USD", "CRC"].includes(cur.toUpperCase())) { alert("Moneda inválida"); return; }
-                          const fechaInput = prompt("Fecha de compra (DD-MM-AAAA):", isoToCr(currentDateIso));
-                          if (fechaInput == null) return;
-                          const fechaIso = crToIso(fechaInput);
-                          if (!fechaIso) {
-                            alert("Fecha inválida. Use formato DD-MM-AAAA (ejemplo: 04-06-2026 o 04062026)");
-                            return;
-                          }
-                          savePurchaseCost(v.plate, amt, cur.toUpperCase(), fechaIso).then(r => {
-                            if (r.ok) alert(`✓ Costo guardado. TC usado: ${r.tc}`);
-                            else alert(`Error: ${r.error}`);
+                          // Abrir modal con datos actuales (o vacíos si es nuevo)
+                          setPurchaseCostModal({
+                            plate: v.plate,
+                            amount: vehicleCost?.purchase_cost_amount || "",
+                            currency: vehicleCost?.purchase_cost_currency || "USD",
+                            date_cr: isoToCr(vehicleCost?.purchase_cost_date || new Date().toISOString().slice(0, 10)),
+                            supplier: vehicleCost?.supplier_name || "",
                           });
                         }}
                         style={{...S.btn, fontSize: 12, padding: "4px 10px", background: "#4f8cff"}}
@@ -8080,10 +8127,15 @@ export default function App() {
                     </div>
                     {vehicleCost ? (
                       <div style={{padding: 12, background: "#1e2130", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12}}>
-                        <div style={{flex: 1}}>
+                        <div style={{flex: 1, minWidth: 0}}>
                           <div style={{fontSize: 10, color: "#5a5e72"}}>
                             {isoToCr(vehicleCost.purchase_cost_date)} · {costCur}{costTcItem > 0 ? ` · TC ${fmt0(costTcItem)}` : ""}
                           </div>
+                          {vehicleCost.supplier_name && (
+                            <div style={{fontSize: 11, color: "#8b8fa4", marginTop: 2, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>
+                              👤 {vehicleCost.supplier_name}
+                            </div>
+                          )}
                         </div>
                         <CostMoney amount={costAmt} currency={costCur} tcItem={costTcItem} mainSize={17} subSize={11} />
                       </div>
@@ -8135,24 +8187,13 @@ export default function App() {
                       <span>✍️ Costos manuales — {manualCosts.length}</span>
                       <button
                         onClick={() => {
-                          const concept = prompt("Concepto (ej: Mecánica, Detailing, Traspaso):");
-                          if (!concept) return;
-                          const amount = prompt("Monto:");
-                          if (!amount) return;
-                          const currency = prompt("Moneda (USD o CRC):", "CRC");
-                          if (!currency || !["USD", "CRC"].includes(currency.toUpperCase())) { alert("Moneda inválida"); return; }
-                          const fechaHoy = isoToCr(new Date().toISOString().slice(0, 10));
-                          const fechaInput = prompt("Fecha (DD-MM-AAAA):", fechaHoy);
-                          if (!fechaInput) return;
-                          const cost_date = crToIso(fechaInput);
-                          if (!cost_date) {
-                            alert("Fecha inválida. Use formato DD-MM-AAAA (ejemplo: 04-06-2026 o 04062026)");
-                            return;
-                          }
-                          const description = prompt("Descripción (opcional):") || "";
-                          addManualCost(v.plate, { concept, amount, currency: currency.toUpperCase(), cost_date, description }).then(r => {
-                            if (r.ok) alert("✓ Costo manual agregado");
-                            else alert(`Error: ${r.error}`);
+                          setManualCostModal({
+                            plate: v.plate,
+                            concept: "",
+                            amount: "",
+                            currency: "CRC",
+                            date_cr: isoToCr(new Date().toISOString().slice(0, 10)),
+                            description: "",
                           });
                         }}
                         style={{...S.btn, fontSize: 12, padding: "4px 10px", background: "#10b981"}}
@@ -9997,6 +10038,265 @@ export default function App() {
               </div>
             );
           })()}
+
+          {/* MODAL: Editar/Agregar Costo de Compra */}
+          {purchaseCostModal && (
+            <div style={S.modal} onClick={() => setPurchaseCostModal(null)}>
+              <div style={{...S.mbox, maxWidth: 460}} onClick={e => e.stopPropagation()}>
+                <div style={{display: "flex", justifyContent: "space-between", marginBottom: 18}}>
+                  <h2 style={{fontSize: 18, fontWeight: 800, margin: 0}}>🛒 Costo de compra</h2>
+                  <button onClick={() => setPurchaseCostModal(null)} style={{background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: 20}}>✕</button>
+                </div>
+                <div style={{fontSize: 12, color: "#8b8fa4", marginBottom: 14}}>Vehículo: <span style={{color: "#e8eaf0", fontWeight: 600}}>{purchaseCostModal.plate}</span></div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Monto</div>
+                  <input
+                    type="number"
+                    autoFocus
+                    value={purchaseCostModal.amount}
+                    onChange={e => setPurchaseCostModal(prev => ({...prev, amount: e.target.value}))}
+                    placeholder="0"
+                    style={{...S.inp, width: "100%", fontSize: 16, padding: "10px 12px"}}
+                  />
+                </div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Moneda</div>
+                  <div style={{display: "flex", gap: 8}}>
+                    {["USD", "CRC"].map(cur => (
+                      <button
+                        key={cur}
+                        onClick={() => setPurchaseCostModal(prev => ({...prev, currency: cur}))}
+                        style={{
+                          ...S.sel,
+                          flex: 1,
+                          background: purchaseCostModal.currency === cur ? "#4f8cff" : "#1e2130",
+                          color: purchaseCostModal.currency === cur ? "#fff" : "#8b8fa4",
+                          fontWeight: purchaseCostModal.currency === cur ? 700 : 400,
+                        }}
+                      >
+                        {cur}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Fecha de compra</div>
+                  <input
+                    type="text"
+                    value={purchaseCostModal.date_cr}
+                    onChange={e => {
+                      // Auto-formatear: si escribe "04062026" lo deja así por ahora,
+                      // al hacer blur o guardar lo normalizamos
+                      let v = e.target.value.replace(/[^\d-/]/g, "");
+                      // Auto-poner guiones cada 2 dígitos si solo escribió números
+                      const onlyDigits = v.replace(/[^\d]/g, "");
+                      if (onlyDigits.length === 8 && !/[-/]/.test(v)) {
+                        v = `${onlyDigits.slice(0,2)}-${onlyDigits.slice(2,4)}-${onlyDigits.slice(4,8)}`;
+                      }
+                      setPurchaseCostModal(prev => ({...prev, date_cr: v}));
+                    }}
+                    placeholder="DD-MM-AAAA"
+                    style={{...S.inp, width: "100%"}}
+                  />
+                </div>
+
+                <div style={{marginBottom: 18}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Proveedor (a quién se compró)</div>
+                  {(() => {
+                    // Lista fija de proveedores estandarizados (forma corta).
+                    // Cualquier factura que contenga estas keywords se mapea a estos nombres.
+                    // Se mezcla con suppliers ya usados antes (para que aparezcan los nuevos
+                    // que el usuario haya agregado vía "Otro").
+                    const fijos = [...SUPPLIER_ALIASES.map(a => a.name), "Trade In"];
+                    const todos = [...new Set([...fijos, ...knownSuppliers])].sort((a, b) => a.localeCompare(b, 'es'));
+                    const supplierActual = purchaseCostModal.supplier || "";
+                    const isInList = todos.includes(supplierActual);
+                    const showCustomInput = purchaseCostModal.supplier_mode === 'custom' || (supplierActual && !isInList);
+
+                    return (
+                      <div>
+                        <select
+                          value={showCustomInput ? "__OTRO__" : supplierActual}
+                          onChange={e => {
+                            if (e.target.value === "__OTRO__") {
+                              setPurchaseCostModal(prev => ({...prev, supplier: "", supplier_mode: 'custom'}));
+                            } else {
+                              setPurchaseCostModal(prev => ({...prev, supplier: e.target.value, supplier_mode: null}));
+                            }
+                          }}
+                          style={{...S.sel, width: "100%", marginBottom: showCustomInput ? 8 : 0}}
+                        >
+                          <option value="">— Seleccionar —</option>
+                          {todos.map(s => <option key={s} value={s}>{s}</option>)}
+                          <option value="__OTRO__">+ Otro (escribir nombre)</option>
+                        </select>
+                        {showCustomInput && (
+                          <input
+                            type="text"
+                            value={purchaseCostModal.supplier}
+                            onChange={e => setPurchaseCostModal(prev => ({...prev, supplier: e.target.value}))}
+                            placeholder="Escribir nombre del proveedor"
+                            style={{...S.inp, width: "100%"}}
+                            autoFocus
+                          />
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div style={{display: "flex", gap: 8, justifyContent: "flex-end"}}>
+                  <button
+                    onClick={() => setPurchaseCostModal(null)}
+                    style={{...S.sel, padding: "10px 20px", background: "#1e2130", color: "#8b8fa4"}}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const m = purchaseCostModal;
+                      if (!m.amount || parseFloat(m.amount) <= 0) { alert("Monto inválido"); return; }
+                      const fechaIso = crToIso(m.date_cr);
+                      if (!fechaIso) { alert("Fecha inválida. Use formato DD-MM-AAAA"); return; }
+                      const r = await savePurchaseCost(m.plate, m.amount, m.currency, fechaIso, m.supplier);
+                      if (r.ok) {
+                        setPurchaseCostModal(null);
+                        // Sin alert, ya se ve actualizado en pantalla
+                      } else {
+                        alert(`Error: ${r.error}`);
+                      }
+                    }}
+                    style={{...S.sel, padding: "10px 20px", background: "#4f8cff", color: "#fff", fontWeight: 600, border: "none"}}
+                    disabled={savingPurchaseCost}
+                  >
+                    {savingPurchaseCost ? "Guardando..." : "Guardar"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: Agregar Costo Manual */}
+          {manualCostModal && (
+            <div style={S.modal} onClick={() => setManualCostModal(null)}>
+              <div style={{...S.mbox, maxWidth: 460}} onClick={e => e.stopPropagation()}>
+                <div style={{display: "flex", justifyContent: "space-between", marginBottom: 18}}>
+                  <h2 style={{fontSize: 18, fontWeight: 800, margin: 0}}>✍️ Costo manual</h2>
+                  <button onClick={() => setManualCostModal(null)} style={{background: "none", border: "none", cursor: "pointer", color: "#8b8fa4", fontSize: 20}}>✕</button>
+                </div>
+                <div style={{fontSize: 12, color: "#8b8fa4", marginBottom: 14}}>Vehículo: <span style={{color: "#e8eaf0", fontWeight: 600}}>{manualCostModal.plate}</span></div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Concepto</div>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={manualCostModal.concept}
+                    onChange={e => setManualCostModal(prev => ({...prev, concept: e.target.value}))}
+                    placeholder="ej: Mecánica, Detailing, Traspaso"
+                    style={{...S.inp, width: "100%"}}
+                  />
+                </div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Monto</div>
+                  <input
+                    type="number"
+                    value={manualCostModal.amount}
+                    onChange={e => setManualCostModal(prev => ({...prev, amount: e.target.value}))}
+                    placeholder="0"
+                    style={{...S.inp, width: "100%", fontSize: 16, padding: "10px 12px"}}
+                  />
+                </div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Moneda</div>
+                  <div style={{display: "flex", gap: 8}}>
+                    {["USD", "CRC"].map(cur => (
+                      <button
+                        key={cur}
+                        onClick={() => setManualCostModal(prev => ({...prev, currency: cur}))}
+                        style={{
+                          ...S.sel,
+                          flex: 1,
+                          background: manualCostModal.currency === cur ? "#10b981" : "#1e2130",
+                          color: manualCostModal.currency === cur ? "#fff" : "#8b8fa4",
+                          fontWeight: manualCostModal.currency === cur ? 700 : 400,
+                        }}
+                      >
+                        {cur}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{marginBottom: 12}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Fecha</div>
+                  <input
+                    type="text"
+                    value={manualCostModal.date_cr}
+                    onChange={e => {
+                      let v = e.target.value.replace(/[^\d-/]/g, "");
+                      const onlyDigits = v.replace(/[^\d]/g, "");
+                      if (onlyDigits.length === 8 && !/[-/]/.test(v)) {
+                        v = `${onlyDigits.slice(0,2)}-${onlyDigits.slice(2,4)}-${onlyDigits.slice(4,8)}`;
+                      }
+                      setManualCostModal(prev => ({...prev, date_cr: v}));
+                    }}
+                    placeholder="DD-MM-AAAA"
+                    style={{...S.inp, width: "100%"}}
+                  />
+                </div>
+
+                <div style={{marginBottom: 18}}>
+                  <div style={{fontSize: 11, color: "#8b8fa4", marginBottom: 4}}>Descripción (opcional)</div>
+                  <input
+                    type="text"
+                    value={manualCostModal.description}
+                    onChange={e => setManualCostModal(prev => ({...prev, description: e.target.value}))}
+                    placeholder="Detalle adicional"
+                    style={{...S.inp, width: "100%"}}
+                  />
+                </div>
+
+                <div style={{display: "flex", gap: 8, justifyContent: "flex-end"}}>
+                  <button
+                    onClick={() => setManualCostModal(null)}
+                    style={{...S.sel, padding: "10px 20px", background: "#1e2130", color: "#8b8fa4"}}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={async () => {
+                      const m = manualCostModal;
+                      if (!m.concept || !m.concept.trim()) { alert("Concepto requerido"); return; }
+                      if (!m.amount || parseFloat(m.amount) <= 0) { alert("Monto inválido"); return; }
+                      const cost_date = crToIso(m.date_cr);
+                      if (!cost_date) { alert("Fecha inválida. Use formato DD-MM-AAAA"); return; }
+                      const r = await addManualCost(m.plate, {
+                        concept: m.concept.trim(),
+                        amount: m.amount,
+                        currency: m.currency,
+                        cost_date,
+                        description: m.description || "",
+                      });
+                      if (r.ok) {
+                        setManualCostModal(null);
+                      } else {
+                        alert(`Error: ${r.error}`);
+                      }
+                    }}
+                    style={{...S.sel, padding: "10px 20px", background: "#10b981", color: "#fff", fontWeight: 600, border: "none"}}
+                  >
+                    Agregar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
         </main>
       </div>
