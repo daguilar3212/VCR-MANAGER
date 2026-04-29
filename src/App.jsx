@@ -1075,6 +1075,16 @@ export default function App() {
   const [reporteTo, setReporteTo] = useState("");
   const [inventorySnapshots, setInventorySnapshots] = useState([]);
   const [showroomCosts, setShowroomCosts] = useState([]);
+  // Modal genérico para drill-down desde los cards de reportes.
+  // Cuando es null, no se muestra. Cuando es { title, items }, se renderiza un modal
+  // con scroll que lista los carros (cada uno con link al detalle del showroom).
+  const [reporteModal, setReporteModal] = useState(null);
+  // Costos extras por vehículo (más allá del costo de compra) que también
+  // forman parte del "Costo Total" real del carro:
+  // - manualCosts: tabla vehicle_manual_costs (lavado, reparaciones, etc.)
+  // - vehicleInvoices: facturas con plate asignada (que no son la factura de compra)
+  const [vehicleManualCosts, setVehicleManualCosts] = useState([]);
+  const [vehicleInvoiceCosts, setVehicleInvoiceCosts] = useState([]);
 
   const loadInventorySnapshots = async () => {
     const { data } = await supabase
@@ -1092,6 +1102,30 @@ export default function App() {
       .from('showroom_vehicle_costs')
       .select('plate, purchase_cost_amount, purchase_cost_currency, purchase_cost_tc, purchase_cost_date');
     if (data) setShowroomCosts(data);
+  };
+
+  // Costos extras por vehículo: lavado, reparaciones, traspaso, etc.
+  // Se suman al costo total del carro en los reportes.
+  const loadAllManualCosts = async () => {
+    const { data } = await supabase
+      .from('vehicle_manual_costs')
+      .select('plate, amount, currency, tc, cost_date, concept');
+    if (data) setVehicleManualCosts(data);
+  };
+
+  // Facturas con plate asignada que NO son la factura de compra inicial.
+  // (La factura de compra ya está reflejada en showroom_vehicle_costs).
+  // Estas son facturas de gastos asociados al vehículo.
+  const loadAllVehicleInvoices = async () => {
+    const { data } = await supabase
+      .from('invoices')
+      .select('plate, total, currency, exchange_rate, emission_date, is_vehicle_purchase')
+      .not('plate', 'is', null);
+    if (data) {
+      // Filtrar facturas de compra (esas ya están en purchase_cost)
+      const filtered = data.filter(inv => !inv.is_vehicle_purchase);
+      setVehicleInvoiceCosts(filtered);
+    }
   };
   const [showAddVehicle, setShowAddVehicle] = useState(false);
   const [newVehicleForm, setNewVehicleForm] = useState(null);
@@ -1216,7 +1250,7 @@ export default function App() {
   const [notif, setNotif] = useState(null);
 
   // Load data on mount
-  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); loadInventorySnapshots(); loadAllShowroomCosts(); }, []);
+  useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); loadInventorySnapshots(); loadAllShowroomCosts(); loadAllManualCosts(); loadAllVehicleInvoices(); }, []);
 
   // Realtime: escuchar cambios en showroom_vehicles para que el admin vea
   // cambios de vendedores (o de otros admins) sin tener que recargar.
@@ -4207,6 +4241,42 @@ export default function App() {
       costoMap[(c.plate || '').toUpperCase().trim()] = c;
     });
 
+    // Mapas de costos extras por placa: costos manuales + facturas asociadas.
+    // Estos costos se SUMAN al costo de compra para tener el costo total real.
+    const manualCostsMap = {};
+    (vehicleManualCosts || []).forEach(m => {
+      const k = (m.plate || '').toUpperCase().trim();
+      if (!manualCostsMap[k]) manualCostsMap[k] = [];
+      manualCostsMap[k].push(m);
+    });
+    const invoiceCostsMap = {};
+    (vehicleInvoiceCosts || []).forEach(inv => {
+      const k = (inv.plate || '').toUpperCase().trim();
+      if (!invoiceCostsMap[k]) invoiceCostsMap[k] = [];
+      invoiceCostsMap[k].push(inv);
+    });
+
+    // Helper: suma todos los costos extras (manuales + facturas) de una placa
+    // y los devuelve en CRC. Si el costo está en USD, usa su TC histórico o BCCR como fallback.
+    const sumExtrasCRC = (plateKey) => {
+      let total = 0;
+      (manualCostsMap[plateKey] || []).forEach(m => {
+        const amt = parseFloat(m.amount) || 0;
+        const cur = m.currency || 'CRC';
+        const tc = parseFloat(m.tc) || 0;
+        if (cur === 'USD') total += amt * (tc > 1 ? tc : bccrVenta);
+        else total += amt;
+      });
+      (invoiceCostsMap[plateKey] || []).forEach(inv => {
+        const amt = parseFloat(inv.total) || 0;
+        const cur = inv.currency || 'CRC';
+        const tc = parseFloat(inv.exchange_rate) || 0;
+        if (cur === 'USD') total += amt * (tc > 1 ? tc : bccrVenta);
+        else total += amt;
+      });
+      return total;
+    };
+
     // Carros activos del showroom (no vendidos, no consignación)
     const carrosActivos = (showroomVehicles || []).filter(v =>
       v.estado !== 'VENDIDO' && !v.is_consignment
@@ -4220,17 +4290,23 @@ export default function App() {
       const dias = dCompra ? Math.floor((todayMs - dCompra.getTime()) / 86400000) : null;
 
       // Costo de compra en CRC
-      let costoCRC = 0;
+      let costoCompraCRC = 0;
       if (costo) {
         const cAmt = parseFloat(costo.purchase_cost_amount) || 0;
         const cCur = costo.purchase_cost_currency || 'USD';
         const cTc = parseFloat(costo.purchase_cost_tc) || 0;
         if (cCur === 'USD') {
-          costoCRC = cAmt * (cTc > 1 ? cTc : bccrVenta);
+          costoCompraCRC = cAmt * (cTc > 1 ? cTc : bccrVenta);
         } else {
-          costoCRC = cAmt;
+          costoCompraCRC = cAmt;
         }
       }
+
+      // Costos extras (manuales + facturas) en CRC
+      const costoExtrasCRC = sumExtrasCRC(plateKey);
+
+      // Costo total real = compra + extras
+      const costoCRC = costoCompraCRC + costoExtrasCRC;
 
       // Precio de venta en CRC
       const precioAmt = parseFloat(sv.price) || 0;
@@ -4283,7 +4359,7 @@ export default function App() {
     // ============================================================
     // VALOR DEL INVENTARIO PROPIO (desde showroom_vehicles + showroom_vehicle_costs)
     //   Incluye DISPONIBLES y RESERVADOS, excluye VENDIDOS y CONSIGNACIÓN.
-    //   El costo viene de showroom_vehicle_costs (no de la pestaña Inventario).
+    //   El "Costo Total" suma: costo de compra + costos extras (manuales + facturas asociadas).
     // ============================================================
     const showroomActivos = (showroomVehicles || []).filter(v => v.estado !== 'VENDIDO');
     const propiosActivos = showroomActivos.filter(v => !v.is_consignment);
@@ -4295,7 +4371,7 @@ export default function App() {
       const plateKey = (sv.plate || '').toUpperCase().trim();
       const costo = costoMap[plateKey];
 
-      // Costo a CRC
+      // Costo de compra a CRC
       if (costo) {
         const cAmt = parseFloat(costo.purchase_cost_amount) || 0;
         const cCur = costo.purchase_cost_currency || 'USD';
@@ -4306,6 +4382,9 @@ export default function App() {
           invCostoCRC += cAmt;
         }
       }
+
+      // Costos extras (manuales + facturas asociadas) a CRC
+      invCostoCRC += sumExtrasCRC(plateKey);
 
       // Precio venta a CRC
       const precio = parseFloat(sv.price) || 0;
@@ -4400,9 +4479,31 @@ export default function App() {
     // ============================================================
     // RENDER UI
     // ============================================================
-    const Card = ({ title, value, subtitle, color, big }) => (
-      <div style={{ ...S.card, padding: 16, flex: 1, minWidth: 180 }}>
-        <div style={{ fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{title}</div>
+    const Card = ({ title, value, subtitle, color, big, onClick }) => (
+      <div
+        style={{
+          ...S.card,
+          padding: 16,
+          flex: 1,
+          minWidth: 180,
+          cursor: onClick ? "pointer" : "default",
+          transition: "transform 0.15s, box-shadow 0.15s",
+          ...(onClick ? { borderLeft: `3px solid ${color || "#4f8cff"}` } : {}),
+        }}
+        onClick={onClick}
+        onMouseEnter={onClick ? (e) => {
+          e.currentTarget.style.transform = "translateY(-2px)";
+          e.currentTarget.style.boxShadow = "0 6px 20px rgba(0,0,0,0.25)";
+        } : undefined}
+        onMouseLeave={onClick ? (e) => {
+          e.currentTarget.style.transform = "translateY(0)";
+          e.currentTarget.style.boxShadow = "";
+        } : undefined}
+      >
+        <div style={{ fontSize: 11, color: "#8b8fa4", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+          {title}
+          {onClick && <span style={{ marginLeft: 6, color: "#4f8cff", fontSize: 10 }}>↗ ver lista</span>}
+        </div>
         <div style={{ fontSize: big ? 28 : 22, fontWeight: 800, color: color || "#e8eaf0" }}>{value}</div>
         {subtitle && <div style={{ fontSize: 11, color: "#8b8fa4", marginTop: 4 }}>{subtitle}</div>}
       </div>
@@ -4646,10 +4747,50 @@ export default function App() {
             </div>
 
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <Card title="Capital trabado" value={`₡${fmt0(capitalTrabado)}`} subtitle={`${carrosNoRotan.length} carros disponibles`} color="#f59e0b" big />
-              <Card title="🔴 > 60 días" value={carrosNoRotan.filter(c => (c.dias || 0) > 60).length} subtitle="Considere bajar precio" color="#e11d48" big />
-              <Card title="🟡 30-60 días" value={carrosNoRotan.filter(c => (c.dias || 0) > 30 && (c.dias || 0) <= 60).length} subtitle="Revisar pronto" color="#f59e0b" big />
-              <Card title="🟢 < 30 días" value={carrosNoRotan.filter(c => (c.dias || 0) <= 30).length} subtitle="Ritmo normal" color="#10b981" big />
+              <Card
+                title="Capital trabado"
+                value={`₡${fmt0(capitalTrabado)}`}
+                subtitle={`${carrosNoRotan.length} carros disponibles`}
+                color="#f59e0b"
+                big
+                onClick={() => setReporteModal({
+                  title: `Capital trabado · ${carrosNoRotan.length} carros disponibles`,
+                  items: carrosNoRotan,
+                })}
+              />
+              <Card
+                title="🔴 > 180 días"
+                value={carrosNoRotan.filter(c => (c.dias || 0) > 180).length}
+                subtitle="Considere bajar precio"
+                color="#e11d48"
+                big
+                onClick={() => {
+                  const items = carrosNoRotan.filter(c => (c.dias || 0) > 180);
+                  setReporteModal({ title: `Carros con más de 180 días · considere bajar precio`, items });
+                }}
+              />
+              <Card
+                title="🟡 60-180 días"
+                value={carrosNoRotan.filter(c => (c.dias || 0) > 60 && (c.dias || 0) <= 180).length}
+                subtitle="Revisar pronto"
+                color="#f59e0b"
+                big
+                onClick={() => {
+                  const items = carrosNoRotan.filter(c => (c.dias || 0) > 60 && (c.dias || 0) <= 180);
+                  setReporteModal({ title: `Carros entre 60 y 180 días · revisar pronto`, items });
+                }}
+              />
+              <Card
+                title="🟢 < 60 días"
+                value={carrosNoRotan.filter(c => (c.dias || 0) <= 60).length}
+                subtitle="Ritmo normal"
+                color="#10b981"
+                big
+                onClick={() => {
+                  const items = carrosNoRotan.filter(c => (c.dias || 0) <= 60);
+                  setReporteModal({ title: `Carros con menos de 60 días · ritmo normal`, items });
+                }}
+              />
             </div>
 
             <div style={{ ...S.card, padding: 18 }}>
@@ -4672,7 +4813,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {carrosNoRotan.map(({ v, dias, costoTotal, precio, margenEst }, i) => {
-                        const semaforo = !dias ? "🟢" : dias > 60 ? "🔴" : dias > 30 ? "🟡" : "🟢";
+                        const semaforo = !dias ? "🟢" : dias > 180 ? "🔴" : dias > 60 ? "🟡" : "🟢";
                         return (
                           <tr key={v.id} style={{ borderBottom: "1px solid #2a2d3d" }}>
                             <td style={{ padding: 10, fontSize: 14 }}>{semaforo}</td>
@@ -4681,7 +4822,7 @@ export default function App() {
                               <div style={{ fontSize: 10, color: "#8b8fa4" }}>{v.y}</div>
                             </td>
                             <td style={{ padding: 10, fontWeight: 600 }}>{v.p}</td>
-                            <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: dias > 60 ? "#e11d48" : dias > 30 ? "#f59e0b" : "#10b981" }}>{dias !== null ? `${dias}d` : "—"}</td>
+                            <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: dias > 180 ? "#e11d48" : dias > 60 ? "#f59e0b" : "#10b981" }}>{dias !== null ? `${dias}d` : "—"}</td>
                             <td style={{ padding: 10, textAlign: "right" }}>₡{fmt0(costoTotal)}</td>
                             <td style={{ padding: 10, textAlign: "right" }}>{precio > 0 ? `₡${fmt0(precio)}` : "—"}</td>
                             <td style={{ padding: 10, textAlign: "right", fontWeight: 700, color: margenEst > 0 ? "#10b981" : margenEst < 0 ? "#e11d48" : "#8b8fa4" }}>
@@ -4799,6 +4940,146 @@ export default function App() {
                   <span style={{ width: 10, height: 10, background: "#e11d48", borderRadius: 2, display: "inline-block" }}></span>
                   <span style={{ color: "#8b8fa4" }}>Planilla</span>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MODAL: drill-down de carros desde los cards del reporte de inventario.
+            Se abre al hacer click en uno de los 4 cards (Capital, >180d, 60-180d, <60d).
+            Permite ir directamente al detalle del carro en el Showroom. */}
+        {reporteModal && (
+          <div
+            onClick={() => setReporteModal(null)}
+            style={{
+              position: "fixed",
+              top: 0, left: 0, right: 0, bottom: 0,
+              background: "rgba(0,0,0,0.65)",
+              zIndex: 1000,
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              padding: 20,
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: "#1a1d2e",
+                borderRadius: 14,
+                padding: 0,
+                maxWidth: 600,
+                width: "100%",
+                maxHeight: "80vh",
+                display: "flex",
+                flexDirection: "column",
+                boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+                border: "1px solid #2a2d3d",
+              }}
+            >
+              {/* Header del modal (no scrollea) */}
+              <div style={{
+                padding: "18px 22px",
+                borderBottom: "1px solid #2a2d3d",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: 12,
+              }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#e8eaf0" }}>
+                    {reporteModal.title}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#8b8fa4", marginTop: 2 }}>
+                    {reporteModal.items.length} {reporteModal.items.length === 1 ? "carro" : "carros"} · click para ver en Showroom
+                  </div>
+                </div>
+                <button
+                  onClick={() => setReporteModal(null)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#8b8fa4",
+                    fontSize: 22,
+                    cursor: "pointer",
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                    lineHeight: 1,
+                  }}
+                  title="Cerrar"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Lista scrolleable de carros */}
+              <div style={{
+                overflowY: "auto",
+                padding: "8px 0",
+                flex: 1,
+              }}>
+                {reporteModal.items.length === 0 ? (
+                  <div style={{ padding: "32px 22px", textAlign: "center", color: "#8b8fa4", fontSize: 13 }}>
+                    No hay carros en este rango.
+                  </div>
+                ) : (
+                  reporteModal.items.map((c, idx) => {
+                    // Buscar el carro completo en showroomVehicles para obtener su id (necesario para abrir el detalle)
+                    const sv = (showroomVehicles || []).find(s => (s.plate || '').toUpperCase().trim() === (c.v.p || '').toUpperCase().trim());
+                    const diasColor = (c.dias || 0) > 180 ? "#e11d48"
+                                    : (c.dias || 0) > 60 ? "#f59e0b"
+                                    : "#10b981";
+                    return (
+                      <div
+                        key={c.v.p || idx}
+                        onClick={() => {
+                          if (sv?.id) {
+                            setCotState({});
+                            setFotoElegida(null);
+                            setShowroomPicked(sv.id);
+                            setTab("Showroom");
+                            setReporteModal(null);
+                          }
+                        }}
+                        style={{
+                          padding: "12px 22px",
+                          borderBottom: "1px solid #2a2d3d",
+                          cursor: sv?.id ? "pointer" : "not-allowed",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 12,
+                          opacity: sv?.id ? 1 : 0.5,
+                          transition: "background 0.15s",
+                        }}
+                        onMouseEnter={sv?.id ? (e) => { e.currentTarget.style.background = "#2a2d3d"; } : undefined}
+                        onMouseLeave={sv?.id ? (e) => { e.currentTarget.style.background = "transparent"; } : undefined}
+                      >
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#e8eaf0" }}>
+                            {c.v.b || "?"} {c.v.m || "?"} {c.v.y || ""}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#8b8fa4", marginTop: 2 }}>
+                            Placa: <span style={{ color: "#4f8cff", fontWeight: 600 }}>{c.v.p || "-"}</span>
+                            {" · "}
+                            Costo: ₡{fmt0(c.costoTotal)}
+                            {c.precio > 0 && <> · Precio: ₡{fmt0(c.precio)}</>}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: diasColor }}>
+                            {c.dias !== null ? `${c.dias}d` : "—"}
+                          </div>
+                          {sv?.id && (
+                            <div style={{ fontSize: 10, color: "#4f8cff", marginTop: 2 }}>
+                              ↗ abrir
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             </div>
           </div>
