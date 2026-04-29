@@ -716,6 +716,30 @@ const fmt2 = (n, c) => {
   return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", {minimumFractionDigits:2, maximumFractionDigits:2});
 };
 const fK = (n) => Number(n).toLocaleString("es-CR") + " km";
+
+// Convertir fecha ISO (yyyy-mm-dd) a formato CR (dd-mm-aaaa) para mostrar
+const isoToCr = (iso) => {
+  if (!iso) return "";
+  const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
+};
+
+// Convertir fecha CR (dd-mm-aaaa o ddmmaaaa o dd/mm/aaaa) a ISO (yyyy-mm-dd).
+// Retorna null si la fecha es inválida. Acepta cualquier separador o ninguno.
+const crToIso = (txt) => {
+  if (!txt) return null;
+  const clean = String(txt).replace(/[^\d]/g, "");
+  if (clean.length !== 8) return null;
+  const dd = clean.slice(0, 2);
+  const mm = clean.slice(2, 4);
+  const yyyy = clean.slice(4, 8);
+  const d = parseInt(dd, 10);
+  const m = parseInt(mm, 10);
+  const y = parseInt(yyyy, 10);
+  if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900 || y > 2100) return null;
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 const tabs = ["Dashboard","Inventario","Showroom","Facturas","Costos","Clientes","Ventas","Liquidaciones","Planillas","Egresos","Settings","Reportes"];
 
 const S = {
@@ -8031,27 +8055,6 @@ export default function App() {
                           const currentAmt = vehicleCost?.purchase_cost_amount || "";
                           const currentCur = vehicleCost?.purchase_cost_currency || "USD";
                           const currentDateIso = vehicleCost?.purchase_cost_date || new Date().toISOString().slice(0, 10);
-                          // Convertir ISO (yyyy-mm-dd) a formato CR (dd-mm-aaaa) para mostrar
-                          const isoToCr = (iso) => {
-                            if (!iso) return "";
-                            const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-                            return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
-                          };
-                          // Convertir formato CR (dd-mm-aaaa o ddmmaaaa) a ISO (yyyy-mm-dd)
-                          // Acepta también con / o sin separadores. Devuelve null si inválido.
-                          const crToIso = (txt) => {
-                            if (!txt) return null;
-                            const clean = String(txt).replace(/[^\d]/g, "");
-                            if (clean.length !== 8) return null;
-                            const dd = clean.slice(0, 2);
-                            const mm = clean.slice(2, 4);
-                            const yyyy = clean.slice(4, 8);
-                            const d = parseInt(dd, 10);
-                            const m = parseInt(mm, 10);
-                            const y = parseInt(yyyy, 10);
-                            if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900 || y > 2100) return null;
-                            return `${yyyy}-${mm}-${dd}`;
-                          };
 
                           const amt = prompt(`Monto del costo de compra en ${currentCur}:`, currentAmt);
                           if (amt == null) return;
@@ -8079,12 +8082,7 @@ export default function App() {
                       <div style={{padding: 12, background: "#1e2130", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12}}>
                         <div style={{flex: 1}}>
                           <div style={{fontSize: 10, color: "#5a5e72"}}>
-                            {(() => {
-                              const iso = vehicleCost.purchase_cost_date;
-                              if (!iso) return "";
-                              const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
-                              return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
-                            })()} · {costCur}{costTcItem > 0 ? ` · TC ${fmt0(costTcItem)}` : ""}
+                            {isoToCr(vehicleCost.purchase_cost_date)} · {costCur}{costTcItem > 0 ? ` · TC ${fmt0(costTcItem)}` : ""}
                           </div>
                         </div>
                         <CostMoney amount={costAmt} currency={costCur} tcItem={costTcItem} mainSize={17} subSize={11} />
@@ -8116,7 +8114,7 @@ export default function App() {
                               <div style={{flex: 1, minWidth: 0}}>
                                 <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"}}>{inv.supplier_name}</div>
                                 <div style={{fontSize: 10, color: "#5a5e72"}}>
-                                  {inv.emission_date?.slice(0, 10)} · {origCur}{tcItem > 0 ? ` · TC ${fmt0(tcItem)}` : ""}
+                                  {isoToCr(inv.emission_date?.slice(0, 10))} · {origCur}{tcItem > 0 ? ` · TC ${fmt0(tcItem)}` : ""}
                                 </div>
                               </div>
                               <CostMoney amount={origAmt} currency={origCur} tcItem={tcItem} mainSize={14} subSize={10} />
@@ -8143,8 +8141,14 @@ export default function App() {
                           if (!amount) return;
                           const currency = prompt("Moneda (USD o CRC):", "CRC");
                           if (!currency || !["USD", "CRC"].includes(currency.toUpperCase())) { alert("Moneda inválida"); return; }
-                          const cost_date = prompt("Fecha (YYYY-MM-DD):", new Date().toISOString().slice(0, 10));
-                          if (!cost_date) return;
+                          const fechaHoy = isoToCr(new Date().toISOString().slice(0, 10));
+                          const fechaInput = prompt("Fecha (DD-MM-AAAA):", fechaHoy);
+                          if (!fechaInput) return;
+                          const cost_date = crToIso(fechaInput);
+                          if (!cost_date) {
+                            alert("Fecha inválida. Use formato DD-MM-AAAA (ejemplo: 04-06-2026 o 04062026)");
+                            return;
+                          }
                           const description = prompt("Descripción (opcional):") || "";
                           addManualCost(v.plate, { concept, amount, currency: currency.toUpperCase(), cost_date, description }).then(r => {
                             if (r.ok) alert("✓ Costo manual agregado");
@@ -8170,7 +8174,7 @@ export default function App() {
                               <div style={{flex: 1, minWidth: 0}}>
                                 <div style={{fontSize: 12, fontWeight: 600, color: "#e8eaf0"}}>{m.concept}</div>
                                 <div style={{fontSize: 10, color: "#5a5e72"}}>
-                                  {m.cost_date} · {m.currency}{tcItem > 0 ? ` · TC ${fmt0(tcItem)}` : ""}
+                                  {isoToCr(m.cost_date)} · {m.currency}{tcItem > 0 ? ` · TC ${fmt0(tcItem)}` : ""}
                                   {m.description ? ` · ${m.description}` : ""}
                                 </div>
                               </div>
