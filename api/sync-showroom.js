@@ -439,6 +439,14 @@ export default async function handler(req, res) {
 
     // 3. Borrar TODOS los registros disponibles (preservar VENDIDOS para histórico)
     //    Los vendidos se preservan porque ya no están en el Sheets pero queremos
+    // 3.0. PRESERVAR placas marcadas como is_consignment ANTES de borrar
+    //      Como el sync masivo borra y reinserta, perderíamos esa marca.
+    const { data: consigPrev } = await supabase
+      .from('showroom_vehicles')
+      .select('plate')
+      .eq('is_consignment', true);
+    const placasConsig = new Set((consigPrev || []).map(c => (c.plate || '').toUpperCase().trim()));
+
     //    que sigan visibles en la pestaña "Vendidos" de la app.
     const { error: delErr } = await supabase
       .from('showroom_vehicles')
@@ -456,7 +464,13 @@ export default async function handler(req, res) {
       .select('plate')
       .eq('estado', 'VENDIDO');
     const platasVendidas = new Set((vendidos || []).map(v => (v.plate || '').toUpperCase().trim()));
-    const recordsToInsert = records.filter(r => !platasVendidas.has((r.plate || '').toUpperCase().trim()));
+    const recordsToInsert = records
+      .filter(r => !platasVendidas.has((r.plate || '').toUpperCase().trim()))
+      // Restaurar la marca de consignación si la placa la tenía antes del sync
+      .map(r => ({
+        ...r,
+        is_consignment: placasConsig.has((r.plate || '').toUpperCase().trim()),
+      }));
     const skippedSold = records.length - recordsToInsert.length;
 
     // 4. Insertar todos los disponibles
@@ -732,6 +746,7 @@ async function handleAddCar(req, res, supabase, car) {
       style: car.style || null,
       price: parseFloat(car.price) || null,
       currency: (car.currency || '').toUpperCase() || null,
+      is_consignment: !!car.is_consignment,
     };
     const { error: supErr } = await supabase.from('showroom_vehicles').insert(supabaseRecord);
     if (supErr) {
@@ -946,6 +961,7 @@ async function handleEditCar(req, res, supabase, car) {
       style: car.style || null,
       price: parseFloat(car.price) || null,
       currency: (car.currency || '').toUpperCase() || null,
+      is_consignment: !!car.is_consignment,
     };
     await supabase.from('showroom_vehicles').update(supabaseRecord).eq('plate', plateNormalizado);
 
