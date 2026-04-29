@@ -1752,6 +1752,149 @@ export default async function handler(req, res) {
       recalcResult = { skipped: true };
     }
 
+    // ============================================================
+    // SNAPSHOT MENSUAL DE INVENTARIO (lazy: solo si día 1-3 del mes y aún no existe)
+    // ============================================================
+    let snapshotResult = { skipped: true };
+    try {
+      const today = new Date();
+      const dayOfMonth = today.getDate();
+      // Solo intentar entre día 1 y 3 del mes
+      if (dayOfMonth <= 3) {
+        // Snapshot del MES ANTERIOR (último día)
+        const lastDayPrevMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+        const snapshotDate = lastDayPrevMonth.toISOString().slice(0, 10);
+
+        // Verificar si ya existe
+        const { data: existing } = await supabase
+          .from('inventory_snapshots')
+          .select('id')
+          .eq('snapshot_date', snapshotDate)
+          .maybeSingle();
+
+        if (!existing) {
+          // Calcular snapshot del showroom AL DÍA DE HOY
+          // (lo correcto sería reconstruir el pasado pero como esto corre el día 1
+          //  del mes nuevo, el inventario actual es básicamente el de fin de mes anterior)
+          const { data: srVehicles } = await supabase
+            .from('showroom_vehicles')
+            .select('id, plate, brand, model, year, price, currency, is_consignment, estado')
+            .neq('estado', 'VENDIDO');
+
+          const activos = (srVehicles || []).filter(v => v.estado !== 'VENDIDO');
+          const propios = activos.filter(v => !v.is_consignment);
+          const consig = activos.filter(v => v.is_consignment);
+
+          // Para cada propio buscar costo de compra en showroom_vehicle_costs
+          let costoTotalCRC = 0;
+          let costoTotalUSD = 0;
+          let precioVentaCRC = 0;
+          let precioVentaUSD = 0;
+          const detalle = [];
+
+          // TC actual (del cron de TC que se acaba de actualizar)
+          const { data: tcRow } = await supabase
+            .from('tc_historico')
+            .select('tc_venta, tc_compra')
+            .eq('fuente', 'bccr')
+            .eq('fecha', new Date().toISOString().slice(0, 10))
+            .maybeSingle();
+          const bccrVenta = parseFloat(tcRow?.tc_venta) || 510;
+          const bccrCompra = parseFloat(tcRow?.tc_compra) || 510;
+
+          // Cargar todos los costos de compra de carros propios
+          const platesPropios = propios.map(v => v.plate);
+          const { data: costos } = platesPropios.length > 0
+            ? await supabase
+                .from('showroom_vehicle_costs')
+                .select('plate, purchase_cost_amount, purchase_cost_currency, purchase_cost_tc')
+                .in('plate', platesPropios)
+            : { data: [] };
+          const costosByPlate = {};
+          (costos || []).forEach(c => { costosByPlate[c.plate] = c; });
+
+          for (const v of propios) {
+            const c = costosByPlate[v.plate];
+            const cAmt = c ? parseFloat(c.purchase_cost_amount) || 0 : 0;
+            const cCur = c?.purchase_cost_currency || 'USD';
+            const cTc = parseFloat(c?.purchase_cost_tc) || 0;
+
+            // Convertir costo a ambas monedas
+            let costoEstaCRC = 0;
+            let costoEstaUSD = 0;
+            if (cCur === 'USD') {
+              costoEstaUSD = cAmt;
+              costoEstaCRC = cAmt * (cTc > 1 ? cTc : bccrVenta);
+            } else {
+              costoEstaCRC = cAmt;
+              costoEstaUSD = cAmt / (cTc > 1 ? cTc : bccrCompra);
+            }
+            costoTotalCRC += costoEstaCRC;
+            costoTotalUSD += costoEstaUSD;
+
+            // Precio venta
+            const pAmt = parseFloat(v.price) || 0;
+            const pCur = v.currency || 'USD';
+            let precioEstaCRC = 0;
+            let precioEstaUSD = 0;
+            if (pCur === 'USD') {
+              precioEstaUSD = pAmt;
+              precioEstaCRC = pAmt * bccrVenta;
+            } else {
+              precioEstaCRC = pAmt;
+              precioEstaUSD = pAmt / bccrCompra;
+            }
+            precioVentaCRC += precioEstaCRC;
+            precioVentaUSD += precioEstaUSD;
+
+            detalle.push({
+              plate: v.plate,
+              brand: v.brand,
+              model: v.model,
+              year: v.year,
+              costo_crc: Math.round(costoEstaCRC),
+              precio_crc: Math.round(precioEstaCRC),
+            });
+          }
+
+          const margenPotencialCRC = precioVentaCRC - costoTotalCRC;
+
+          const { error: insErr } = await supabase
+            .from('inventory_snapshots')
+            .insert({
+              snapshot_date: snapshotDate,
+              carros_propios: propios.length,
+              carros_consignacion: consig.length,
+              costo_total_crc: Math.round(costoTotalCRC),
+              precio_venta_crc: Math.round(precioVentaCRC),
+              costo_total_usd: Math.round(costoTotalUSD),
+              precio_venta_usd: Math.round(precioVentaUSD),
+              margen_potencial_crc: Math.round(margenPotencialCRC),
+              detalle,
+            });
+
+          if (insErr) {
+            snapshotResult = { ok: false, error: insErr.message };
+          } else {
+            snapshotResult = {
+              ok: true,
+              snapshot_date: snapshotDate,
+              carros_propios: propios.length,
+              carros_consignacion: consig.length,
+              costo_total_crc: Math.round(costoTotalCRC),
+              precio_venta_crc: Math.round(precioVentaCRC),
+            };
+          }
+        } else {
+          snapshotResult = { skipped: true, reason: 'Ya existe snapshot para ' + snapshotDate };
+        }
+      } else {
+        snapshotResult = { skipped: true, reason: 'No es día 1-3 del mes' };
+      }
+    } catch (snapErr) {
+      snapshotResult = { ok: false, error: snapErr.message };
+    }
+
     return res.status(200).json({
       ok: true,
       timestamp: new Date().toISOString(),
@@ -1760,6 +1903,7 @@ export default async function handler(req, res) {
       backup: backupResult,
       payments: paymentsResult,
       recalc: recalcResult,
+      snapshot: snapshotResult,
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: err.message, stats });
