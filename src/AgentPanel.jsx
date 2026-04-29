@@ -745,7 +745,7 @@ const emptyForm = () => ({
 // ============================================================
 export default function AgentPanel() {
   const { profile, signOut } = useAuth();
-  const [tab, setTab] = useState("inventario"); // inventario | showroom | ventas
+  const [tab, setTab] = useState("showroom"); // showroom | cotizadores | ventas
   const [view, setView] = useState("list"); // list | form | detail
   const [vehicles, setVehicles] = useState([]);
   const [sales, setSales] = useState([]);
@@ -1612,11 +1612,11 @@ export default function AgentPanel() {
 
       {/* TABS */}
       <div style={S.tabBar}>
-        <button onClick={() => { setTab("inventario"); setView("list"); }} style={S.tab(tab === "inventario")}>
-          Inventario ({vehicles.length})
-        </button>
         <button onClick={() => { setTab("showroom"); setShowroomPicked(null); }} style={S.tab(tab === "showroom")}>
           Showroom
+        </button>
+        <button onClick={() => { setTab("cotizadores"); }} style={S.tab(tab === "cotizadores")}>
+          Cotizadores
         </button>
         <button onClick={() => { setTab("ventas"); setView("list"); }} style={S.tab(tab === "ventas")}>
           Mis planes de venta ({sales.length})
@@ -1625,12 +1625,7 @@ export default function AgentPanel() {
 
       {/* CONTENIDO */}
       <div style={S.content}>
-        {tab === "inventario" && <InventarioView
-          vehicles={filteredVehicles}
-          filter={vehicleFilter}
-          setFilter={setVehicleFilter}
-          onSellVehicle={openNewSaleForm}
-        />}
+        {tab === "cotizadores" && <CotizadoresView tcRates={tcRates} />}
 
         {tab === "showroom" && <ShowroomView
           vehicles={showroomVehicles}
@@ -1797,6 +1792,357 @@ function InventarioView({ vehicles, filter, setFilter, onSellVehicle }) {
         </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// SUBCOMPONENTE: COTIZADORES LIBRES (sin carro específico)
+// ============================================================
+// Permite al agente cotizar BAC / Rapimax / Crédito Personal para cualquier
+// carro, ingresando los datos manualmente. Solo cálculo, sin compartir ni
+// descargar ficha.
+function CotizadoresView({ tcRates }) {
+  const fmt0 = (n, c) => {
+    if (n == null || isNaN(n)) return "-";
+    return (c === "USD" ? "$" : "₡") + Number(n).toLocaleString("es-CR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  };
+
+  // Estado: el agente elige el banco y digita los datos del carro.
+  const [banco, setBanco] = useState("BAC"); // BAC | RAPIMAX | CP
+  const [anio, setAnio] = useState(new Date().getFullYear());
+  const [moneda, setMoneda] = useState("USD"); // USD | CRC
+  const [valorAuto, setValorAuto] = useState("");
+  const [traspaso, setTraspaso] = useState("");
+  const [primaPct, setPrimaPct] = useState(""); // como decimal (0.20 = 20%) — pero al usuario lo mostramos como entero
+  const [plazo, setPlazo] = useState("");
+  const [esPickup, setEsPickup] = useState(false);
+  const [fuenteIngreso, setFuenteIngreso] = useState("Asalariado Nacional");
+  const [tcManual, setTcManual] = useState("");
+
+  // TC del día (BCCR venta como referencia para convertir CRC<->USD)
+  const tcDia = parseFloat(tcManual) || tcRates?.bccr?.venta || 500;
+
+  // Bancos disponibles según el año digitado
+  const anioNum = parseInt(anio) || 0;
+  const bancosDisp = bancosDispAnio(anioNum);
+
+  // Si el banco actual NO está disponible para este año, sugerir el primero disponible
+  const bancoEfectivo = bancosDisp.includes(banco) ? banco : (bancosDisp[0] || "BAC");
+
+  // Defaults sugeridos por banco/año (para guiar al agente)
+  let primaMinSugerida = 0;
+  let plazoMaxSugerido = 96;
+  if (bancoEfectivo === "BAC") {
+    primaMinSugerida = primaMinBAC(anioNum) || 0.25;
+    plazoMaxSugerido = plazoMaxBAC(anioNum) || 96;
+  } else if (bancoEfectivo === "RAPIMAX") {
+    primaMinSugerida = primaMinRM(anioNum) || 0.25;
+    plazoMaxSugerido = plazoMaxRM(anioNum) || 96;
+  }
+
+  // Valores efectivos (usar lo que digitó el agente o el sugerido)
+  const primaPctEff = primaPct !== "" ? (parseFloat(primaPct) / 100) : primaMinSugerida;
+  const plazoEff = plazo !== "" ? parseInt(plazo) : plazoMaxSugerido;
+  const valorAutoNum = parseFloat(valorAuto) || 0;
+  const traspasoNum = parseFloat(traspaso) || 0;
+
+  // Calcular cotización
+  let cot = null;
+  if (valorAutoNum > 0) {
+    try {
+      if (bancoEfectivo === "BAC") {
+        cot = cotizarBAC({
+          valorAuto: valorAutoNum,
+          traspaso: traspasoNum,
+          moneda,
+          anio: anioNum,
+          plazo: plazoEff,
+          primaPct: primaPctEff,
+          esPickup,
+          fuenteIngreso,
+        });
+      } else if (bancoEfectivo === "RAPIMAX") {
+        cot = cotizarRAPIMAX({
+          valorAuto: valorAutoNum,
+          traspaso: traspasoNum,
+          moneda,
+          anio: anioNum,
+          plazo: plazoEff,
+          primaPct: primaPctEff,
+          tipoCambio: tcDia,
+        });
+      } else if (bancoEfectivo === "CP") {
+        cot = cotizarCP({
+          valorAuto: valorAutoNum,
+          traspaso: traspasoNum,
+          monedaAuto: moneda,
+          tipoCambio: tcDia,
+        });
+      }
+    } catch (e) {
+      cot = { error: "Error calculando cotización: " + e.message };
+    }
+  }
+
+  return (
+    <div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>Cotizador libre</div>
+        <div style={{ fontSize: "0.85rem", color: "#71717a", marginBottom: "1rem" }}>
+          Herramienta para cotizar cualquier vehículo, no solo los del inventario. Ingresá los datos del carro y el plan que querés cotizar.
+        </div>
+
+        {/* Selector de banco */}
+        <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+          {[
+            { v: "BAC", l: "BAC (Crédito Prendario)" },
+            { v: "RAPIMAX", l: "Rapimax (Leasing)" },
+            { v: "CP", l: "Crédito Personal" },
+          ].map(b => (
+            <button
+              key={b.v}
+              onClick={() => setBanco(b.v)}
+              style={{
+                padding: "0.6rem 1rem",
+                background: banco === b.v ? "#4f8cff" : "#fff",
+                color: banco === b.v ? "#fff" : "#52525b",
+                border: "1px solid " + (banco === b.v ? "#4f8cff" : "#d4d4d8"),
+                borderRadius: 8,
+                cursor: "pointer",
+                fontWeight: 600,
+                fontSize: "0.9rem",
+              }}
+            >
+              {b.l}
+            </button>
+          ))}
+        </div>
+
+        {/* Aviso si el banco elegido no aplica para el año */}
+        {!bancosDisp.includes(banco) && bancosDisp.length > 0 && (
+          <div style={{ padding: "0.75rem 1rem", background: "#fef3c7", borderRadius: 8, marginBottom: "1rem", fontSize: "0.85rem", color: "#92400e" }}>
+            ⚠️ {banco} no aplica para vehículos del año {anioNum || "?"}. Mostrando cotización con <strong>{bancoEfectivo}</strong>.
+          </div>
+        )}
+        {bancosDisp.length === 0 && anioNum > 0 && (
+          <div style={{ padding: "0.75rem 1rem", background: "#fef2f2", borderRadius: 8, marginBottom: "1rem", fontSize: "0.85rem", color: "#991b1b" }}>
+            ⚠️ Año {anioNum} sin opciones de financiamiento configuradas.
+          </div>
+        )}
+
+        {/* Datos del carro */}
+        <div style={S.grid3}>
+          <div>
+            <label style={S.label}>Año del carro *</label>
+            <input
+              style={S.input}
+              type="number"
+              value={anio}
+              onChange={e => setAnio(e.target.value)}
+              placeholder="Ej: 2022"
+            />
+          </div>
+          <div>
+            <label style={S.label}>Moneda del precio</label>
+            <select style={S.sel} value={moneda} onChange={e => setMoneda(e.target.value)}>
+              <option value="USD">USD (dólares)</option>
+              <option value="CRC">CRC (colones)</option>
+            </select>
+          </div>
+          <div>
+            <label style={S.label}>Valor del carro ({moneda}) *</label>
+            <input
+              style={S.input}
+              type="number"
+              value={valorAuto}
+              onChange={e => setValorAuto(e.target.value)}
+              placeholder={moneda === "USD" ? "Ej: 18500" : "Ej: 9500000"}
+            />
+          </div>
+          <div>
+            <label style={S.label}>Traspaso ({moneda})</label>
+            <input
+              style={S.input}
+              type="number"
+              value={traspaso}
+              onChange={e => setTraspaso(e.target.value)}
+              placeholder="Opcional"
+            />
+            <div style={{ fontSize: "0.7rem", color: "#71717a", marginTop: "0.25rem" }}>
+              Si no lo conocés, dejalo vacío.
+            </div>
+          </div>
+
+          {bancoEfectivo !== "CP" && (
+            <>
+              <div>
+                <label style={S.label}>Prima (%) {primaMinSugerida > 0 && <span style={{ color: "#71717a", fontWeight: 400 }}>(mín. {(primaMinSugerida * 100).toFixed(0)}%)</span>}</label>
+                <input
+                  style={S.input}
+                  type="number"
+                  value={primaPct}
+                  onChange={e => setPrimaPct(e.target.value)}
+                  placeholder={`Default: ${(primaMinSugerida * 100).toFixed(0)}`}
+                />
+              </div>
+              <div>
+                <label style={S.label}>Plazo (meses) {plazoMaxSugerido && <span style={{ color: "#71717a", fontWeight: 400 }}>(máx. {plazoMaxSugerido})</span>}</label>
+                <input
+                  style={S.input}
+                  type="number"
+                  value={plazo}
+                  onChange={e => setPlazo(e.target.value)}
+                  placeholder={`Default: ${plazoMaxSugerido}`}
+                />
+              </div>
+            </>
+          )}
+
+          {moneda === "CRC" || bancoEfectivo === "RAPIMAX" || bancoEfectivo === "CP" ? (
+            <div>
+              <label style={S.label}>Tipo de cambio (₡/$)</label>
+              <input
+                style={S.input}
+                type="number"
+                step="0.01"
+                value={tcManual}
+                onChange={e => setTcManual(e.target.value)}
+                placeholder={tcRates?.bccr?.venta ? `BCCR: ${tcRates.bccr.venta}` : "Ej: 510"}
+              />
+              <div style={{ fontSize: "0.7rem", color: "#71717a", marginTop: "0.25rem" }}>
+                {tcRates?.bccr?.venta ? `Por defecto se usa BCCR venta: ₡${tcRates.bccr.venta}` : "BCCR no disponible"}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {/* Opciones específicas BAC */}
+        {bancoEfectivo === "BAC" && (
+          <div style={{ marginTop: "1rem", padding: "0.75rem 1rem", background: "#f4f4f5", borderRadius: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.9rem" }}>
+                <input
+                  type="checkbox"
+                  checked={esPickup}
+                  onChange={e => setEsPickup(e.target.checked)}
+                />
+                Es Pick Up (afecta el seguro BAC)
+              </label>
+              <div>
+                <label style={S.label}>Fuente de ingreso</label>
+                <select style={S.sel} value={fuenteIngreso} onChange={e => setFuenteIngreso(e.target.value)}>
+                  <option value="Asalariado Nacional">Asalariado Nacional</option>
+                  <option value="Asalariado Extranjero">Asalariado Extranjero</option>
+                  <option value="Independiente Nacional">Independiente Nacional</option>
+                  <option value="Independiente Extranjero">Independiente Extranjero</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Resultado */}
+      {valorAutoNum <= 0 ? (
+        <div style={S.card}>
+          <div style={{ textAlign: "center", padding: "2rem", color: "#a1a1aa" }}>
+            Ingresá el valor del carro para ver la cotización.
+          </div>
+        </div>
+      ) : cot && cot.error ? (
+        <div style={{ ...S.card, background: "#fef2f2", borderLeft: "4px solid #e11d48" }}>
+          <strong style={{ color: "#991b1b" }}>⚠️ {cot.error}</strong>
+        </div>
+      ) : cot ? (
+        <div style={{ ...S.card, borderLeft: "4px solid #4f8cff" }}>
+          <div style={{ fontSize: "0.75rem", color: "#71717a", textTransform: "uppercase", letterSpacing: "0.5px", fontWeight: 700, marginBottom: "0.5rem" }}>
+            Resultado · {cot.banco}
+          </div>
+
+          {bancoEfectivo === "CP" ? (
+            <div>
+              <div style={{ fontSize: "0.9rem", color: "#52525b", marginBottom: "0.5rem" }}>
+                Monto total (carro + traspaso): <strong>{fmt0(cot.precioCRC, "CRC")}</strong>
+              </div>
+              <div style={{ fontSize: "1.6rem", fontWeight: 800, color: "#10b981" }}>
+                Cuota mensual: {fmt0(cot.cuotaMensual, "CRC")}
+              </div>
+              <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.5rem" }}>
+                Factor: {cot.factor.toLocaleString()} por millón. Solo asalariados.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.75rem", marginBottom: "1rem", fontSize: "0.9rem", color: "#52525b" }}>
+                <div>
+                  <div style={{ fontSize: "0.7rem", color: "#71717a" }}>Prima ({(cot.primaPct * 100).toFixed(0)}%)</div>
+                  <strong>{fmt0(cot.primaMonto, cot.moneda)}</strong>
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.7rem", color: "#71717a" }}>A financiar</div>
+                  <strong>{fmt0(cot.monto, cot.moneda)}</strong>
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.7rem", color: "#71717a" }}>Plazo</div>
+                  <strong>{cot.plazo} meses</strong>
+                </div>
+                <div>
+                  <div style={{ fontSize: "0.7rem", color: "#71717a" }}>Valor + traspaso</div>
+                  <strong>{fmt0(cot.valorTotal, cot.moneda)}</strong>
+                </div>
+              </div>
+
+              {cot.plazoCapado && (
+                <div style={{ fontSize: "0.8rem", color: "#92400e", background: "#fef3c7", padding: "0.5rem 0.75rem", borderRadius: 6, marginBottom: "0.75rem" }}>
+                  ℹ️ Plazo solicitado ({cot.plazoSolicitado} m) supera el máximo. Se ajustó a {cot.plazo} meses.
+                </div>
+              )}
+
+              {bancoEfectivo === "BAC" && (
+                <div>
+                  <div style={{ fontSize: "0.85rem", color: "#71717a", marginBottom: "0.25rem" }}>{cot.tipoPlan}</div>
+                  {cot.cuotaTotalVariable ? (
+                    <>
+                      <div style={{ fontSize: "1.3rem", fontWeight: 800, color: "#10b981", marginBottom: "0.35rem" }}>
+                        Primeros 24 meses: {fmt0(cot.cuotaTotalInicial, cot.moneda)}/mes
+                      </div>
+                      <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "#f59e0b" }}>
+                        Resto del plazo: {fmt0(cot.cuotaTotalVariable, cot.moneda)}/mes
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: "1.6rem", fontWeight: 800, color: "#10b981" }}>
+                      Cuota mensual: {fmt0(cot.cuotaTotalInicial, cot.moneda)}
+                    </div>
+                  )}
+                  <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.5rem" }}>
+                    Cuota total: incluye seguro de cobertura total. Tasa fija: {(cot.tasaFija * 100).toFixed(2)}%
+                    {cot.tasaVariable ? ` · variable después: ${(cot.tasaVariable * 100).toFixed(2)}%` : ""}
+                  </div>
+                </div>
+              )}
+
+              {bancoEfectivo === "RAPIMAX" && (
+                <div>
+                  <div style={{ fontSize: "0.85rem", color: "#71717a", marginBottom: "0.25rem" }}>{cot.tipoPlan}</div>
+                  <div style={{ fontSize: "1.3rem", fontWeight: 800, color: "#10b981", marginBottom: "0.35rem" }}>
+                    Primeros {cot.plazoFijo} meses: {fmt0(cot.cuotaTotalFija, cot.moneda)}/mes
+                  </div>
+                  {cot.cuotaTotalVariable && (
+                    <div style={{ fontSize: "1.1rem", fontWeight: 700, color: "#f59e0b" }}>
+                      Resto ({cot.plazoVariable} m): {fmt0(cot.cuotaTotalVariable, cot.moneda)}/mes
+                    </div>
+                  )}
+                  <div style={{ fontSize: "0.75rem", color: "#71717a", marginTop: "0.5rem" }}>
+                    Cuota total: incluye seguro activo, saldo deudor, desempleo y GPS. Tasa fija: {(cot.tasaFija * 100).toFixed(2)}% · variable: {(cot.tasaVariable * 100).toFixed(2)}%
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
