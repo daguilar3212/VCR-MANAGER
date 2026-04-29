@@ -294,6 +294,11 @@ export default async function handler(req, res) {
   if (body.action === 'delete' && body.plate) {
     return await handleDeleteCar(req, res, supabase, body.plate);
   }
+  // Acción para marcar como vendido: borra solo del Sheets, NO de Supabase
+  // (Supabase debe quedar con estado=VENDIDO para el histórico)
+  if (body.action === 'mark_sold' && body.plate) {
+    return await handleMarkSold(req, res, supabase, body.plate);
+  }
   // Acción para recalcular derivados de TODOS los carros (usado por el cron diario)
   if (body.action === 'recalc_all' || (req.query && req.query.action === 'recalc_all')) {
     return await handleRecalcAll(req, res, supabase);
@@ -432,26 +437,43 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: 'No se encontraron carros validos en el sheets', skipped, errors });
     }
 
-    // 3. Borrar todo el showroom y volver a cargar
-    const { error: delErr } = await supabase.from('showroom_vehicles').delete().gte('id', 0);
+    // 3. Borrar TODOS los registros disponibles (preservar VENDIDOS para histórico)
+    //    Los vendidos se preservan porque ya no están en el Sheets pero queremos
+    //    que sigan visibles en la pestaña "Vendidos" de la app.
+    const { error: delErr } = await supabase
+      .from('showroom_vehicles')
+      .delete()
+      .or('estado.is.null,estado.neq.VENDIDO');
     if (delErr) {
       return res.status(500).json({ ok: false, step: 'delete', error: delErr.message });
     }
 
-    // 4. Insertar todos
+    // 3.5. Filtrar registros que NO sobrescriban un VENDIDO existente
+    //      Si una placa que ya está VENDIDA aparece en el Sheets de nuevo (caso raro,
+    //      ej. usuario olvidó borrarla), la ignoramos para no perder el histórico.
+    const { data: vendidos } = await supabase
+      .from('showroom_vehicles')
+      .select('plate')
+      .eq('estado', 'VENDIDO');
+    const platasVendidas = new Set((vendidos || []).map(v => (v.plate || '').toUpperCase().trim()));
+    const recordsToInsert = records.filter(r => !platasVendidas.has((r.plate || '').toUpperCase().trim()));
+    const skippedSold = records.length - recordsToInsert.length;
+
+    // 4. Insertar todos los disponibles
     const { data: inserted, error: insErr } = await supabase
       .from('showroom_vehicles')
-      .insert(records)
+      .insert(recordsToInsert)
       .select();
 
     if (insErr) {
-      return res.status(500).json({ ok: false, step: 'insert', error: insErr.message, records_attempted: records.length });
+      return res.status(500).json({ ok: false, step: 'insert', error: insErr.message, records_attempted: recordsToInsert.length });
     }
 
     return res.status(200).json({
       ok: true,
-      synced: inserted?.length || records.length,
+      synced: inserted?.length || recordsToInsert.length,
       skipped,
+      skipped_already_sold: skippedSold,
       errors,
       detected_columns: Object.fromEntries(
         Object.entries(col).map(([k, v]) => [k, v === -1 ? 'NO ENCONTRADA' : `col ${v} (${headers[v] || ''})`])
@@ -937,6 +959,99 @@ async function handleEditCar(req, res, supabase, car) {
 // =====================================================
 // DELETE: borra la fila del Sheets y de Supabase
 // =====================================================
+// Marca como vendido: borra la fila del Sheets pero PRESERVA el registro
+// en Supabase (showroom_vehicles) con estado=VENDIDO para el histórico.
+// Esto evita que el cron de espejo vuelva a meter el carro como disponible.
+async function handleMarkSold(req, res, supabase, plate) {
+  try {
+    if (!plate) return res.status(400).json({ ok: false, error: 'Falta placa' });
+    const plateNormalizado = plate.trim().toUpperCase();
+
+    let accessToken;
+    try {
+      accessToken = await getGoogleAccessToken(supabase);
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: e.message });
+    }
+
+    // Buscar la fila en el Sheets que tenga esa placa
+    const readRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/Inventario!B2:B?majorDimension=ROWS`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const readJson = await readRes.json();
+    if (!readRes.ok) return res.status(502).json({ ok: false, error: 'No se pudo leer placas', detail: readJson });
+
+    const plates = readJson.values || [];
+    let rowIdx = -1;
+    for (let i = 0; i < plates.length; i++) {
+      if ((plates[i][0] || '').trim().toUpperCase() === plateNormalizado) {
+        rowIdx = i + 2;
+        break;
+      }
+    }
+
+    if (rowIdx === -1) {
+      // No estaba en Sheets. Solo confirmamos que en Supabase queda como VENDIDO.
+      return res.status(200).json({
+        ok: true,
+        deleted_from: 'sheets_skip',
+        note: 'No estaba en Sheets, solo se actualizó Supabase (que ya debe estar VENDIDO)'
+      });
+    }
+
+    // Obtener sheet_id (numérico) de la pestaña "Inventario"
+    const spreadsheetInfoRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`,
+      { headers: { 'Authorization': `Bearer ${accessToken}` } }
+    );
+    const spreadsheetInfo = await spreadsheetInfoRes.json();
+    if (!spreadsheetInfoRes.ok) {
+      return res.status(502).json({ ok: false, error: 'No se pudo leer info del Sheets', detail: spreadsheetInfo });
+    }
+
+    const inventarioSheet = spreadsheetInfo.sheets?.find(s => s.properties?.title === 'Inventario');
+    if (!inventarioSheet) {
+      return res.status(500).json({ ok: false, error: 'No se encontró pestaña Inventario' });
+    }
+    const sheetId = inventarioSheet.properties.sheetId;
+
+    // Borrar SOLO del Sheets (no de Supabase)
+    const deleteRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            deleteDimension: {
+              range: {
+                sheetId,
+                dimension: 'ROWS',
+                startIndex: rowIdx - 1,
+                endIndex: rowIdx,
+              },
+            },
+          }],
+        }),
+      }
+    );
+    const deleteJson = await deleteRes.json();
+    if (!deleteRes.ok) return res.status(502).json({ ok: false, error: 'Error borrando fila', detail: deleteJson });
+
+    // IMPORTANTE: NO borrar de Supabase. El registro debe quedar con estado=VENDIDO.
+    return res.status(200).json({
+      ok: true,
+      deleted_row_sheets: rowIdx,
+      plate: plateNormalizado,
+      note: 'Borrado del Sheets. Supabase preservado con estado VENDIDO.',
+    });
+
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+}
+
 async function handleDeleteCar(req, res, supabase, plate) {
   try {
     if (!plate) return res.status(400).json({ ok: false, error: 'Falta placa' });
