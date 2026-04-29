@@ -1733,6 +1733,33 @@ export default async function handler(req, res) {
       paymentsResult = { skipped: true };
     }
 
+    // Sincronizar facturas de Gmail (no bloqueante)
+    // Se puede saltar con ?skip_gmail=1
+    let gmailResult = null;
+    if (req.query.skip_gmail !== '1') {
+      try {
+        const baseUrl = process.env.APP_BASE_URL || 'https://vcr-manager.vercel.app';
+        const headers = { 'Content-Type': 'application/json' };
+        // El endpoint de Gmail requiere CRON_SECRET en el header Authorization
+        if (process.env.CRON_SECRET) {
+          headers['Authorization'] = `Bearer ${process.env.CRON_SECRET}`;
+        }
+        const gmRes = await fetch(`${baseUrl}/api/fetch-gmail-invoices`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({}),
+        });
+        const gmData = await gmRes.json().catch(() => ({}));
+        gmailResult = gmData.ok !== false && gmRes.ok
+          ? { ok: true, processed: gmData.processed || 0, new_invoices: gmData.new_invoices || gmData.inserted || 0 }
+          : { ok: false, status: gmRes.status, error: gmData.error || 'unknown' };
+      } catch (gmErr) {
+        gmailResult = { ok: false, error: gmErr.message };
+      }
+    } else {
+      gmailResult = { skipped: true };
+    }
+
     // Recalcular campos derivados del showroom (Precio USD/CRC calc,
     // Traspaso, Prima Mínima, Cuota, etc.) porque el TC cambia diario.
     // Se puede saltar con ?skip_recalc=1
@@ -1902,6 +1929,7 @@ export default async function handler(req, res) {
       tc: tcResult,
       backup: backupResult,
       payments: paymentsResult,
+      gmail: gmailResult,
       recalc: recalcResult,
       snapshot: snapshotResult,
     });
