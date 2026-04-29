@@ -508,6 +508,31 @@ function calcularTraspaso({ baseImponibleCRC, honorariosCRC = TRASPASO_HONORARIO
 }
 
 // ==================================================================
+// CALCULADORA DE TRASPASO PARA CARROS QUE COMPRAMOS NOSOTROS
+// ==================================================================
+// Como VCR es exento del impuesto de transferencia (DGT 2.5%), cuando
+// compramos un carro NO lo pagamos. Solo cubrimos timbres + honorarios.
+//   - Honorarios fijos: ₡45,000 por traspaso (precio negociado)
+//   - Timbres: misma fórmula del BCR
+// ==================================================================
+const TRASPASO_VCR_HONORARIOS = 45000; // ₡ fijos negociados con abogado
+function calcularTraspasoVCR({ baseImponibleCRC }) {
+  const base = Math.max(0, parseFloat(baseImponibleCRC) || 0);
+  // SIN impuesto 2.5% (VCR es exento)
+  const timbres = base > 0 ? (base * TRASPASO_TIMBRES_PCT + TRASPASO_TIMBRES_FIJO) : 0;
+  const honorarios = TRASPASO_VCR_HONORARIOS;
+  const total = timbres + honorarios;
+  return {
+    base,
+    impuesto: 0, // exento
+    timbres,
+    honorarios,
+    total,
+    pct_total: base > 0 ? (total / base) * 100 : 0,
+  };
+}
+
+// ==================================================================
 
 const exportXLS = (rows, name) => {
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -1021,6 +1046,14 @@ export default function App() {
     transmission: '', color: '', km: '', fuel: '', engine_cc: '',
     cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
     price: '', currency: 'USD', is_consignment: false,
+    // Si está marcado, el precio de compra YA incluye el traspaso → no se agrega costo extra.
+    // Si está desmarcado (default), se agrega un costo manual de traspaso calculado
+    // automáticamente con la lógica VCR (exento de impuesto + ₡45k honorarios).
+    transfer_included: false,
+    // Costo de compra (solo se usa cuando se agrega manualmente desde el modal,
+    // necesario para calcular el traspaso automático). Opcional.
+    purchase_cost_amount: '',
+    purchase_cost_currency: 'USD',
   });
   const [addingCar, setAddingCar] = useState(false);
 
@@ -1372,15 +1405,44 @@ export default function App() {
       });
       const j = await res.json();
       if (j.ok) {
-        alert(`✅ Carro ${newCar.brand} ${newCar.model} (${newCar.plate}) agregado al Sheets y al Showroom.\n\nRecordá agregar las fotos manualmente en el Sheets (columna Fotos y Fotos Lovable).`);
+        // Si el agente ingresó costo de compra > 0, guardarlo y disparar el cálculo
+        // automático de traspaso (si "Traspaso incluido" no está marcado).
+        const costAmt = parseFloat(newCar.purchase_cost_amount) || 0;
+        let traspasoMsg = '';
+        if (costAmt > 0) {
+          try {
+            const np = newCar.plate.toUpperCase().replace(/\s+/g, '-');
+            const today = new Date().toISOString().slice(0, 10);
+            const r = await savePurchaseCost(
+              np,
+              costAmt,
+              newCar.purchase_cost_currency || 'USD',
+              today,
+              '', // sin proveedor cuando es manual
+              !!newCar.transfer_included
+            );
+            if (r.ok && !newCar.transfer_included) {
+              traspasoMsg = '\n💼 Costo de traspaso calculado automáticamente.';
+            } else if (r.ok && newCar.transfer_included) {
+              traspasoMsg = '\nℹ️ Traspaso marcado como incluido en el precio (no se agregó costo extra).';
+            }
+          } catch (err) {
+            console.warn('Costo de compra no se pudo guardar:', err.message);
+          }
+        }
+
+        alert(`✅ Carro ${newCar.brand} ${newCar.model} (${newCar.plate}) agregado al Sheets y al Showroom.${traspasoMsg}\n\nRecordá agregar las fotos manualmente en el Sheets (columna Fotos y Fotos Lovable).`);
         setShowAddCarModal(false);
         setNewCar({
           estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
           transmission: '', color: '', km: '', fuel: '', engine_cc: '',
           cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
-          price: '', currency: 'USD', is_consignment: false
+          price: '', currency: 'USD', is_consignment: false,
+          transfer_included: false, purchase_cost_amount: '', purchase_cost_currency: 'USD',
         });
         await loadShowroomVehicles();
+        await loadAllShowroomCosts();
+        await loadAllManualCosts();
       } else {
         alert(`❌ Error: ${j.error || 'No se pudo agregar'}`);
       }
@@ -1408,7 +1470,8 @@ export default function App() {
           estado: 'DISPONIBLE', plate: '', brand: '', model: '', year: '',
           transmission: '', color: '', km: '', fuel: '', engine_cc: '',
           cylinders: '', origin: '', drivetrain: '', passengers: '', style: '',
-          price: '', currency: 'USD', is_consignment: false
+          price: '', currency: 'USD', is_consignment: false,
+          transfer_included: false, purchase_cost_amount: '', purchase_cost_currency: 'USD',
         });
         await loadShowroomVehicles();
       } else {
@@ -1972,17 +2035,22 @@ export default function App() {
             : `\n🏬 Agregado al Showroom (${showCurrency} ${showPrice})`;
 
           // Guardar costo de compra automáticamente en showroom_vehicle_costs
-          // con el emisor de la factura como proveedor.
+          // con el emisor de la factura como proveedor. Esto también dispara el
+          // cálculo automático de traspaso (timbres BCR + ₡45k honorarios, exento del 2.5%).
           try {
             const supplierName = supDisplay(inv) || inv.supplier_name || '';
             const fechaCompra = inv.date ? inv.date.split('T')[0] : new Date().toISOString().slice(0, 10);
-            await savePurchaseCost(
+            const r = await savePurchaseCost(
               plateNorm,
               lineCost,
               invCurrency,
               fechaCompra,
-              supplierName
+              supplierName,
+              false // por default: traspaso NO incluido en la factura de compra (caso normal)
             );
+            if (r?.ok) {
+              showroomMsg += '\n💼 Costo de compra registrado y traspaso calculado automáticamente.';
+            }
           } catch (costErr) {
             console.error('No se pudo guardar costo de compra automático:', costErr.message);
           }
@@ -8133,6 +8201,55 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Costo de compra y traspaso (opcional al agregar manual; si se llena, se calcula traspaso automático) */}
+              {!editingPlate && (
+                <div style={{marginTop:16, padding:14, background:"#1e2130", borderRadius:8, border:"1px solid #2a2d3d"}}>
+                  <div style={{fontSize:13, fontWeight:700, color:"#e8eaf0", marginBottom:8}}>💰 Costo de compra (opcional)</div>
+                  <div style={{fontSize:11, color:"#8b8fa4", marginBottom:12}}>
+                    Si lo conocés, ingresalo acá para que el sistema calcule automáticamente el traspaso. Si no, dejalo vacío y agregalo después desde el detalle del carro.
+                  </div>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 100px", gap:8, marginBottom:10}}>
+                    <div>
+                      <div style={{fontSize:10, color:"#8b8fa4", marginBottom:3}}>Monto</div>
+                      <input
+                        type="number"
+                        value={newCar.purchase_cost_amount}
+                        onChange={e => setNewCar({...newCar, purchase_cost_amount: e.target.value})}
+                        placeholder="0"
+                        style={S.input}
+                      />
+                    </div>
+                    <div>
+                      <div style={{fontSize:10, color:"#8b8fa4", marginBottom:3}}>Moneda</div>
+                      <select
+                        value={newCar.purchase_cost_currency}
+                        onChange={e => setNewCar({...newCar, purchase_cost_currency: e.target.value})}
+                        style={S.select}
+                      >
+                        <option value="USD">USD</option>
+                        <option value="CRC">CRC</option>
+                      </select>
+                    </div>
+                  </div>
+                  <label style={{display:"flex", alignItems:"flex-start", gap:10, cursor:"pointer", fontSize:12}}>
+                    <input
+                      type="checkbox"
+                      checked={!!newCar.transfer_included}
+                      onChange={e => setNewCar({...newCar, transfer_included: e.target.checked})}
+                      style={{width:16, height:16, cursor:"pointer", marginTop:1}}
+                    />
+                    <div>
+                      <div style={{fontWeight:600, color:"#e8eaf0"}}>Traspaso incluido en el costo de compra</div>
+                      <div style={{fontSize:11, color:"#8b8fa4", marginTop:2}}>
+                        Marcar solo si el costo de compra que ingresaste arriba YA incluye el traspaso.
+                        Si lo dejás desmarcado (caso normal), el sistema agrega un costo automático de traspaso
+                        (timbres BCR + ₡{TRASPASO_VCR_HONORARIOS.toLocaleString('es-CR')} de honorarios, exento del impuesto 2.5%).
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              )}
+
               {/* Checkbox de consignación */}
               <div style={{marginTop:16, padding:12, background:"#1e2130", borderRadius:8, border:"1px solid #2a2d3d"}}>
                 <label style={{display:"flex", alignItems:"center", gap:10, cursor:"pointer", fontSize:13}}>
@@ -8758,7 +8875,7 @@ export default function App() {
   };
 
   // Guardar costo de compra (upsert por plate)
-  const savePurchaseCost = async (plate, amount, currency, fecha, supplier) => {
+  const savePurchaseCost = async (plate, amount, currency, fecha, supplier, transferIncluded = null) => {
     if (!plate) return { ok: false, error: 'Sin placa' };
     setSavingPurchaseCost(true);
     try {
@@ -8780,21 +8897,125 @@ export default function App() {
         supplier_name: normalizeSupplierName(supplier),
         updated_at: new Date().toISOString(),
       };
+      // transferIncluded se guarda solo si la columna existe en la base
+      // (si es null acá, se respeta el valor previo; si es true/false, se sobrescribe)
+      if (transferIncluded !== null && transferIncluded !== undefined) {
+        row.transfer_included = !!transferIncluded;
+      }
 
       const { error } = await supabase
         .from('showroom_vehicle_costs')
         .upsert(row, { onConflict: 'plate' });
 
-      if (error) return { ok: false, error: error.message };
+      // Si la columna transfer_included no existe, reintentar sin ella (migración pendiente).
+      // Esto evita que el agregado falle si todavía no corriste la migración SQL.
+      let finalError = error;
+      if (error && /transfer_included/i.test(error.message)) {
+        delete row.transfer_included;
+        const retry = await supabase
+          .from('showroom_vehicle_costs')
+          .upsert(row, { onConflict: 'plate' });
+        finalError = retry.error;
+      }
+
+      if (finalError) return { ok: false, error: finalError.message };
       await loadShowroomCosts(np);
       // Refrescar lista de suppliers conocidos (puede haberse agregado uno nuevo)
       if (supplier && supplier.trim()) {
         await loadKnownSuppliers();
       }
+
+      // Después de guardar el costo de compra, disparar el cálculo del traspaso
+      // automático si corresponde. La función decide internamente si debe crear o no.
+      try {
+        await ensureTransferCost(np);
+      } catch (err) {
+        console.warn('No se pudo crear costo automático de traspaso:', err.message);
+      }
+
       return { ok: true, tc: tcResult.tc };
     } finally {
       setSavingPurchaseCost(false);
     }
+  };
+
+  // ============================================================
+  // TRASPASO AUTOMÁTICO
+  // ============================================================
+  // Cuando hay costo de compra registrado y el agente NO marcó "traspaso incluido",
+  // crear automáticamente un costo manual de traspaso usando la fórmula VCR
+  // (sin impuesto 2.5% + ₡45,000 honorarios + timbres BCR).
+  // Idempotente: si ya existe un costo manual con concepto "Traspaso (auto)",
+  // no duplica.
+  const TRANSFER_AUTO_CONCEPT = 'Traspaso (auto)';
+
+  const ensureTransferCost = async (plate) => {
+    if (!plate) return { ok: false, error: 'Sin placa' };
+    const np = plate.toUpperCase().replace(/\s+/g, '-');
+
+    // 1. Leer el costo de compra y el flag transfer_included (si existe la columna)
+    const { data: pc } = await supabase
+      .from('showroom_vehicle_costs')
+      .select('*')
+      .eq('plate', np)
+      .maybeSingle();
+
+    if (!pc) return { ok: false, reason: 'no-purchase-cost' };
+    const purchaseAmt = parseFloat(pc.purchase_cost_amount) || 0;
+    if (purchaseAmt <= 0) return { ok: false, reason: 'purchase-cost-zero' };
+
+    // Si está marcado como incluido, no hacer nada
+    if (pc.transfer_included === true) {
+      return { ok: false, reason: 'transfer-included' };
+    }
+
+    // 2. Verificar si ya existe un costo automático de traspaso para esta placa
+    const { data: existing } = await supabase
+      .from('vehicle_manual_costs')
+      .select('id')
+      .eq('plate', np)
+      .eq('concept', TRANSFER_AUTO_CONCEPT)
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      return { ok: false, reason: 'already-exists' };
+    }
+
+    // 3. Calcular el traspaso. Base imponible = costo de compra en CRC.
+    const purchaseCur = pc.purchase_cost_currency || 'USD';
+    const purchaseTC = parseFloat(pc.purchase_cost_tc) || 0;
+    let baseImponibleCRC;
+    if (purchaseCur === 'CRC') {
+      baseImponibleCRC = purchaseAmt;
+    } else {
+      // USD: convertir con TC histórico de la compra
+      if (purchaseTC <= 0) return { ok: false, reason: 'no-tc' };
+      baseImponibleCRC = purchaseAmt * purchaseTC;
+    }
+
+    const traspaso = calcularTraspasoVCR({ baseImponibleCRC });
+    if (!traspaso.total || traspaso.total <= 0) return { ok: false, reason: 'zero-result' };
+
+    // 4. Crear el costo manual con TC del día del costo de compra (mismo criterio)
+    const fechaCosto = pc.purchase_cost_date || new Date().toISOString().slice(0, 10);
+    const tcResult = await fetchTC(fechaCosto);
+
+    const row = {
+      plate: np,
+      concept: TRANSFER_AUTO_CONCEPT,
+      description: `Cálculo automático: timbres BCR ₡${Math.round(traspaso.timbres).toLocaleString('es-CR')} + honorarios ₡${TRASPASO_VCR_HONORARIOS.toLocaleString('es-CR')} (exento de impuesto de transferencia)`,
+      amount: Math.round(traspaso.total),
+      currency: 'CRC',
+      tc: tcResult.tc || null,
+      cost_date: fechaCosto,
+    };
+
+    const { error } = await supabase.from('vehicle_manual_costs').insert(row);
+    if (error) return { ok: false, error: error.message };
+    await loadShowroomCosts(np);
+    // Recargar mapa global de manual costs para que los reportes lo levanten
+    await loadAllManualCosts();
+    return { ok: true, total: traspaso.total };
   };
 
   // Agregar costo manual
