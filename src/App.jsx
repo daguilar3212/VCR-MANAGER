@@ -7144,10 +7144,14 @@ export default function App() {
       setManualCosts(manuals || []);
 
       // 3. Facturas que tienen esa placa (tabla invoices)
+      //    EXCLUIR las facturas de compra del vehículo (is_vehicle_purchase=true)
+      //    porque esas ya están reflejadas en "Costo de compra".
+      //    Costos automáticos = solo gastos asociados (reparaciones, repuestos, etc.)
       const { data: invs } = await supabase
         .from('invoices')
-        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate')
+        .select('id, emission_date, supplier_name, total, currency, exchange_rate, plate, is_vehicle_purchase')
         .eq('plate', np)
+        .or('is_vehicle_purchase.is.null,is_vehicle_purchase.eq.false')
         .order('emission_date', { ascending: false });
       setInvoiceCosts(invs || []);
     } catch (err) {
@@ -7186,10 +7190,12 @@ export default function App() {
       }
 
       // 3. Costos (costo de compra, manuales, facturas con placa)
+      //    Excluir facturas de compra del carro (is_vehicle_purchase=true)
+      //    porque esas ya están en "costo de compra".
       const [pc, mc, invs] = await Promise.all([
         supabase.from('showroom_vehicle_costs').select('*').eq('plate', np).maybeSingle(),
         supabase.from('vehicle_manual_costs').select('*').eq('plate', np).order('cost_date'),
-        supabase.from('invoices').select('id, emission_date, supplier_name, total, currency, exchange_rate, plate').eq('plate', np).order('emission_date'),
+        supabase.from('invoices').select('id, emission_date, supplier_name, total, currency, exchange_rate, plate, is_vehicle_purchase').eq('plate', np).or('is_vehicle_purchase.is.null,is_vehicle_purchase.eq.false').order('emission_date'),
       ]);
 
       setSoldDetail({
@@ -7578,6 +7584,26 @@ export default function App() {
     if (!window.confirm("¿Borrar este costo manual?")) return;
     const { error } = await supabase.from('vehicle_manual_costs').delete().eq('id', id);
     if (error) { alert("Error: " + error.message); return; }
+    await loadShowroomCosts(plate);
+  };
+
+  // Desasignar una factura de un vehículo. La factura sigue existiendo en el
+  // sistema, solo se quita el vínculo con la placa para que ya no cuente como
+  // costo de ese carro. Pasa a estado 'unassigned' para que pueda re-asignarse.
+  const unassignInvoiceFromVehicle = async (invoiceId, plate, supplierName) => {
+    if (!window.confirm(
+      `¿Desasignar esta factura del vehículo?\n\n` +
+      `Proveedor: ${supplierName || '(sin nombre)'}\n` +
+      `Placa: ${plate}\n\n` +
+      `La factura NO se borra. Solo se quita el vínculo con esta placa para que ya no cuente como costo de este carro. Después podrá reasignarla a otro vehículo desde la pestaña Facturas.`
+    )) return;
+    const { error } = await supabase
+      .from('invoices')
+      .update({ plate: null, assign_status: 'unassigned' })
+      .eq('id', invoiceId);
+    if (error) { alert("Error: " + error.message); return; }
+    // Refrescar lista de facturas en memoria + costos del carro
+    await loadInvoices();
     await loadShowroomCosts(plate);
   };
 
@@ -8170,6 +8196,11 @@ export default function App() {
                                 </div>
                               </div>
                               <CostMoney amount={origAmt} currency={origCur} tcItem={tcItem} mainSize={14} subSize={10} />
+                              <button
+                                onClick={() => unassignInvoiceFromVehicle(inv.id, v.plate, inv.supplier_name)}
+                                style={{background: "transparent", border: "none", color: "#e11d48", cursor: "pointer", fontSize: 16, padding: 4}}
+                                title="Desasignar esta factura del vehículo (la factura no se borra)"
+                              >×</button>
                             </div>
                           );
                         })}
