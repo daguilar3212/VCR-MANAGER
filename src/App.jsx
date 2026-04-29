@@ -7031,6 +7031,11 @@ export default function App() {
   // ============================================================
   const loadShowroomCosts = async (plate) => {
     if (!plate) return;
+    // IMPORTANTE: limpiar los estados ANTES de cargar para no mostrar
+    // los datos del carro anterior mientras llegan los nuevos.
+    setVehicleCost(null);
+    setManualCosts([]);
+    setInvoiceCosts([]);
     setLoadingCosts(true);
     try {
       const np = plate.toUpperCase().replace(/\s+/g, '-');
