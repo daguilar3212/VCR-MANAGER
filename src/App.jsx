@@ -3949,6 +3949,18 @@ export default function App() {
 
   // ======= RENDER: REPORTES =======
   const renderReportes = () => {
+    // ALIAS: en este componente, los vehículos se llaman `cars` con propiedades cortas
+    // (p, b, m, y, etc). Para legibilidad uso `vehicles` y mapeo las propiedades.
+    const vehicles = (cars || []).map(c => ({
+      ...c,
+      plate: c.p,
+      brand: c.b,
+      model: c.m,
+      year: c.y,
+      purchase_cost: c.purchase_price, // en cars se llama purchase_price (que en realidad es CRC)
+      status: c.s,
+    }));
+
     // 1. Calcular rango de fechas según período seleccionado
     const today = new Date();
     let fromDate, toDate;
@@ -4085,7 +4097,11 @@ export default function App() {
       const d = (p.pay_date || "").slice(0, 10);
       return p.status !== "draft" && d >= fromStr && d <= toStr;
     });
-    const planillaCRC = planillasPeriod.reduce((s, p) => s + (parseFloat(p.total_neto) || 0), 0);
+    // Sumar net_pay de cada línea (no hay total a nivel payroll)
+    const planillaCRC = planillasPeriod.reduce((s, p) => {
+      const lines = p.lines || [];
+      return s + lines.reduce((ls, l) => ls + (parseFloat(l.net_pay) || 0), 0);
+    }, 0);
 
     // Utilidad neta
     const utilidadNetaCRC = margenBrutoCRC - gastosOpCRC - planillaCRC - comisionesCRC;
@@ -4229,12 +4245,13 @@ export default function App() {
     // ============================================================
     const agentesStats = {};
     salesPeriod.forEach(s => {
-      // Si una venta tiene múltiples agentes, dividir comisión
-      const sAgents = (s.agents_data && Array.isArray(s.agents_data)) ? s.agents_data : [];
-      // Si no, usar agent_id directo
+      // sale_agents viene del loadSales como array desde la tabla sale_agents
+      const sAgents = Array.isArray(s.sale_agents) ? s.sale_agents : [];
+      // Si no hay sale_agents y hay agent_id directo, usarlo
       const list = sAgents.length > 0 ? sAgents : (s.agent_id ? [{ agent_id: s.agent_id, share: 100 }] : []);
       list.forEach(a => {
         const agentId = a.agent_id || a.id;
+        if (!agentId) return;
         if (!agentesStats[agentId]) {
           const aInfo = agents.find(ag => ag.id === agentId);
           agentesStats[agentId] = {
@@ -4246,24 +4263,25 @@ export default function App() {
             comisionesCRC: 0,
           };
         }
-        const share = (parseFloat(a.share) || 100) / 100;
+        const share = (parseFloat(a.share || a.share_percent || 100)) / 100;
         agentesStats[agentId].ventas += share;
         agentesStats[agentId].volumenCRC += toCRC(s.sale_price, s.sale_currency || "USD", s.sale_exchange_rate) * share;
-        agentesStats[agentId].comisionesCRC += toCRC(s.commission_amount || 0, s.sale_currency || "USD", s.sale_exchange_rate) * share;
+        agentesStats[agentId].comisionesCRC += toCRC(s.commission_amount || a.commission_amount || 0, s.sale_currency || "USD", s.sale_exchange_rate) * share;
       });
     });
 
-    // Sumar planilla del período por empleado
+    // Sumar planilla del período por empleado (de las lines de cada payroll)
     planillasPeriod.forEach(p => {
-      const items = p.items || [];
-      items.forEach(it => {
+      const lines = p.lines || [];
+      lines.forEach(it => {
+        // En payroll_lines, usualmente hay agent_id + agent_name
         const agId = it.agent_id || it.employee_id;
         if (!agId) return;
         if (!agentesStats[agId]) {
           const aInfo = agents.find(ag => ag.id === agId);
           agentesStats[agId] = {
             id: agId,
-            name: aInfo?.name || `Empleado ${agId}`,
+            name: aInfo?.name || it.agent_name || `Empleado ${agId}`,
             isEmployee: true,
             ventas: 0,
             volumenCRC: 0,
@@ -4271,7 +4289,7 @@ export default function App() {
           };
         }
         if (!agentesStats[agId].planillaCRC) agentesStats[agId].planillaCRC = 0;
-        agentesStats[agId].planillaCRC += parseFloat(it.neto || it.salario_neto || 0);
+        agentesStats[agId].planillaCRC += parseFloat(it.net_pay || 0);
       });
     });
 
@@ -4294,7 +4312,14 @@ export default function App() {
         const d = (p.pay_date || "").slice(0, 10);
         return p.status !== "draft" && d >= fStr && d <= tStr;
       });
-      return { label: t.label, planilla: ps.reduce((s, p) => s + (parseFloat(p.total_neto) || 0), 0), ingresos: t.ingresos };
+      return {
+        label: t.label,
+        planilla: ps.reduce((s, p) => {
+          const lines = p.lines || [];
+          return s + lines.reduce((ls, l) => ls + (parseFloat(l.net_pay) || 0), 0);
+        }, 0),
+        ingresos: t.ingresos,
+      };
     });
     const maxPlanillaIngr = Math.max(...planillaTrend.map(p => Math.max(p.planilla, p.ingresos)), 1);
 
