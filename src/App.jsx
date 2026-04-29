@@ -8030,14 +8030,41 @@ export default function App() {
                         onClick={() => {
                           const currentAmt = vehicleCost?.purchase_cost_amount || "";
                           const currentCur = vehicleCost?.purchase_cost_currency || "USD";
-                          const currentDate = vehicleCost?.purchase_cost_date || new Date().toISOString().slice(0, 10);
+                          const currentDateIso = vehicleCost?.purchase_cost_date || new Date().toISOString().slice(0, 10);
+                          // Convertir ISO (yyyy-mm-dd) a formato CR (dd-mm-aaaa) para mostrar
+                          const isoToCr = (iso) => {
+                            if (!iso) return "";
+                            const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+                            return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
+                          };
+                          // Convertir formato CR (dd-mm-aaaa o ddmmaaaa) a ISO (yyyy-mm-dd)
+                          // Acepta también con / o sin separadores. Devuelve null si inválido.
+                          const crToIso = (txt) => {
+                            if (!txt) return null;
+                            const clean = String(txt).replace(/[^\d]/g, "");
+                            if (clean.length !== 8) return null;
+                            const dd = clean.slice(0, 2);
+                            const mm = clean.slice(2, 4);
+                            const yyyy = clean.slice(4, 8);
+                            const d = parseInt(dd, 10);
+                            const m = parseInt(mm, 10);
+                            const y = parseInt(yyyy, 10);
+                            if (m < 1 || m > 12 || d < 1 || d > 31 || y < 1900 || y > 2100) return null;
+                            return `${yyyy}-${mm}-${dd}`;
+                          };
+
                           const amt = prompt(`Monto del costo de compra en ${currentCur}:`, currentAmt);
                           if (amt == null) return;
                           const cur = prompt("Moneda (USD o CRC):", currentCur);
                           if (cur == null || !["USD", "CRC"].includes(cur.toUpperCase())) { alert("Moneda inválida"); return; }
-                          const fecha = prompt("Fecha de compra (YYYY-MM-DD):", currentDate);
-                          if (fecha == null) return;
-                          savePurchaseCost(v.plate, amt, cur.toUpperCase(), fecha).then(r => {
+                          const fechaInput = prompt("Fecha de compra (DD-MM-AAAA):", isoToCr(currentDateIso));
+                          if (fechaInput == null) return;
+                          const fechaIso = crToIso(fechaInput);
+                          if (!fechaIso) {
+                            alert("Fecha inválida. Use formato DD-MM-AAAA (ejemplo: 04-06-2026 o 04062026)");
+                            return;
+                          }
+                          savePurchaseCost(v.plate, amt, cur.toUpperCase(), fechaIso).then(r => {
                             if (r.ok) alert(`✓ Costo guardado. TC usado: ${r.tc}`);
                             else alert(`Error: ${r.error}`);
                           });
@@ -8052,7 +8079,12 @@ export default function App() {
                       <div style={{padding: 12, background: "#1e2130", borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12}}>
                         <div style={{flex: 1}}>
                           <div style={{fontSize: 10, color: "#5a5e72"}}>
-                            {vehicleCost.purchase_cost_date} · {costCur}{costTcItem > 0 ? ` · TC ${fmt0(costTcItem)}` : ""}
+                            {(() => {
+                              const iso = vehicleCost.purchase_cost_date;
+                              if (!iso) return "";
+                              const m = String(iso).slice(0, 10).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+                              return m ? `${m[3]}-${m[2]}-${m[1]}` : iso;
+                            })()} · {costCur}{costTcItem > 0 ? ` · TC ${fmt0(costTcItem)}` : ""}
                           </div>
                         </div>
                         <CostMoney amount={costAmt} currency={costCur} tcItem={costTcItem} mainSize={17} subSize={11} />
