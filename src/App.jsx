@@ -1146,15 +1146,25 @@ export default function App() {
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); }, []);
 
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
+  // showroomPicked es un ID (number), hay que resolverlo al objeto en showroomVehicles
   useEffect(() => {
-    if (showroomPicked?.plate) {
-      loadShowroomCosts(showroomPicked.plate);
+    if (!showroomPicked) {
+      setVehicleCost(null);
+      setManualCosts([]);
+      setInvoiceCosts([]);
+      return;
+    }
+    // Buscar el vehículo por id en showroomVehicles
+    const v = showroomVehicles.find(c => c.id === showroomPicked);
+    if (v?.plate) {
+      loadShowroomCosts(v.plate);
     } else {
+      // ID encontrado pero sin placa, o vehículo no cargado todavía
       setVehicleCost(null);
       setManualCosts([]);
       setInvoiceCosts([]);
     }
-  }, [showroomPicked?.plate]);
+  }, [showroomPicked, showroomVehicles]);
 
   const loadBankAccounts = async () => {
     const { data } = await supabase.from('bank_accounts').select('*').order('id');
