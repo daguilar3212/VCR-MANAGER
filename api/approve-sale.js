@@ -593,6 +593,22 @@ export default async function handler(req, res) {
           sold_commission_currency: sale.sale_currency || 'USD',
         };
         await supabase.from('showroom_vehicles').update(snapshot).eq('plate', plateNorm);
+
+        // Borrar la fila del Google Sheets para que el cron de espejo no lo
+        // vuelva a meter como disponible. El registro queda en Supabase con
+        // estado=VENDIDO para el histórico.
+        try {
+          const baseUrl = process.env.APP_BASE_URL || 'https://vcr-manager.vercel.app';
+          await fetch(`${baseUrl}/api/sync-showroom`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'mark_sold', plate: plateNorm }),
+          });
+          // No bloqueante: si falla, el carro queda en VENDIDO en Supabase pero
+          // sigue en el Sheets. El usuario lo puede borrar manualmente.
+        } catch (sheetErr) {
+          console.error('No se pudo borrar del Sheets:', sheetErr.message);
+        }
       } catch (e) {
         // No bloqueante: el approve sigue aunque falle el update del showroom
         console.error('Error actualizando showroom_vehicles:', e.message);
