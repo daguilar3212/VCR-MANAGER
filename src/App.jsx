@@ -1208,6 +1208,18 @@ export default function App() {
   // Load data on mount
   useEffect(() => { loadInvoices(); loadSyncStatus(); loadSales(); loadAgents(); loadVehicles(); loadLiquidations(); loadPayrolls(); loadSettings(); loadBankAccounts(); loadShowroomVehicles(); loadAccountingConfig(); loadTcRates(); loadPaymentImports(); loadKnownSuppliers(); loadInventorySnapshots(); }, []);
 
+  // Realtime: escuchar cambios en showroom_vehicles para que el admin vea
+  // cambios de vendedores (o de otros admins) sin tener que recargar.
+  useEffect(() => {
+    const channel = supabase
+      .channel('admin-showroom-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'showroom_vehicles' }, () => {
+        loadShowroomVehicles();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
   // Cargar costos cuando cambia el vehículo del showroom seleccionado
   // showroomPicked es un ID (number), hay que resolverlo al objeto en showroomVehicles
   useEffect(() => {
