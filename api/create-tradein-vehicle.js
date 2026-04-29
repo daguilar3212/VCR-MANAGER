@@ -336,6 +336,34 @@ export default async function handler(req, res) {
         const showroomData = await showroomRes.json().catch(() => ({ ok: false }));
         if (showroomData.ok) {
           showroomMsg = `Agregado al Showroom (precio 0 - ajustar manualmente)`;
+
+          // Guardar costo de compra en showroom_vehicle_costs con supplier 'Trade In'.
+          // Esto permite que el panel de costos del showroom muestre el costo
+          // del trade-in y quien fue (en este caso "Trade In" para distinguir).
+          try {
+            const tradeInCurrency = sale.sale_currency || 'USD';
+            const tradeInAmount = parseFloat(sale.tradein_value) || 0;
+            const tradeInDate = sale.sale_date ? String(sale.sale_date).slice(0, 10) : new Date().toISOString().slice(0, 10);
+            const tradeInTc = sale.sale_exchange_rate || null;
+
+            if (tradeInAmount > 0) {
+              const costRow = {
+                plate: plateFormatted,
+                purchase_cost_amount: tradeInAmount,
+                purchase_cost_currency: tradeInCurrency,
+                purchase_cost_tc: tradeInTc,
+                purchase_cost_date: tradeInDate,
+                supplier_name: 'Trade In',
+                updated_at: new Date().toISOString(),
+              };
+              await supabase
+                .from('showroom_vehicle_costs')
+                .upsert(costRow, { onConflict: 'plate' });
+            }
+          } catch (costErr) {
+            // No bloqueante
+            console.error('No se pudo guardar costo de compra del trade-in:', costErr.message);
+          }
         } else {
           showroomErr = showroomData.error || 'No se pudo agregar al Showroom';
         }
