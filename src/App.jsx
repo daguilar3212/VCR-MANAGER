@@ -3277,31 +3277,40 @@ export default function App() {
       const commData = isMensual ? getAgentCommissions(emp.id, month, year) : { total_crc: 0, missing_tc_count: 0 };
       const comms = r2(commData.total_crc);
 
-      // En MENSUAL: el bruto incluye Q1 + Q2 + comisiones
-      // En QUINCENAL: solo 1 quincena (sin comisiones)
-      const salary = isMensual ? r2(salaryQ * 2) : salaryQ;
+      // En AMBAS planillas (1ra y 2da quincena): el sueldo es de UNA SOLA quincena
+      // Las comisiones se pagan completas en la 2da quincena (mensual)
+      const salary = salaryQ;
       const grossTotal = r2(salary + comms);
+      // CCSS: se cobra sobre el bruto de la quincena (sueldo quincenal + comisiones del mes en la 2da)
       const ccssAmt = r2(grossTotal * ccss / 100);
 
       let rentAmt = 0;
+      let rentBase = 0;
       if (isMensual) {
-        // Renta sobre salario mensual bruto
-        rentAmt = calcRent(grossTotal, emp.pension_deduction || 0);
+        // RENTA: la ley de CR es mensual. En la 2da quincena se cobra toda la renta del mes.
+        // Base = sueldo mensual completo (2 quincenas) + comisiones del mes - pensión voluntaria mensual
+        const monthlyGross = r2(salaryQ * 2 + comms);
+        rentBase = monthlyGross;
+        rentAmt = calcRent(monthlyGross, emp.pension_deduction || 0);
       }
 
-      // Cargas patronales y aguinaldo: solo en planilla mensual (no aplica en quincenas)
-      const employerChargesAmount = isMensual ? r2(grossTotal * employerPct / 100) : 0;
-      const aguinaldoAmount = isMensual ? r2(grossTotal / 12) : 0;
+      // Cargas patronales y aguinaldo: se calculan SOLO en la 2da quincena (mensual)
+      // pero sobre el BRUTO MENSUAL completo (2 quincenas + comisiones), no sobre 1 quincena
+      const monthlyGrossForEmployer = isMensual ? r2(salaryQ * 2 + comms) : 0;
+      const employerChargesAmount = isMensual ? r2(monthlyGrossForEmployer * employerPct / 100) : 0;
+      const aguinaldoAmount = isMensual ? r2(monthlyGrossForEmployer / 12) : 0;
 
       const netPay = r2(grossTotal - ccssAmt - rentAmt);
       return {
         agent_id: emp.id, agent_name: emp.name, salary, commissions: comms,
         gross_total: grossTotal, ccss_pct: ccss, ccss_amount: ccssAmt,
-        rent_base: isMensual ? grossTotal : 0,
+        rent_base: rentBase,
         pension_deduction: r2(emp.pension_deduction || 0),
         rent_amount: rentAmt, net_pay: netPay,
         employer_charges_amount: employerChargesAmount,
         aguinaldo_amount: aguinaldoAmount,
+        // Bruto mensual consolidado (para asiento contable mensual)
+        monthly_gross: isMensual ? monthlyGrossForEmployer : 0,
         missing_tc_count: commData.missing_tc_count,
       };
     });
@@ -3391,19 +3400,61 @@ export default function App() {
   const [showJournalPreview, setShowJournalPreview] = useState(false);
 
   // Calcula el asiento contable localmente (igual al que generará el backend) para mostrar preview
+  // IMPORTANTE: cuando la planilla es mensual (2da quincena), CONSOLIDA con la 1ra quincena del mismo mes
+  // para que el asiento contable refleje el mes completo.
   const buildJournalPreview = (payroll) => {
     if (!payroll || !payroll.lines) return null;
-    const lines = payroll.lines;
     const accMap = {};
     accountingConfig.forEach(a => { accMap[a.concept] = a; });
 
-    const totalComisiones = lines.reduce((s, l) => s + parseFloat(l.commissions || 0), 0);
-    const totalCCSSObrero = lines.reduce((s, l) => s + parseFloat(l.ccss_amount || 0), 0);
-    const totalCCSSPatronal = lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
+    const isMensual = payroll.period_type === 'mensual';
+
+    // Si es mensual (2da quincena), busca la 1ra quincena del mismo mes y combina los sueldos por empleado
+    let q1Lines = [];
+    if (isMensual && payroll.name) {
+      // Extraer mes y año del nombre. Formato esperado: "Planilla 16-XX MES YYYY"
+      const match = payroll.name.match(/\b(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)\s+(\d{4})\b/i);
+      if (match) {
+        const mesName = match[1];
+        const yearStr = match[2];
+        const q1 = (payrolls || []).find(p =>
+          p.period_type === 'quincenal_1' &&
+          p.name && p.name.includes(mesName) && p.name.includes(yearStr)
+        );
+        if (q1 && Array.isArray(q1.lines)) q1Lines = q1.lines;
+      }
+    }
+
+    // Construir mapa por empleado: sueldos consolidados Q1 + Q2, neto consolidado, CCSS consolidado
+    const empSummary = {};
+    const ensureEmp = (id, name) => {
+      if (!empSummary[id]) empSummary[id] = { agent_id: id, agent_name: name, salary: 0, ccss: 0, net: 0 };
+      return empSummary[id];
+    };
+
+    // Sumar Q1 (si aplica)
+    for (const l of q1Lines) {
+      const e = ensureEmp(l.agent_id, l.agent_name);
+      e.salary += parseFloat(l.salary || 0);
+      e.ccss += parseFloat(l.ccss_amount || 0);
+      e.net += parseFloat(l.net_pay || 0);
+    }
+    // Sumar Q2 (planilla actual)
+    for (const l of payroll.lines) {
+      const e = ensureEmp(l.agent_id, l.agent_name);
+      e.salary += parseFloat(l.salary || 0);
+      e.ccss += parseFloat(l.ccss_amount || 0);
+      e.net += parseFloat(l.net_pay || 0);
+    }
+
+    // Comisiones, renta, cargas patronales, aguinaldo: vienen SOLO de la mensual (Q2)
+    const totalComisiones = payroll.lines.reduce((s, l) => s + parseFloat(l.commissions || 0), 0);
+    const totalCCSSObrero = Object.values(empSummary).reduce((s, e) => s + e.ccss, 0);
+    const totalCCSSPatronal = payroll.lines.reduce((s, l) => s + parseFloat(l.employer_charges_amount || 0), 0);
     const totalCCSSTotal = totalCCSSObrero + totalCCSSPatronal;
-    const totalRentaISR = lines.reduce((s, l) => s + parseFloat(l.rent_amount || 0), 0);
-    const totalNetoEmpleados = lines.reduce((s, l) => s + parseFloat(l.net_pay || 0), 0);
-    const totalAguinaldo = lines.reduce((s, l) => s + parseFloat(l.aguinaldo_amount || 0), 0);
+    const totalRentaISR = payroll.lines.reduce((s, l) => s + parseFloat(l.rent_amount || 0), 0);
+    const totalNetoEmpleados = Object.values(empSummary).reduce((s, e) => s + e.net, 0);
+    const totalAguinaldo = payroll.lines.reduce((s, l) => s + parseFloat(l.aguinaldo_amount || 0), 0);
     const totalDietas = parseFloat(payroll.total_dietas || 0);
     const totalDietasRet = parseFloat(payroll.total_dietas_retencion || 0);
     const totalDietasNeto = parseFloat(payroll.total_dietas_neto || 0);
@@ -3412,29 +3463,28 @@ export default function App() {
     const debits = [];
     const credits = [];
 
-    // DEBITOS: sueldos desglosados por empleado
-    for (const l of lines) {
-      const salary = parseFloat(l.salary || 0);
-      if (salary > 0) debits.push({ concept: 'sueldos_gasto', label: `Sueldo ${l.agent_name}`, amount: salary });
+    // DEBITOS: sueldos consolidados (Q1 + Q2) por empleado
+    for (const e of Object.values(empSummary)) {
+      if (e.salary > 0) debits.push({ concept: 'sueldos_gasto', label: `Sueldo ${e.agent_name}`, amount: r2(e.salary) });
     }
-    if (totalComisiones > 0) debits.push({ concept: 'comisiones_gasto', label: 'Comisiones', amount: totalComisiones });
+    if (totalComisiones > 0) debits.push({ concept: 'comisiones_gasto', label: 'Comisiones', amount: r2(totalComisiones) });
     // Dietas desglosadas por director
     for (const d of directorsSnapshot) {
       const amount = parseFloat(d.dieta_monthly || 0);
       if (amount > 0) debits.push({ concept: 'dietas_gasto', label: `Dieta ${d.name}`, amount });
     }
     // Solo cargas patronales como gasto (el obrero es retención del empleado)
-    if (totalCCSSPatronal > 0) debits.push({ concept: 'cargas_sociales_gasto', label: 'Cargas Sociales Patronales', amount: totalCCSSPatronal });
-    if (totalAguinaldo > 0) debits.push({ concept: 'aguinaldos_gasto', label: 'Aguinaldos (provisión)', amount: totalAguinaldo });
+    if (totalCCSSPatronal > 0) debits.push({ concept: 'cargas_sociales_gasto', label: 'Cargas Sociales Patronales', amount: r2(totalCCSSPatronal) });
+    if (totalAguinaldo > 0) debits.push({ concept: 'aguinaldos_gasto', label: 'Aguinaldos (provisión)', amount: r2(totalAguinaldo) });
 
     // CREDITOS
-    if (totalNetoEmpleados > 0) credits.push({ concept: 'sueldos_por_pagar', label: 'Sueldos por Pagar', amount: totalNetoEmpleados });
+    if (totalNetoEmpleados > 0) credits.push({ concept: 'sueldos_por_pagar', label: 'Sueldos por Pagar', amount: r2(totalNetoEmpleados) });
     // CCSS por pagar: obrero + patronal juntos
-    if (totalCCSSTotal > 0) credits.push({ concept: 'cargas_sociales_por_pagar', label: 'Cargas Sociales por Pagar (obrero + patronal)', amount: totalCCSSTotal });
-    if (totalRentaISR > 0) credits.push({ concept: 'retencion_isr_empleados', label: 'Retención de ISR Empleados', amount: totalRentaISR });
+    if (totalCCSSTotal > 0) credits.push({ concept: 'cargas_sociales_por_pagar', label: 'Cargas Sociales por Pagar (obrero + patronal)', amount: r2(totalCCSSTotal) });
+    if (totalRentaISR > 0) credits.push({ concept: 'retencion_isr_empleados', label: 'Retención de ISR Empleados', amount: r2(totalRentaISR) });
     if (totalDietasNeto > 0) credits.push({ concept: 'dietas_por_pagar', label: 'Dietas por Pagar', amount: totalDietasNeto });
     if (totalDietasRet > 0) credits.push({ concept: 'retencion_dietas_por_pagar', label: 'Retención DIETAS', amount: totalDietasRet });
-    if (totalAguinaldo > 0) credits.push({ concept: 'aguinaldos_por_pagar', label: 'Aguinaldos por Pagar', amount: totalAguinaldo });
+    if (totalAguinaldo > 0) credits.push({ concept: 'aguinaldos_por_pagar', label: 'Aguinaldos por Pagar', amount: r2(totalAguinaldo) });
 
     // Marcar qué cuenta está configurada y cuál no
     const enriched = (list) => list.map(e => ({
