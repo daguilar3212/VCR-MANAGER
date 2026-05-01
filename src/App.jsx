@@ -3309,8 +3309,6 @@ export default function App() {
         rent_amount: rentAmt, net_pay: netPay,
         employer_charges_amount: employerChargesAmount,
         aguinaldo_amount: aguinaldoAmount,
-        // Bruto mensual consolidado (para asiento contable mensual)
-        monthly_gross: isMensual ? monthlyGrossForEmployer : 0,
         missing_tc_count: commData.missing_tc_count,
       };
     });
