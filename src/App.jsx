@@ -11502,16 +11502,44 @@ export default function App() {
                         ))}
                       </tr></thead>
                       <tbody>
-                        {editingPayroll.lines.map((l,i) => (
+                        {editingPayroll.lines.map((l,i) => {
+                          const isMensualEdit = editingPayroll.period_type === "mensual";
+                          // Recalcula una línea cuando cambia sueldo o comisiones en planilla mensual.
+                          // El sueldo en la planilla mensual es de UNA quincena, pero la renta se calcula
+                          // sobre la base mensual: (sueldo quincenal × 2) + comisiones - pensión.
+                          const recalcLine = (line, newSalary, newComms) => {
+                            const salary = parseFloat(newSalary) || 0;
+                            const comms = parseFloat(newComms) || 0;
+                            const ccssPct = parseFloat(line.ccss_pct) || 10.83;
+                            const grossQ = r2(salary + comms);
+                            const ccssAmt = r2(grossQ * ccssPct / 100);
+                            let rentAmt = parseFloat(line.rent_amount) || 0;
+                            let rentBase = parseFloat(line.rent_base) || 0;
+                            if (isMensualEdit) {
+                              // base mensual: 2 quincenas + comisiones del mes
+                              const monthlyGross = r2(salary * 2 + comms);
+                              rentBase = monthlyGross;
+                              rentAmt = calcRent(monthlyGross, line.pension_deduction || 0);
+                            }
+                            const netPay = r2(grossQ - ccssAmt - rentAmt);
+                            return {
+                              ...line,
+                              salary, commissions: comms,
+                              gross_total: grossQ, ccss_amount: ccssAmt,
+                              rent_amount: rentAmt, rent_base: rentBase,
+                              net_pay: netPay,
+                            };
+                          };
+                          return (
                           <tr key={i} style={{borderBottom:"1px solid #2a2d3d"}}>
                             <td style={{padding:"6px 8px",fontWeight:600,fontSize:11}}>{l.agent_name}</td>
                             <td style={{padding:"4px 4px"}}><input type="number" value={l.salary||""} onChange={e=>{
                               const v = parseFloat(e.target.value)||0;
-                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]={...nl[i],salary:v,gross_total:v+(nl[i].commissions||0),ccss_amount:r2((v+(nl[i].commissions||0))*(nl[i].ccss_pct||10.83)/100),net_pay:r2(v+(nl[i].commissions||0)-r2((v+(nl[i].commissions||0))*(nl[i].ccss_pct||10.83)/100)-(nl[i].rent_amount||0))};return{...prev,lines:nl};});
+                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]=recalcLine(nl[i], v, nl[i].commissions);return{...prev,lines:nl};});
                             }} style={{...S.inp,width:"100%",fontSize:11,textAlign:"right"}} /></td>
                             <td style={{padding:"4px 4px"}}><input type="number" value={l.commissions||""} onChange={e=>{
                               const v = parseFloat(e.target.value)||0;
-                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]={...nl[i],commissions:v,gross_total:(nl[i].salary||0)+v,ccss_amount:r2(((nl[i].salary||0)+v)*(nl[i].ccss_pct||10.83)/100),net_pay:r2((nl[i].salary||0)+v-r2(((nl[i].salary||0)+v)*(nl[i].ccss_pct||10.83)/100)-(nl[i].rent_amount||0))};return{...prev,lines:nl};});
+                              setEditingPayroll(prev=>{const nl=[...prev.lines];nl[i]=recalcLine(nl[i], nl[i].salary, v);return{...prev,lines:nl};});
                             }} style={{...S.inp,width:"100%",fontSize:11,textAlign:"right"}} /></td>
                             <td style={{padding:"6px 8px",textAlign:"right",fontSize:11,color:"#e11d48"}}>{fmt2(l.ccss_amount)}</td>
                             <td style={{padding:"4px 4px"}}><input type="number" value={l.rent_amount||""} onChange={e=>{
@@ -11520,7 +11548,8 @@ export default function App() {
                             }} style={{...S.inp,width:"100%",fontSize:11,textAlign:"right"}} /></td>
                             <td style={{padding:"6px 8px",textAlign:"right",fontSize:11,fontWeight:700,color:"#4f8cff"}}>{fmt2(l.net_pay)}</td>
                           </tr>
-                        ))}
+                          );
+                        })}
                       </tbody>
                     </table>
                     <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
