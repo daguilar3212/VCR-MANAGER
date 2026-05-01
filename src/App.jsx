@@ -11382,6 +11382,7 @@ export default function App() {
                   <button onClick={()=>{
                     setEditingPayroll({
                       id: pickedPay.id,
+                      period_type: pickedPay.period_type,
                       lines: (pickedPay.lines||[]).map(l => ({...l})),
                     });
                   }} style={{...S.sel,color:"#f97316",background:"#f97316"+"10",fontWeight:600}}>Editar</button>
